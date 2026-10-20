@@ -76,8 +76,13 @@ def avb_borrow(image, stock):
     footer = stock[-64:]
     assert footer[:4] == b'AVBf', 'stock image has no AVB footer'
     orig, vb_off, vb_size = struct.unpack('>QQQ', footer[12:36])
-    assert len(image) <= vb_off, 'image larger than the stock one'
-    out = image + b'\0' * (vb_off - len(image)) + stock[vb_off:vb_off + vb_size]
+    # The footer is not signed: keep the vbmeta where the stock image had it
+    # when ours fits in front, else move it behind ours (an XNU payload is
+    # bigger than the stock kernel + ramdisk).
+    at = max(vb_off, len(image))
+    out = image + b'\0' * (at - len(image)) + stock[vb_off:vb_off + vb_size]
+    footer = footer[:12] + struct.pack('>QQQ', at, at, vb_size) + footer[36:]
+    assert len(out) + 64 <= len(stock), 'image too large for the partition'
     return out + b'\0' * (len(stock) - len(out) - 64) + footer
 
 
