@@ -39,6 +39,15 @@ per-frame logging. If `swaps` is already low while `avg_copy_us` is small,
 the delay is upstream of final presentation. The counters do not imply a
 GPU-backed IOSurface or GPU rendering.
 
+The first 0137 phone boot reached SpringBoard and yielded 145 summaries over
+771 seconds: 19 `SwapEnd` submissions, 16 shown frames, and three
+superseded pending frames. Only eight five-second windows had a swap; much
+of this interval was idle. A full 8.3 MiB final CPU copy took about 5.3 ms
+in sampled active windows. The measurements point to sparse upstream frame
+submissions during this capture, but do not identify the producer's wait or
+cost. The opt-in service probe logged no `A5XELTE METAL:` match; its scope
+is too narrow to establish which graphics API each process attempted.
+
 ## What the installed iOS userland expects
 
 The staged, untracked IPSW is

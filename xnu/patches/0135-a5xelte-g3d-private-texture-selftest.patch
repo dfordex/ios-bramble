@@ -1,0 +1,261 @@
+diff --git a/iokit/Kernel/arm/A5XELTEGPU.cpp b/iokit/Kernel/arm/A5XELTEGPU.cpp
+--- a/iokit/Kernel/arm/A5XELTEGPU.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPU.cpp
+@@ -4,7 +4,8 @@
+  * a5gpu=1 registers resources, a5gpu=2 probes the existing GPU state,
+  * a5gpu=3 runs a private WRITE_VALUE job, a5gpu=4 clears a private 16x16
+  * target, a5gpu=5 clears a 16x16 patch of the DECON scanout buffer, and
+- * a5gpu=6 checks two serialized private clears with completion fences.
++ * a5gpu=6 checks two serialized private clears with completion fences, and
++ * a5gpu=7 tests a private tiler/texture-sampling/fragment chain.
+  * None of these paths accelerates iOS graphics.
+  *
+  * The Exynos7580 G3D domain needs an ordered BUCK4/bus/PMU/CMU sequence.
+@@ -175,7 +176,8 @@
+ static bool
+ a5g3d_submit_fenced(IOService *service, vm_offset_t gpu,
+     IOBufferMemoryDescriptor *storage, uint8_t *bytes, uint32_t slot,
+-    uint32_t shader, bool fragment, bool scanout, uint32_t expectedColor)
++    uint32_t shader, bool fragment, bool scanout, uint32_t expectedColor,
++    uint32_t jobOffset = 0, bool tiler = false)
+ {
+     /* The ADT has no usable GPU interrupt parent yet. Keep one job in flight
+      * and use finite polling. A timed-out job retains AS0 and its pages.
+@@ -205,7 +207,8 @@
+         return false;
+     }
+     __sync_synchronize();
+-    a5g3d_write32(gpu, slotBase + 0x40, static_cast<uint32_t>(kA5G3DTestVA));
++    a5g3d_write32(gpu, slotBase + 0x40,
++        static_cast<uint32_t>(kA5G3DTestVA + jobOffset));
+     a5g3d_write32(gpu, slotBase + 0x44, 0);
+     a5g3d_write32(gpu, slotBase + 0x50, shader);
+     a5g3d_write32(gpu, slotBase + 0x54, 0);
+@@ -253,15 +256,18 @@
+         sizeof(uint64_t);
+     const bool headerFlushed = storage->performOperation(
+-        kIOMemoryIncoherentIOFlush, kA5G3DDataOffset, 16) == kIOReturnSuccess;
++        kIOMemoryIncoherentIOFlush, kA5G3DDataOffset + jobOffset, 16) ==
++        kIOReturnSuccess;
+-    const bool outputFlushed = scanout || storage->performOperation(
++    const bool outputFlushed = scanout || tiler || storage->performOperation(
+         kIOMemoryIncoherentIOFlush, kA5G3DDataOffset + resultOffset,
+         resultLength) == kIOReturnSuccess;
+     __sync_synchronize();
+     const uint32_t *header = reinterpret_cast<const uint32_t *>(
+-        bytes + kA5G3DDataOffset);
++        bytes + kA5G3DDataOffset + jobOffset);
+     bool validOutput = false;
+     unsigned matchingPixels = 0;
+-    if (fragment) {
++    if (tiler) {
++        validOutput = true; /* descriptor status and idle slot checked below */
++    } else if (fragment) {
+         if (scanout) {
+             validOutput = true; /* screen pixels require device observation */
+         } else if (outputFlushed) {
+@@ -305,7 +310,7 @@
+ static bool
+ a5g3d_try_private_job(IOService *service, vm_offset_t gpu, vm_offset_t cmu,
+     IOBufferMemoryDescriptor *&storage, bool fragment, bool scanout,
+-    bool twoFences)
++    bool twoFences, bool texture)
+ {
+     /* Linux Panfrost sends fragment jobs to JS0 and WRITE_VALUE to JS1.
+      * Never disturb a running job or an active address space.
+@@ -324,7 +329,9 @@
+         slot, shader, l2, addressSpaces, jobSlots, pending, slotStatus,
+         as0Status, as0Transtab);
+     if (!(addressSpaces & 1) || !(jobSlots & (1u << slot)) ||
+-        pending || slotStatus || (as0Status & 1) || as0Transtab) {
++        pending || slotStatus || (as0Status & 1) || as0Transtab ||
++        (texture && (!(jobSlots & 2) || a5g3d_read32(gpu, 0x18e0) ||
++        a5g3d_read32(gpu, 0x18a4)))) {
+         service->setProperty("A5G3DJobResult", "not-ready");
+         return false;
+     }
+@@ -437,6 +444,34 @@
+             bytes + kA5G3DDataOffset + kA5G3DOutputOffset);
+         *output = 0xa5a5a5a55a5a5a5aULL;
+     }
++    if (texture) {
++        /* Mesa 26.2.4 v4 descriptor page. The sparse table excludes the
++         * framebuffer (already constructed above) and red source texels.
++         * It addresses only the four private GPU-visible pages.
++         */
++        static const struct { uint16_t offset; uint32_t word; } fixture[] = {
++#include "A5XELTEGPUTextureFixture.inc"
++        };
++        for (const auto &entry : fixture)
++            *reinterpret_cast<uint32_t *>(bytes + kA5G3DDataOffset +
++                entry.offset) = entry.word;
++        uint32_t *src = reinterpret_cast<uint32_t *>(
++            bytes + kA5G3DDataOffset + 0xa00);
++        for (unsigned i = 0; i < kA5G3DFragmentPixels; ++i)
++            src[i] = kA5G3DFragmentRed;
++        uint32_t *fb = reinterpret_cast<uint32_t *>(
++            bytes + kA5G3DDataOffset + kA5G3DFragmentFBOffset);
++        fb[48] = 4096; /* one full polygon-list page for populated tiler */
++        fb[49] = 0;    /* 16x16 no-hierarchy tiling, not USER-empty */
++        for (unsigned i = 0; i < 4; ++i)
++            fb[32 + i] = 0xff000000; /* distinguish shader draw from clear */
++        reinterpret_cast<uint64_t *>(fb)[27] = kA5G3DTestVA + 0x3000;
++        reinterpret_cast<uint64_t *>(fb)[28] = kA5G3DTestVA + 0x4000;
++        uint32_t *fragmentHeader = reinterpret_cast<uint32_t *>(
++            bytes + kA5G3DDataOffset);
++        fragmentHeader[4] = 0x00020013; /* job index 2 */
++        IOLog("A5XELTE G3D: private T720 texture fixture ready; tiler first\n");
++    }
+     if (storage->performOperation(kIOMemoryIncoherentIOStore, 0,
+         kA5G3DDataOffset) != kIOReturnSuccess) {
+         service->setProperty("A5G3DJobResult", "page-table-cache-store-failed");
+@@ -463,9 +498,26 @@
+         service->setProperty("A5G3DJobResult", "mmu-update-timeout");
+         return false;
+     }
+-    bool complete = a5g3d_submit_fenced(service, gpu, storage, bytes,
+-        slot, shader, fragment, scanout,
+-        scanout ? kA5G3DScanoutGreen : kA5G3DFragmentRed);
++    bool complete = false;
++    if (texture) {
++        complete = a5g3d_submit_fenced(service, gpu, storage, bytes,
++            1, shader, false, false, 0, 0x300, true);
++        if (complete) {
++            /* The tiler owns this page until its fence. Invalidate CPU
++             * cache before storing descriptors for the next submission.
++             */
++            complete = storage->performOperation(kIOMemoryIncoherentIOFlush,
++                kA5G3DDataOffset + kA5G3DPolygonListOffset, 4096) ==
++                kIOReturnSuccess;
++            if (complete)
++                complete = a5g3d_submit_fenced(service, gpu, storage, bytes,
++                    0, shader, true, false, kA5G3DFragmentRed);
++        }
++    } else {
++        complete = a5g3d_submit_fenced(service, gpu, storage, bytes,
++            slot, shader, fragment, scanout,
++            scanout ? kA5G3DScanoutGreen : kA5G3DFragmentRed);
++    }
+     if (twoFences && complete) {
+         /* The first fence is complete and JS0 is idle. Reuse this pinned
+          * fixture for one distinctly colored job; keep the queue depth one.
+@@ -484,9 +536,10 @@
+             slot, shader, true, false, kA5G3DScanoutGreen);
+     }
+     service->setProperty("A5G3DJobResult", complete ?
++        (texture ? "private-texture-sampled" :
+         (twoFences ? "two-fence-private-clears" :
+         (scanout ? "scanout-job-complete" :
+-        (fragment ? "red-fragment-cleared" : "zero-written"))) :
++        (fragment ? "red-fragment-cleared" : "zero-written")))) :
+         "failed-or-timeout");
+     return complete;
+ }
+@@ -549,7 +602,7 @@
+         id, product, runJob ? "offscreen test requested" : "no GPU jobs");
+     if (runJob && product == 0x720)
+         a5g3d_try_private_job(service, gpu, cmu, storage,
+-            mode >= 4, mode == 5, mode == 6);
++            mode >= 4, mode == 5, mode == 6, mode == 7);
+     ml_io_unmap(gpu, gpuSize);
+     ml_io_unmap(cmu, 0x1000);
+     ml_io_unmap(pmu, 0x1000);
+@@ -573,7 +626,7 @@
+     int enabled = 0;
+     if (!PE_parse_boot_argn("a5gpu", &enabled, sizeof(enabled)) ||
+         (enabled != 1 && enabled != 2 && enabled != 3 && enabled != 4 &&
+-         enabled != 5 && enabled != 6)) {
++         enabled != 5 && enabled != 6 && enabled != 7)) {
+         return false; /* a5gpu=0, the safe default */
+     }
+     if (!IOService::start(provider)) {
+@@ -593,11 +646,12 @@
+     setProperty("A5G3DJobSPI", 282ULL, 32);
+     setProperty("A5G3DMMUSPI", 283ULL, 32);
+     setProperty("A5G3DGpuSPI", 281ULL, 32);
+-    setProperty("A5G3DDriverStage", enabled == 6 ? "private-fence-selftest" :
++    setProperty("A5G3DDriverStage", enabled == 7 ? "private-texture-selftest" :
++        (enabled == 6 ? "private-fence-selftest" :
+         (enabled == 5 ? "scanout-fragment-clear" :
+         (enabled == 4 ? "offscreen-fragment-clear" :
+         (enabled == 3 ? "offscreen-write-value" :
+-        (enabled == 2 ? "passive-id-probe" : "resources-only")))));
++        (enabled == 2 ? "passive-id-probe" : "resources-only"))))));
+     registerService();
+     IOLog("A5XELTE G3D: resource service registered; GPU power unchanged; CPU display active\n");
+     if (enabled >= 2) {
+diff --git a/iokit/Kernel/arm/A5XELTEGPUTextureFixture.inc b/iokit/Kernel/arm/A5XELTEGPUTextureFixture.inc
+new file mode 100644
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTEGPUTextureFixture.inc
+@@ -0,0 +1,70 @@
++/* Generated by gen-t720-texture-fixture.c against Mesa 26.2.4.
++ * Nonzero descriptor words; source texels are initialized separately. */
++    { 0x310, 0x0001100f },
++    { 0x320, 0x00000003 },
++    { 0x324, 0x28000000 },
++    { 0x328, 0x1803800a },
++    { 0x334, 0x00000003 },
++    { 0x340, 0x00000007 },
++    { 0x350, 0x02000880 },
++    { 0x360, 0x02000740 },
++    { 0x368, 0x02000780 },
++    { 0x378, 0x02000600 },
++    { 0x390, 0x02000820 },
++    { 0x398, 0x02000800 },
++    { 0x3a0, 0x02000900 },
++    { 0x3b0, 0x02000100 },
++    { 0x3b8, 0x3f800000 },
++    { 0x500, 0xc87a9835 },
++    { 0x504, 0x01403939 },
++    { 0x508, 0x00000030 },
++    { 0x510, 0x210b1293 },
++    { 0x514, 0x00e43c60 },
++    { 0x520, 0x08220019 },
++    { 0x524, 0x841f0018 },
++    { 0x528, 0x4000027b },
++    { 0x52c, 0x0240ffae },
++    { 0x530, 0xc0a00000 },
++    { 0x534, 0x0000004f },
++    { 0x538, 0x0000ffff },
++    { 0x540, 0x08220019 },
++    { 0x544, 0x841f0018 },
++    { 0x548, 0x4000027b },
++    { 0x54c, 0x0240ffae },
++    { 0x550, 0xc0a00000 },
++    { 0x554, 0xfffffc4f },
++    { 0x558, 0x0000ffff },
++    { 0x600, 0x02000505 },
++    { 0x608, 0x00010001 },
++    { 0x60c, 0x00010000 },
++    { 0x610, 0x00020400 },
++    { 0x620, 0x0700ffff },
++    { 0x624, 0x02f00000 },
++    { 0x638, 0xf0122122 },
++    { 0x700, 0x000f000f },
++    { 0x708, 0x328bb688 },
++    { 0x710, 0x00000688 },
++    { 0x720, 0x02000a00 },
++    { 0x728, 0x00000040 },
++    { 0x72c, 0x00000400 },
++    { 0x740, 0x02000700 },
++    { 0x780, 0x00000003 },
++    { 0x788, 0x00000999 },
++    { 0x800, 0x2dea2200 },
++    { 0x820, 0x02000881 },
++    { 0x828, 0x00000010 },
++    { 0x82c, 0x00000040 },
++    { 0x88c, 0x3f800000 },
++    { 0x890, 0x41800000 },
++    { 0x89c, 0x3f800000 },
++    { 0x8a4, 0x41800000 },
++    { 0x8ac, 0x3f800000 },
++    { 0x8b0, 0x41800000 },
++    { 0x8b4, 0x41800000 },
++    { 0x8bc, 0x3f800000 },
++    { 0x900, 0xff800000 },
++    { 0x904, 0xff800000 },
++    { 0x908, 0x7f800000 },
++    { 0x90c, 0x7f800000 },
++    { 0x914, 0x3f800000 },
++    { 0x91c, 0x000f000f },

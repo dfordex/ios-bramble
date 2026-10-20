@@ -160,9 +160,29 @@ Mach-O and were packaged as a 20,299,792-byte Samsung BOOT image. The
 known post-link `dsymutil` wrapper error occurred; direct `dsymutil` then
 completed. TWRP identified BOOT as p10 (32 MiB), and the candidate was
 written only to p10 without a new backup at the user's request. The phone
-was rebooted; its screen and SYSTEM log result are pending. The BOOT
+was rebooted. The user saw the home screen, and the TWRP SYSTEM log
+contained `exec SpringBoard`, `exec backboardd`, both private GPU fences,
+and no panic. Across 145 five-second framebuffer summaries (771 seconds),
+only 19 swaps and 16 shown frames were logged; 3 pending frames were
+superseded. A full 8.3 MiB CPU copy took about 5.3 ms in sampled active
+windows. Only 8 windows contained a swap, so these totals include long idle
+periods and do not measure sustained interaction. No `A5XELTE METAL:` line
+appeared; this probe covers a bounded IOKit matching path and its silence
+does not prove that no process tried graphics APIs. The BOOT
 command line keeps the device-proven `a5gpu=6` private fence test and adds
 `a5metalprobe=1`. The iOS frame path remains CPU backed.
+
+Patch `0135-a5xelte-g3d-private-texture-selftest.patch` adds an opt-in
+`a5gpu=7` private 16×16 tiler and texture-sampling job chain. Mesa 26.2.4
+generated its 4096-byte descriptor fixture; the generator reproduced the
+committed bytes, and the patched GPU source compiled to an arm64 object and
+linked into a kernel. The 20,299,792-byte BOOT candidate was packaged and
+written only to p10 with `a5gpu=7`, then rebooted. The recovered phone log
+recorded a completed tiler fence on slot 1, followed by a completed fragment
+fence on slot 0, with no MMU or GPU fault and `256/256` matching pixels.
+The same boot logged `exec SpringBoard` and no panic. This proves the private
+texture job chain runs on the phone; it does not accept IOSurfaces or
+accelerate SpringBoard.
 
 The queue ownership, fence semantics and route from IOSurface swaps to Mali
 are specified in [a5xelte-gpu-queue.md](a5xelte-gpu-queue.md).
