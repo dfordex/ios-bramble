@@ -37,6 +37,11 @@ and preserve layer order and alpha semantics. The current solid-color fragment
 fixture cannot sample or blend an IOSurface; a compiled Midgard shader and
 texture/sampler descriptors are still required.
 
+The offline Mesa 26.2.4 T720 texture-copy shader fixture is now in
+`tools/a5xelte-gpu/`. Its disassembly confirms a texture instruction, but it
+has not executed on the phone. The source and destination mapping and the
+tiler-to-fragment job chain are the next device proof gate.
+
 Moving the final panel copy to Mali will save CPU copy time. It will not make
 CoreAnimation render icons on Mali: the kernel sees finished IOSurface pixels,
 not the framework's draw commands. Full iOS GPU rendering additionally needs
