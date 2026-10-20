@@ -74,6 +74,37 @@ static int magic_ok(const char *m)
 	return 1;
 }
 
+/*
+ * Boot header v3 (bramble): ABL puts vendor_boot's ramdisk in front of ours,
+ * so the payload starts somewhere inside the initrd, not 8-byte aligned.
+ * Byte reads are safe with the MMU off; wider ones must be aligned.
+ */
+static uintptr_t find_payload(uintptr_t lo, uintptr_t hi)
+{
+	for (uintptr_t a = lo; a + 8 <= hi; a++)
+		if (*(volatile const char *)a == 'S' && magic_ok((const char *)a))
+			return a;
+	return 0;
+}
+
+/* Copy n bytes from any src down to an aligned dst <= src, in aligned words. */
+static void slide_down(uintptr_t dst, uintptr_t src, uint64_t n)
+{
+	unsigned sh = (src & 7) * 8;
+	if (!sh) {
+		copy64(dst, src, n);
+		return;
+	}
+	volatile const uint64_t *s = (volatile const uint64_t *)(src & ~7UL);
+	volatile uint64_t *d = (volatile uint64_t *)dst;
+	uint64_t lo = s[0];
+	for (uint64_t i = 0; i < (n + 7) / 8; i++) {
+		uint64_t hi = s[i + 1];	/* d[i] <= &s[i], already consumed */
+		d[i] = lo >> sh | hi << (64 - sh);
+		lo = hi;
+	}
+}
+
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
 const char *loader_boot(uintptr_t dtb)
@@ -85,9 +116,16 @@ const char *loader_boot(uintptr_t dtb)
 		return "no initrd in /chosen";
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 
-	const struct payload *p = (const struct payload *)rd_start;
-	if (!magic_ok(p->magic))
+	uintptr_t at = find_payload(rd_start, rd_end);
+	if (!at)
 		return "no SWEETXNU payload";
+	if (at != rd_start) {
+		con_hex2("PAYLOAD", "off=", at - rd_start, "len=", rd_end - at);
+		rd_start &= ~7UL;
+		slide_down(rd_start, at, rd_end - at);
+		rd_end = rd_start + (rd_end - at);
+	}
+	const struct payload *p = (const struct payload *)rd_start;
 	if (p->version != 1 || (p->adt_off & 7) || (rd_start & 7))
 		return "bad payload header";
 

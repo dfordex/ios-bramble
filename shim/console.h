@@ -1,9 +1,14 @@
 #pragma once
 #include <stdint.h>
 
+/* sweet defaults; bramble builds pass -DFB_BASE=0xa0000000UL -DFB_H=2340 */
+#ifndef FB_BASE
 #define FB_BASE		0x9c000000UL	/* reserved-memory cont_splash_region */
+#endif
 #define FB_W		1080
+#ifndef FB_H
 #define FB_H		2400
+#endif
 #define FB_STRIDE	(FB_W * 4)	/* a8r8g8b8, matches mainline simplefb */
 
 #define RED	0xffff0000U

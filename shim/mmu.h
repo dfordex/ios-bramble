@@ -1,7 +1,9 @@
 #pragma once
 #include <stdint.h>
 
+#ifndef FB_PHYS		/* bramble: 0xa0000000 */
 #define FB_PHYS	0x9c000000UL
+#endif
 
 struct mmu_info {
 	uint64_t img_lo, img_hi, ttbr;
