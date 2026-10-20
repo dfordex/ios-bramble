@@ -189,6 +189,16 @@ are specified in [a5xelte-gpu-queue.md](a5xelte-gpu-queue.md).
 The installed iOS graphics interfaces and the current software frame path
 are mapped in [a5xelte-ios-gpu-integration.md](a5xelte-ios-gpu-integration.md).
 
+Patches `0138` and `0139` add an opt-in `a5gpu=8` private runtime queue and
+bounded IOSurface import. After the established boot texture fixture, the
+queue retains its MMIO mapping and pinned backing, serializes staging and
+submission, and stops permanently on ambiguous completion. The first
+eligible `SwapEnd` surface supplies a 16×16 BGRA snapshot for one tiler and
+fragment job with exact pixel comparison. The BOOT image was linked and
+written to p10; the phone-side result is pending. This does not register an
+IOGPU or Metal user client, and normal frame presentation remains CPU backed.
+See [a5xelte-gpu-resource-interface.md](a5xelte-gpu-resource-interface.md).
+
 ## What currently limits the screen
 
 `xnu/iokit/Kernel/arm/SweetFramebuffer.cpp` is the inherited AppleCLCD bridge.

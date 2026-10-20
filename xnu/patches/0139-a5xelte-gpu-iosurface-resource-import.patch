@@ -1,0 +1,345 @@
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -16,6 +16,7 @@
+ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
+ iokit/Kernel/arm/A5XELTEGPU.cpp                                 optional iokitcpp
++iokit/Kernel/arm/A5XELTEGPUResources.cpp                        optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -35,6 +35,9 @@
+  * the first swap on (it still reaches the persistent log; panics draw).
+  */
+ #include "SweetSurface.h"
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++#include "A5XELTEGPUResources.h"
++#endif
+ 
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ 
+@@ -481,6 +484,9 @@
+ 			OSSafeReleaseNULL(s);
+ 			continue;
+ 		}
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++		a5g3d_resource_probe_swap(s->id);
++#endif
+ 		uintptr_t src = s->kernelAddress();
+ 		uint32_t bpe = s->bytesPerElement ? s->bytesPerElement : 4;
+ 		if (w <= 0 || h <= 0) {
+diff --git a/iokit/Kernel/arm/A5XELTEGPUResources.h b/iokit/Kernel/arm/A5XELTEGPUResources.h
+new file mode 100644
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTEGPUResources.h
+@@ -0,0 +1,56 @@
++/* Private a5xelte IOSurface resource import for the Mali test queue.
++ * This is not an IOGPU, IOAccelerator or Metal user-client ABI.
++ */
++#ifndef _A5XELTE_GPU_RESOURCES_H_
++#define _A5XELTE_GPU_RESOURCES_H_
++
++#include <pexpert/arm64/board_config.h>
++
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++#include <IOKit/IOMemoryDescriptor.h>
++#include <mach/mach_types.h>
++
++class SweetSurface;
++class IOBufferMemoryDescriptor;
++
++enum A5G3DResourceStatus {
++    kA5G3DResourceReady = 0,
++    kA5G3DResourceInvalid,
++    kA5G3DResourceUnsupported,
++    kA5G3DResourceNoMemory,
++    kA5G3DResourceIOError,
++};
++
++/* A retained IOSurface. Call a5g3d_resource_release on all paths. */
++struct A5G3DImportedSurface {
++    SweetSurface *surface;
++    uint32_t id;
++    uint32_t width;
++    uint32_t height;
++    uint32_t bytesPerRow;
++};
++
++/* The port must name a SweetSurface send right in the supplied task. */
++A5G3DResourceStatus a5g3d_resource_import_port(task_t task,
++    mach_port_name_t port, A5G3DImportedSurface *out);
++
++/* Kernel-only path for the framebuffer's already selected surface ID. */
++A5G3DResourceStatus a5g3d_resource_import_id(uint32_t id,
++    A5G3DImportedSurface *out);
++void a5g3d_resource_release(A5G3DImportedSurface *resource);
++
++/*
++ * Snapshot an exact 16 x 16 BGRA tile into a queue-owned pinned backing.
++ * Destination must remain live through the queue's completion fence. A
++ * submission timeout keeps that backing pinned for the rest of this boot.
++ * The imported surface itself can be released after this snapshot returns.
++ */
++A5G3DResourceStatus a5g3d_resource_stage_bgra16(
++    const A5G3DImportedSurface *resource, uint32_t x, uint32_t y,
++    IOBufferMemoryDescriptor *backing, uint32_t destinationOffset);
++
++/* One opt-in first-swap hardware diagnostic for a5gpu=8. */
++void a5g3d_resource_probe_swap(uint32_t surfaceID);
++
++#endif /* ARM64_BOARD_CONFIG_A5XELTE */
++#endif /* _A5XELTE_GPU_RESOURCES_H_ */
+diff --git a/iokit/Kernel/arm/A5XELTEGPUResources.cpp b/iokit/Kernel/arm/A5XELTEGPUResources.cpp
+new file mode 100644
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTEGPUResources.cpp
+@@ -0,0 +1,245 @@
++/*
++ * Bounded IOSurface import for the a5xelte Mali-T720 private texture queue.
++ * Source pixels are copied into a GPU-owned backing; IOSurface physical pages
++ * are never mapped in AS0 and no user-provided Mali descriptor is accepted.
++ */
++#include "A5XELTEGPUResources.h"
++
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++#include "SweetSurface.h"
++#include "A5XELTEGPUQueue.h"
++#include <IOKit/IOBufferMemoryDescriptor.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOLib.h>
++#include <pexpert/pexpert.h>
++
++static const uint32_t kA5G3DResourceBGRA = 0x42475241;
++static const uint32_t kA5G3DTileWidth = 16;
++static const uint32_t kA5G3DTileHeight = 16;
++static const uint32_t kA5G3DTileRowBytes = kA5G3DTileWidth * 4;
++static const uint32_t kA5G3DTileBytes = kA5G3DTileRowBytes * kA5G3DTileHeight;
++static volatile uint32_t gA5G3DSwapProbeState = 0; /* 0 waiting, 1 active, 2 done */
++static volatile uint32_t gA5G3DSwapProbeMode = 0; /* 0 unknown, 1 off, 2 on */
++
++static A5G3DResourceStatus
++a5g3d_resource_accept(SweetSurface *surface, A5G3DImportedSurface *out)
++{
++    if (!surface || !out)
++        return kA5G3DResourceInvalid;
++    /* A multi-plane or packed surface needs a separate format-specific path.
++     * The backing geometry is checked again at staging time because callers
++     * must not pass a stale or hand-crafted A5G3DImportedSurface.
++     */
++    if (surface->pixelFormat != kA5G3DResourceBGRA ||
++        surface->bytesPerElement != 4 || surface->elementWidth != 1 ||
++        surface->elementHeight != 1 || surface->planeCount != 0 ||
++        surface->width < kA5G3DTileWidth ||
++        surface->height < kA5G3DTileHeight ||
++        surface->bytesPerRow < surface->width * 4ULL ||
++        !surface->memory || surface->allocSize > surface->memory->getLength()) {
++        return kA5G3DResourceUnsupported;
++    }
++    out->surface = surface; /* caller passes a retained reference */
++    out->id = surface->id;
++    out->width = surface->width;
++    out->height = surface->height;
++    out->bytesPerRow = surface->bytesPerRow;
++    return kA5G3DResourceReady;
++}
++
++A5G3DResourceStatus
++a5g3d_resource_import_port(task_t task, mach_port_name_t port,
++    A5G3DImportedSurface *out)
++{
++    if (!out || task == TASK_NULL || port == 0)
++        return kA5G3DResourceInvalid;
++    bzero(out, sizeof(*out));
++    OSObject *object = nullptr;
++    if (IOUserClient::copyObjectForPortNameInTask(task, port, &object) !=
++        kIOReturnSuccess || !object)
++        return kA5G3DResourceInvalid;
++    SweetSurface *surface = OSDynamicCast(SweetSurface, object);
++    const A5G3DResourceStatus status = a5g3d_resource_accept(surface, out);
++    if (status != kA5G3DResourceReady)
++        object->release();
++    return status;
++}
++
++A5G3DResourceStatus
++a5g3d_resource_import_id(uint32_t id, A5G3DImportedSurface *out)
++{
++    if (!out)
++        return kA5G3DResourceInvalid;
++    bzero(out, sizeof(*out));
++    SweetSurface *surface = sweet_surface_copy(id);
++    const A5G3DResourceStatus status = a5g3d_resource_accept(surface, out);
++    if (status != kA5G3DResourceReady && surface)
++        surface->release();
++    return status;
++}
++
++void
++a5g3d_resource_release(A5G3DImportedSurface *resource)
++{
++    if (resource && resource->surface) {
++        resource->surface->release();
++        bzero(resource, sizeof(*resource));
++    }
++}
++
++A5G3DResourceStatus
++a5g3d_resource_stage_bgra16(const A5G3DImportedSurface *resource,
++    uint32_t x, uint32_t y, IOBufferMemoryDescriptor *backing,
++    uint32_t destinationOffset)
++{
++    if (!resource || !resource->surface || !backing ||
++        !backing->getBytesNoCopy() ||
++        resource->surface->id != resource->id ||
++        resource->surface->width != resource->width ||
++        resource->surface->height != resource->height ||
++        resource->surface->bytesPerRow != resource->bytesPerRow)
++        return kA5G3DResourceInvalid;
++
++    SweetSurface *surface = resource->surface;
++    if (surface->pixelFormat != kA5G3DResourceBGRA ||
++        surface->bytesPerElement != 4 || surface->planeCount != 0 ||
++        resource->width < kA5G3DTileWidth ||
++        resource->height < kA5G3DTileHeight ||
++        x > resource->width - kA5G3DTileWidth ||
++        y > resource->height - kA5G3DTileHeight ||
++        destinationOffset > backing->getLength() ||
++        kA5G3DTileBytes > backing->getLength() - destinationOffset)
++        return kA5G3DResourceUnsupported;
++
++    const uint64_t first = (uint64_t)surface->offset +
++        (uint64_t)y * resource->bytesPerRow + (uint64_t)x * 4;
++    const uint64_t last = first +
++        (uint64_t)(kA5G3DTileHeight - 1) * resource->bytesPerRow +
++        kA5G3DTileRowBytes;
++    if (last < first || last > surface->allocSize ||
++        last > surface->memory->getLength())
++        return kA5G3DResourceInvalid;
++
++    uint8_t *destination = static_cast<uint8_t *>(backing->getBytesNoCopy()) +
++        destinationOffset;
++    for (uint32_t row = 0; row < kA5G3DTileHeight; ++row) {
++        const uint64_t offset = first + (uint64_t)row * resource->bytesPerRow;
++        if (surface->memory->readBytes(offset,
++            destination + row * kA5G3DTileRowBytes,
++            kA5G3DTileRowBytes) != kA5G3DTileRowBytes)
++            return kA5G3DResourceIOError;
++    }
++    /* CPU snapshot and GPU read use different cache domains. The queue also
++     * stores its complete descriptor page before submission.
++     */
++    if (backing->performOperation(kIOMemoryIncoherentIOStore,
++        destinationOffset, kA5G3DTileBytes) != kIOReturnSuccess)
++        return kA5G3DResourceIOError;
++    return kA5G3DResourceReady;
++}
++
++void
++a5g3d_resource_probe_swap(uint32_t surfaceID)
++{
++    /* The queue's a5gpu=8 startup fixture already proved that this exact
++     * backing and AS0 mapping can sample a private 16x16 texture. Now use a
++     * retained live IOSurface as the texel source for one diagnostic job.
++     * This must not sit in the regular frame path after the first attempt.
++     */
++    if (gA5G3DSwapProbeMode == 0) {
++        int mode = 0;
++        PE_parse_boot_argn("a5gpu", &mode, sizeof(mode));
++        gA5G3DSwapProbeMode = mode == 8 ? 2u : 1u;
++    }
++    if (gA5G3DSwapProbeMode != 2)
++        return;
++    if (!__sync_bool_compare_and_swap(&gA5G3DSwapProbeState, 0u, 1u))
++        return;
++    A5G3DImportedSurface source = {};
++    if (a5g3d_resource_import_id(surfaceID, &source) != kA5G3DResourceReady) {
++        gA5G3DSwapProbeState = 0; /* try the next supported swap layer */
++        return;
++    }
++    IOService *owner = nullptr;
++    IOBufferMemoryDescriptor *backing = nullptr;
++    vm_offset_t gpu = 0;
++    uint64_t token = 0;
++    if (!a5g3d_queue_acquire_runtime(&owner, &token, &backing, &gpu)) {
++        a5g3d_resource_release(&source);
++        gA5G3DSwapProbeState = 0;
++        return;
++    }
++    uint8_t *bytes = static_cast<uint8_t *>(backing->getBytesNoCopy());
++    const uint32_t x = (source.width - kA5G3DTileWidth) / 2;
++    const uint32_t y = (source.height - kA5G3DTileHeight) / 2;
++    bool reserved = true;
++    bool ok = a5g3d_resource_stage_bgra16(&source, x, y, backing,
++        0x4000 + 0xa00) == kA5G3DResourceReady;
++    uint32_t expected[256];
++    if (ok) {
++        memcpy(expected, bytes + 0x4000 + 0xa00, sizeof(expected));
++        bzero(bytes + 0x4000 + 0x1000, 4096); /* reusable polygon list */
++        reinterpret_cast<uint32_t *>(bytes + 0x4000 + 0x1000)[128] =
++            0xa0000000; /* Mesa T720 polygon-list body magic */
++        bzero(bytes + 0x4000 + 0x2000, sizeof(expected));
++        const uint32_t shader = *reinterpret_cast<volatile uint32_t *>(gpu + 0x140);
++        A5G3DQueueRequest tiler = {};
++        tiler.slot = 1;
++        tiler.jobOffset = 0x300;
++        tiler.shaderMask = shader;
++        tiler.reservationToken = token;
++        A5G3DQueueCompletion tilerDone = {};
++        reserved = false; /* submit consumes the reservation */
++        const A5G3DQueueStatus tilerStatus = a5g3d_queue_submit(owner, gpu,
++            backing, bytes, tiler, &tilerDone);
++        ok = tilerStatus == kA5G3DQueueCompleted;
++        if (!ok)
++            a5g3d_queue_release(owner, token); /* Invalid/Busy may keep token */
++        if (ok)
++            ok = backing->performOperation(kIOMemoryIncoherentIOFlush,
++                0x4000 + 0x1000, 4096) == kIOReturnSuccess;
++        if (ok)
++            ok = a5g3d_queue_acquire(owner, &token, &backing, &gpu);
++        if (ok) {
++            reserved = true;
++            A5G3DQueueRequest fragment = {};
++            fragment.slot = 0;
++            fragment.jobOffset = 0;
++            fragment.shaderMask = shader;
++            fragment.readbackOffset = 0x2000;
++            fragment.readbackLength = sizeof(expected);
++            fragment.reservationToken = token;
++            A5G3DQueueCompletion fragmentDone = {};
++            reserved = false;
++            const A5G3DQueueStatus fragmentStatus = a5g3d_queue_submit(
++                owner, gpu, backing, bytes, fragment, &fragmentDone);
++            ok = fragmentStatus == kA5G3DQueueCompleted;
++            if (!ok)
++                a5g3d_queue_release(owner, token);
++            if (ok) {
++                const uint32_t *pixels = reinterpret_cast<const uint32_t *>(
++                    bytes + 0x4000 + 0x2000);
++                unsigned matches = 0;
++                for (unsigned i = 0; i < 256; ++i)
++                    matches += pixels[i] == expected[i];
++                ok = matches == 256;
++                IOLog("A5XELTE G3D: live IOSurface %u tile %u,%u fences=%llu/%llu pixels=%u/256 complete=%u\n",
++                    source.id, x, y, tilerDone.fence, fragmentDone.fence,
++                    matches, ok);
++                owner->setProperty("A5G3DLiveSurfacePixels", matches, 32);
++                owner->setProperty("A5G3DLiveSurfaceResult", ok ?
++                    "sampled-256" : "pixel-mismatch");
++            }
++        }
++    }
++    if (reserved)
++        a5g3d_queue_release(owner, token);
++    if (!ok) {
++        owner->setProperty("A5G3DLiveSurfaceResult", "failed-or-unsupported");
++        IOLog("A5XELTE G3D: live IOSurface %u sample failed\n", source.id);
++    }
++    owner->release();
++    a5g3d_resource_release(&source);
++    gA5G3DSwapProbeState = 2;
++}
++#endif /* ARM64_BOARD_CONFIG_A5XELTE */
