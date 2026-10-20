@@ -151,6 +151,19 @@ fault. XNU then reported `4/4 CPUs initialized`; the captured log has no
 panic. This proves ordered execution of these two private jobs on the phone.
 It remains a boot-time diagnostic, not an iOS frame queue.
 
+Patch `0136-a5xelte-framepath-activity-metrics.patch` counts IOSurface
+activity, SwapEnd submissions, copied frames, superseded frames, and queue
+and copy time in bounded summaries. Patch `0137` logs matching requests for
+IOGPU, IOAccelerator, and AGX services only when `a5metalprobe=1`; it does
+not advertise a GPU device. The two patches linked into an arm64 XNU
+Mach-O and were packaged as a 20,299,792-byte Samsung BOOT image. The
+known post-link `dsymutil` wrapper error occurred; direct `dsymutil` then
+completed. TWRP identified BOOT as p10 (32 MiB), and the candidate was
+written only to p10 without a new backup at the user's request. The phone
+was rebooted; its screen and SYSTEM log result are pending. The BOOT
+command line keeps the device-proven `a5gpu=6` private fence test and adds
+`a5metalprobe=1`. The iOS frame path remains CPU backed.
+
 The queue ownership, fence semantics and route from IOSurface swaps to Mali
 are specified in [a5xelte-gpu-queue.md](a5xelte-gpu-queue.md).
 The installed iOS graphics interfaces and the current software frame path

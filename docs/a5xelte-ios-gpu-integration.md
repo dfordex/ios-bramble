@@ -28,6 +28,17 @@ at most 11.6 ms. Thus raising the current 30 Hz cap or replacing only the
 final copy cannot by itself explain or solve the observed very low frame rate.
 The time taken to create frames upstream of `SwapEnd` still needs measurement.
 
+Patch 0136 adds a bounded, five-second `A5XELTE FB:` summary. `swaps` and
+`swap_hz` count successful `SwapEnd` submissions; `shown` and `fps` count
+frames copied to scanout; `superseded` counts pending swaps replaced by newer
+ones before a vsync. `avg_wait_us` measures SwapEnd-to-present queue time,
+while `avg_copy_us` measures the final CPU copy. The `surf_create`, `lock`,
+`unlock`, and `write_unlock` deltas count IOSurface activity in the same
+window. These counters use the existing `a5fb_perf` switch and contain no
+per-frame logging. If `swaps` is already low while `avg_copy_us` is small,
+the delay is upstream of final presentation. The counters do not imply a
+GPU-backed IOSurface or GPU rendering.
+
 ## What the installed iOS userland expects
 
 The staged, untracked IPSW is
