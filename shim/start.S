@@ -2,12 +2,15 @@
  * sweet boot shim entry: arm64 Linux Image header so Qualcomm ABL treats
  * us like a kernel. ABL enters at EL1, MMU/D-cache off, x0 = DTB pointer.
  */
+#ifndef TEXT_OFFSET
+#define TEXT_OFFSET	0	/* sweet; bramble's ABL wants the stock 0x80000 */
+#endif
 	.section .text.head, "ax"
 	.globl _head
 _head:
 	b	_start			/* code0 */
 	.long	0			/* code1 */
-	.quad	0			/* text_offset */
+	.quad	TEXT_OFFSET		/* text_offset */
 	.quad	_end			/* image_size (linked at 0) */
 	.quad	0xa			/* flags: LE, 4K pages, place anywhere */
 	.quad	0			/* res2 */

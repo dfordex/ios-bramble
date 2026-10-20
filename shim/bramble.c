@@ -50,6 +50,10 @@
 #define RAMOOPS_ZONE_SIZE	0x100000UL
 #define PERSISTENT_RAM_SIG	0x43474244U	/* "DBGC" */
 
+/* APSS watchdog, left armed by ABL: bark after 11 s (qcom,bark-time), then bite */
+#define WDT_BASE		0x17c10000UL
+#define WDT_RST			(WDT_BASE + 0x04)
+
 #define IMEM_RESTART_REASON	0x146ab65cUL	/* qcom,msm-imem@146ab000 restart_reason@65c */
 #define RESTART_NORMAL		0x77665501U
 #define PSHOLD			0x0c264000UL
@@ -83,11 +87,17 @@ static uint64_t now(void)
 	return rsr("cntpct_el0");
 }
 
+/* Kept armed on purpose: a hung probe still resets after 11 s. */
+static void wdt_pet(void)
+{
+	wr32(WDT_RST, 1);
+}
+
 static void delay_ms(unsigned ms)
 {
 	uint64_t end = now() + rsr("cntfrq_el0") / 1000 * ms;
 	while (now() < end)
-		;
+		wdt_pet();
 }
 
 /* ---- log: one text buffer, drawn on the panel and copied to pstore ---- */
@@ -171,9 +181,11 @@ static void px(uint32_t x, uint32_t y, uint8_t g)
 
 static void fill(uint8_t g)
 {
-	for (uint32_t y = 0; y < fb.h; y++)
+	for (uint32_t y = 0; y < fb.h; y++) {
+		wdt_pet();
 		for (uint32_t x = 0; x < fb.w; x++)
 			px(x, y, g);
+	}
 }
 
 static void glyph(uint32_t x0, uint32_t y0, char ch, uint32_t scale, uint8_t fg, uint8_t bg)
@@ -210,6 +222,7 @@ static void draw(char digit, uint8_t bg)
 			col = 0;
 			continue;
 		}
+		wdt_pet();
 		if (col < cols)
 			glyph(MARGIN + col * 8 * TEXT_SCALE, MARGIN + row * 16 * TEXT_SCALE,
 			      logbuf[i], TEXT_SCALE, 0xff, bg);
@@ -417,6 +430,7 @@ void secondary_main(uint64_t idx)
 
 void shim_main(uint64_t dtb)
 {
+	wdt_pet();
 	log_str("BRAMBLE display probe 1\n");
 	log_kv("dtb", (uint32_t)dtb);
 	log_kv("el", (uint32_t)(rsr("CurrentEL") >> 2));
