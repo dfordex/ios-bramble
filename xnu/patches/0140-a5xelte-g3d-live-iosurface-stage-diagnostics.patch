@@ -1,0 +1,96 @@
+diff --git a/iokit/Kernel/arm/A5XELTEGPUResources.cpp b/iokit/Kernel/arm/A5XELTEGPUResources.cpp
+--- a/iokit/Kernel/arm/A5XELTEGPUResources.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUResources.cpp
+@@ -122,12 +122,18 @@
+ 
+     uint8_t *destination = static_cast<uint8_t *>(backing->getBytesNoCopy()) +
+         destinationOffset;
++    /* The framebuffer already consumes SweetSurface through its kernel map.
++     * IOBufferMemoryDescriptor::readBytes is not guaranteed for the shared
++     * IOSurface descriptor on this XNU port. Bounds above cover each row.
++     */
++    const uintptr_t mapped = surface->kernelAddress();
++    if (!mapped)
++        return kA5G3DResourceIOError;
++    const uint8_t *source = reinterpret_cast<const uint8_t *>(mapped);
+     for (uint32_t row = 0; row < kA5G3DTileHeight; ++row) {
+         const uint64_t offset = first + (uint64_t)row * resource->bytesPerRow;
+-        if (surface->memory->readBytes(offset,
+-            destination + row * kA5G3DTileRowBytes,
+-            kA5G3DTileRowBytes) != kA5G3DTileRowBytes)
+-            return kA5G3DResourceIOError;
++        memcpy(destination + row * kA5G3DTileRowBytes,
++            source + offset, kA5G3DTileRowBytes);
+     }
+     /* CPU snapshot and GPU read use different cache domains. The queue also
+      * stores its complete descriptor page before submission.
+@@ -156,7 +162,11 @@
+     if (!__sync_bool_compare_and_swap(&gA5G3DSwapProbeState, 0u, 1u))
+         return;
+     A5G3DImportedSurface source = {};
+-    if (a5g3d_resource_import_id(surfaceID, &source) != kA5G3DResourceReady) {
++    const A5G3DResourceStatus imported =
++        a5g3d_resource_import_id(surfaceID, &source);
++    if (imported != kA5G3DResourceReady) {
++        IOLog("A5XELTE G3D: live IOSurface %u import status=%u\n",
++            surfaceID, imported);
+         gA5G3DSwapProbeState = 0; /* try the next supported swap layer */
+         return;
+     }
+@@ -165,6 +175,8 @@
+     vm_offset_t gpu = 0;
+     uint64_t token = 0;
+     if (!a5g3d_queue_acquire_runtime(&owner, &token, &backing, &gpu)) {
++        IOLog("A5XELTE G3D: live IOSurface %u queue unavailable\n",
++            source.id);
+         a5g3d_resource_release(&source);
+         gA5G3DSwapProbeState = 0;
+         return;
+@@ -173,8 +185,13 @@
+     const uint32_t x = (source.width - kA5G3DTileWidth) / 2;
+     const uint32_t y = (source.height - kA5G3DTileHeight) / 2;
+     bool reserved = true;
+-    bool ok = a5g3d_resource_stage_bgra16(&source, x, y, backing,
+-        0x4000 + 0xa00) == kA5G3DResourceReady;
++    const A5G3DResourceStatus staged =
++        a5g3d_resource_stage_bgra16(&source, x, y, backing,
++            0x4000 + 0xa00);
++    bool ok = staged == kA5G3DResourceReady;
++    if (!ok)
++        IOLog("A5XELTE G3D: live IOSurface %u stage status=%u\n",
++            source.id, staged);
+     uint32_t expected[256];
+     if (ok) {
+         memcpy(expected, bytes + 0x4000 + 0xa00, sizeof(expected));
+@@ -194,12 +211,21 @@
+             backing, bytes, tiler, &tilerDone);
+         ok = tilerStatus == kA5G3DQueueCompleted;
+         if (!ok)
++            IOLog("A5XELTE G3D: live IOSurface %u tiler status=%u\n",
++                source.id, tilerStatus);
++        if (!ok)
+             a5g3d_queue_release(owner, token); /* Invalid/Busy may keep token */
+         if (ok)
+             ok = backing->performOperation(kIOMemoryIncoherentIOFlush,
+                 0x4000 + 0x1000, 4096) == kIOReturnSuccess;
++        if (!ok && tilerStatus == kA5G3DQueueCompleted)
++            IOLog("A5XELTE G3D: live IOSurface %u polygon flush failed\n",
++                source.id);
+         if (ok)
+             ok = a5g3d_queue_acquire(owner, &token, &backing, &gpu);
++        if (!ok && tilerStatus == kA5G3DQueueCompleted)
++            IOLog("A5XELTE G3D: live IOSurface %u second acquire failed\n",
++                source.id);
+         if (ok) {
+             reserved = true;
+             A5G3DQueueRequest fragment = {};
+@@ -214,6 +240,9 @@
+             const A5G3DQueueStatus fragmentStatus = a5g3d_queue_submit(
+                 owner, gpu, backing, bytes, fragment, &fragmentDone);
+             ok = fragmentStatus == kA5G3DQueueCompleted;
++            if (!ok)
++                IOLog("A5XELTE G3D: live IOSurface %u fragment status=%u\n",
++                    source.id, fragmentStatus);
+             if (!ok)
+                 a5g3d_queue_release(owner, token);
+             if (ok) {

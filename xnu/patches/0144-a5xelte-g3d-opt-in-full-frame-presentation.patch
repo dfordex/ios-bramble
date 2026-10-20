@@ -1,0 +1,345 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -37,6 +37,7 @@
+ #include "SweetSurface.h"
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ #include "A5XELTEGPUResources.h"
++#include "A5XELTEGPUFramePresent.h"
+ #endif
+ 
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+@@ -124,6 +125,8 @@
+ 	uint32_t      fFlushTicks;    /* vsync ticks between panel copies */
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ 	bool          fPerfLog;       /* A5-only copy timing; never on the donor */
++	bool          fGPUCopy;       /* opt-in exact full-frame Mali copy */
++	bool          fGPUUncertain;  /* live panel DMA might still be in flight */
+ 	uint64_t      fPerfFrames;
+ 	uint64_t      fPerfBytes;
+ 	uint64_t      fPerfNS;
+@@ -241,6 +244,10 @@
+ 	fPerfSwaps = fPerfDropped = fPerfAgeNS = fPerfMaxAgeNS = 0;
+ 	fPerfWindowStart = mach_absolute_time();
+ 	sweet_surface_perf_snapshot(&fPerfSurfaceStart);
++	int gpuCopy = 0;
++	PE_parse_boot_argn("a5fb_gpu", &gpuCopy, sizeof(gpuCopy));
++	fGPUCopy = gpuCopy == 1;
++	fGPUUncertain = false;
+ #endif
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ 	if (hz == 0) {
+@@ -264,6 +271,8 @@
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ 	IOLog("A5XELTE FB: requested %u Hz, effective %u Hz, copy timing %s\n",
+ 	    hz, 60 / fFlushTicks, fPerfLog ? "on" : "off");
++	IOLog("A5XELTE FB: full-frame GPU copy %s\n",
++	    fGPUCopy ? "opt-in" : "off");
+ #endif
+ 	return true;
+ }
+@@ -287,6 +296,14 @@
+ 		client->notify(SWEET_FB_NOTIFY_VSYNC, values, 6);
+ 	}
+ 	if (fb->fPowerOff) {
++		/* A fragment timeout may still be writing DECON's live buffer. */
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++		if (fb->fGPUUncertain) {
++			IOLockUnlock(fb->fLock);
++			sender->setTimeoutUS(SWEET_FB_VSYNC_US);
++			return;
++		}
++#endif
+ 		/* Fade out: halve every channel each vsync, then black, then idle. */
+ 		uint32_t step = fb->fFadeStep;
+ 		if (step <= 6) {
+@@ -461,6 +478,49 @@
+ 		}
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++	/* One exact surface can be copied directly by Mali into DECON's fixed
++	 * scanout. The existing CPU path handles clipping, partial rectangles,
++	 * layered composition and all unsupported surface layouts. A fragment
++	 * timeout might leave DMA aimed at the live panel, so freeze updates for
++	 * this boot instead of racing it with CPU writes. */
++	if (fGPUUncertain)
++		return 0;
++	if (fGPUCopy && fPhys == 0x67000000ULL &&
++	    fWidth == 1080 && fHeight == 1920 && fRowBytes == 4320 &&
++	    fOffX == 0 && fOffY == 0 && mask != 0 && mask < 16 &&
++	    (mask & (mask - 1)) == 0) {
++		uint32_t layer = 0;
++		while (!(mask & (1u << layer)))
++			++layer;
++		const uint8_t *a = rec + 0x64 + 16 * layer;
++		const uint8_t *b = rec + 0xc4 + 16 * layer;
++		if (get32(a, 0) == 0 && get32(a, 4) == 0 &&
++		    get32(a, 8) == 1080 && get32(a, 12) == 1920 &&
++		    get32(b, 0) == 0 && get32(b, 4) == 0 &&
++		    get32(b, 8) == 1080 && get32(b, 12) == 1920) {
++			SweetSurface *s = sweet_surface_copy(get32(rec,
++			    0x54 + 4 * layer));
++			if (s && s != fSurface) {
++				/* The 0140 live tile test must establish a correct
++				 * arbitrary-color sample before the full-panel job. */
++				a5g3d_resource_probe_swap(s->id);
++				const A5G3DFramePresentStatus status =
++				    a5g3d_frame_present(s);
++				s->release();
++				if (status == kA5G3DFramePresentCompleted)
++					return (uint64_t)fWidth * fHeight * 4;
++				if (status == kA5G3DFramePresentDMAUncertain) {
++					fGPUUncertain = true;
++					return 0;
++				}
++			} else if (s) {
++				s->release();
++			}
++		}
++	}
++#endif
++
+ 	for (uint32_t layer = 0; layer < SWEET_FB_LAYERS; layer++) {
+ 		uint32_t id = get32(rec, 0x54 + 4 * layer);
+ 		const uint8_t *a = rec + 0x64 + 16 * layer;
+diff --git a/iokit/Kernel/arm/A5XELTEGPUResources.cpp b/iokit/Kernel/arm/A5XELTEGPUResources.cpp
+--- a/iokit/Kernel/arm/A5XELTEGPUResources.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUResources.cpp
+@@ -280,6 +280,7 @@
+                 IOLog("A5XELTE G3D: live IOSurface %u tile %u,%u fences=%llu/%llu pixels=%u/256 complete=%u\n",
+                     source.id, x, y, tilerDone.fence, fragmentDone.fence,
+                     matches, ok);
++                owner->setProperty("A5G3DLiveSurfaceID", source.id, 32);
+                 owner->setProperty("A5G3DLiveSurfacePixels", matches, 32);
+                 owner->setProperty("A5G3DLiveSurfaceResult", ok ?
+                     "sampled-256" : "pixel-mismatch");
+diff --git a/iokit/Kernel/arm/A5XELTEGPUFramePresent.h b/iokit/Kernel/arm/A5XELTEGPUFramePresent.h
+new file mode 100644
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTEGPUFramePresent.h
+@@ -0,0 +1,19 @@
++/* Kernel-private full-panel Mali copy.  This does not expose iOS GPU jobs. */
++#ifndef _A5XELTE_GPU_FRAME_PRESENT_H_
++#define _A5XELTE_GPU_FRAME_PRESENT_H_
++
++#include <pexpert/arm64/board_config.h>
++
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++class SweetSurface;
++
++enum A5G3DFramePresentStatus {
++    kA5G3DFramePresentCompleted,
++    kA5G3DFramePresentCPUFallback,
++    kA5G3DFramePresentDMAUncertain,
++};
++
++/* Only accepts a complete, one-layer 1080x1920 BGRA producer surface. */
++A5G3DFramePresentStatus a5g3d_frame_present(SweetSurface *source);
++#endif
++#endif
+diff --git a/iokit/Kernel/arm/A5XELTEGPUFramePresent.cpp b/iokit/Kernel/arm/A5XELTEGPUFramePresent.cpp
+new file mode 100644
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTEGPUFramePresent.cpp
+@@ -0,0 +1,189 @@
++/* One exact full-panel texture copy through the existing private T720 queue.
++ * Descriptor offsets are from the Mesa 26.2.4 Midgard v4 packed fixture;
++ * they are fixed kernel values, never user-provided Mali command buffers.
++ * The source is the retained, page-mapped IOSurface and the destination is
++ * the loader's already active DECON scanout buffer.
++ */
++#include "A5XELTEGPUFramePresent.h"
++
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++#include "A5XELTEGPUFrameMap.h"
++#include "A5XELTEGPUQueue.h"
++#include "SweetSurface.h"
++#include <IOKit/IOLib.h>
++#include <libkern/c++/OSNumber.h>
++
++static const uint32_t kData = 0x4000;
++static const uint32_t kFB = 0x100;
++static const uint32_t kPolygon = 0x1000;
++static const uint32_t kPrivateVA = 0x02000000;
++static uint64_t gPresentedFrames;
++static uint64_t gFallbackFrames;
++
++static inline uint32_t *
++word_at(uint8_t *bytes, uint32_t offset)
++{
++    return reinterpret_cast<uint32_t *>(bytes + kData + offset);
++}
++
++static bool
++prepare_full_frame_fixture(IOBufferMemoryDescriptor *backing)
++{
++    if (!backing || backing->getLength() < 0x10000 ||
++        !backing->getBytesNoCopy())
++        return false;
++    uint8_t *bytes = static_cast<uint8_t *>(backing->getBytesNoCopy());
++    uint32_t *fb = word_at(bytes, kFB);
++    /* A5G3D's a5gpu=8 private texture startup fixture is required. Do not
++     * guess shader or blend descriptors if a different probe mode ran. */
++    const bool privateFixture = *word_at(bytes, 0x700) == 0x000f000f &&
++        *word_at(bytes, 0x720) == 0x02000a00 &&
++        *word_at(bytes, 0x728) == 64 &&
++        *word_at(bytes, 0x72c) == 1024;
++    const bool fullFrameFixture = *word_at(bytes, 0x700) == 0x077f0437 &&
++        *word_at(bytes, 0x720) == 0x04000000 &&
++        *word_at(bytes, 0x728) == 4352 &&
++        *word_at(bytes, 0x72c) == 8355840;
++    if (fb[8] != 0xb84da201 || fb[9] != 0x00141000 ||
++        (!privateFixture && !fullFrameFixture))
++        return false;
++
++    /* Generated offline from the same Mesa v4 fixture, changing only
++     * texture geometry, four quad vertices and the viewport scissor. */
++    static const struct { uint16_t offset; uint32_t value; } changes[] = {
++        { 0x700, 0x077f0437 }, /* texture width/height minus one */
++        { 0x720, 0x04000000 }, /* source GPU VA */
++        { 0x728, 0x00001100 }, /* 4352-byte source row */
++        { 0x72c, 0x007f8000 }, /* 8,355,840-byte source */
++        { 0x890, 0x44870000 }, /* 1080.0f */
++        { 0x8a4, 0x44f00000 }, /* 1920.0f */
++        { 0x8b0, 0x44870000 },
++        { 0x8b4, 0x44f00000 },
++        { 0x91c, 0x077f0437 }, /* viewport max 1079,1919 */
++    };
++    for (const auto &change : changes)
++        *word_at(bytes, change.offset) = change.value;
++
++    fb[11] = 0x077f0437; /* framebuffer max pixel coordinate */
++    reinterpret_cast<uint64_t *>(fb)[10] = kA5G3DFramePanelVA;
++    fb[22] = kA5G3DFramePanelStride;
++    /* Mesa pan_tiler.c flat tiles are 8<<exp: 0x1c7 means 1024x1024.
++     * Two bins each way require 0x200 + 4*0x200 = 0xA00 bytes. */
++    fb[48] = 0x0a00;
++    fb[49] = 0x01c7;
++    for (unsigned i = 0; i < 4; ++i)
++        fb[32 + i] = 0xff000000;
++    reinterpret_cast<uint64_t *>(fb)[27] = kPrivateVA + 0x3000;
++    reinterpret_cast<uint64_t *>(fb)[28] = kPrivateVA + 0x4000;
++    uint32_t *fragment = word_at(bytes, 0);
++    fragment[4] = 0x00020013;
++    bzero(word_at(bytes, kPolygon), 4096);
++    word_at(bytes, kPolygon)[128] = 0xa0000000;
++    bzero(word_at(bytes, 0x300), 16);
++    bzero(fragment, 16);
++    __sync_synchronize();
++    return true;
++}
++
++A5G3DFramePresentStatus
++a5g3d_frame_present(SweetSurface *source)
++{
++    /* The 0140 diagnostic must first sample 256 live IOSurface texels
++     * correctly. A green clear or a private red fixture is insufficient. */
++    IOService *probeOwner = nullptr;
++    IOBufferMemoryDescriptor *probeBacking = nullptr;
++    vm_offset_t probeGPU = 0;
++    uint64_t probeToken = 0;
++    if (!a5g3d_queue_acquire_runtime(&probeOwner, &probeToken,
++        &probeBacking, &probeGPU))
++        return kA5G3DFramePresentCPUFallback;
++    OSNumber *verified = OSDynamicCast(OSNumber,
++        probeOwner->getProperty("A5G3DLiveSurfacePixels"));
++    OSNumber *sampleID = OSDynamicCast(OSNumber,
++        probeOwner->getProperty("A5G3DLiveSurfaceID"));
++    /* The sample validates this fixed BGRA texture descriptor/shader path.
++     * It need not be the same swap buffer: frame_map_begin independently
++     * validates every new IOSurface's exact geometry and physical pages. */
++    const bool sampleOK = source && verified && sampleID &&
++        verified->unsigned32BitValue() == 256 &&
++        sampleID->unsigned32BitValue() != 0;
++    a5g3d_queue_release(probeOwner, probeToken);
++    probeOwner->release();
++    if (!sampleOK)
++        return kA5G3DFramePresentCPUFallback;
++
++    A5G3DFrameMapLease lease = {};
++    const A5G3DFrameMapStatus mapped = a5g3d_frame_map_begin(source, &lease);
++    if (mapped != kA5G3DFrameMapReady) {
++        if (++gFallbackFrames == 1 || (gFallbackFrames & 0x7f) == 0)
++            IOLog("A5XELTE G3D: full-frame map status=%u source=%u\n",
++                mapped, source ? source->id : 0);
++        return kA5G3DFramePresentCPUFallback;
++    }
++
++    A5G3DFramePresentStatus result = kA5G3DFramePresentCPUFallback;
++    do {
++        uint8_t *bytes = static_cast<uint8_t *>(lease.backing->getBytesNoCopy());
++        if (!prepare_full_frame_fixture(lease.backing))
++            break;
++        const uint32_t shader = *reinterpret_cast<volatile uint32_t *>(
++            lease.gpuMMIO + 0x140);
++        if (!shader)
++            break;
++
++        A5G3DQueueRequest tiler = {};
++        tiler.slot = 1;
++        tiler.jobOffset = 0x300;
++        tiler.shaderMask = shader;
++        tiler.reservationToken = lease.token;
++        const uint64_t tilerToken = lease.token;
++        lease.token = 0; /* submit consumes it on acceptance */
++        A5G3DQueueCompletion tilerDone = {};
++        const A5G3DQueueStatus tilerStatus = a5g3d_queue_submit(
++            lease.owner, lease.gpuMMIO, lease.backing, bytes,
++            tiler, &tilerDone);
++        if (tilerStatus != kA5G3DQueueCompleted) {
++            /* The tiler has no panel write target. A terminal fault stops
++             * AS0; CPU copying the panel remains safe at this point. */
++            a5g3d_queue_release(lease.owner, tilerToken);
++            break;
++        }
++        if (lease.backing->performOperation(kIOMemoryIncoherentIOFlush,
++            kData + kPolygon, 4096) != kIOReturnSuccess)
++            break;
++        if (!a5g3d_frame_map_reacquire(&lease))
++            break;
++        bytes = static_cast<uint8_t *>(lease.backing->getBytesNoCopy());
++        A5G3DQueueRequest fragment = {};
++        fragment.slot = 0;
++        fragment.jobOffset = 0;
++        fragment.shaderMask = shader;
++        fragment.reservationToken = lease.token;
++        const uint64_t fragmentToken = lease.token;
++        lease.token = 0;
++        A5G3DQueueCompletion fragmentDone = {};
++        const A5G3DQueueStatus fragmentStatus = a5g3d_queue_submit(
++            lease.owner, lease.gpuMMIO, lease.backing, bytes,
++            fragment, &fragmentDone);
++        if (fragmentStatus == kA5G3DQueueCompleted) {
++            if (++gPresentedFrames == 1 || (gPresentedFrames & 0x7f) == 0)
++                IOLog("A5XELTE G3D: full-frame source=%u fences=%llu/%llu shown=%llu\n",
++                    source->id, tilerDone.fence, fragmentDone.fence,
++                    gPresentedFrames);
++            result = kA5G3DFramePresentCompleted;
++        } else if (fragmentStatus == kA5G3DQueueBusy ||
++                   fragmentStatus == kA5G3DQueueInvalid) {
++            /* Rejected before START: the panel was not DMA-written. */
++            a5g3d_queue_release(lease.owner, fragmentToken);
++        } else {
++            /* START may have reached a live DECON target. Neither CPU
++             * fallback nor another GPU submission is safe this boot. */
++            result = kA5G3DFramePresentDMAUncertain;
++            IOLog("A5XELTE G3D: panel DMA uncertain, fragment status=%u\n",
++                fragmentStatus);
++        }
++    } while (false);
++    a5g3d_frame_map_end(&lease);
++    return result;
++}
++#endif /* ARM64_BOARD_CONFIG_A5XELTE */
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -19,6 +19,7 @@
+ iokit/Kernel/arm/A5XELTEGPUResources.cpp                        optional iokitcpp
+ iokit/Kernel/arm/A5XELTEGPUTransfer.cpp                         optional iokitcpp
+ iokit/Kernel/arm/A5XELTEGPUFrameMap.cpp                         optional iokitcpp
++iokit/Kernel/arm/A5XELTEGPUFramePresent.cpp                     optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp

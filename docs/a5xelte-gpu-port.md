@@ -194,9 +194,15 @@ bounded IOSurface import. After the established boot texture fixture, the
 queue retains its MMIO mapping and pinned backing, serializes staging and
 submission, and stops permanently on ambiguous completion. The first
 eligible `SwapEnd` surface supplies a 16×16 BGRA snapshot for one tiler and
-fragment job with exact pixel comparison. The BOOT image was linked and
-written to p10; the phone-side result is pending. This does not register an
-IOGPU or Metal user client, and normal frame presentation remains CPU backed.
+fragment job with exact pixel comparison. The 0139 BOOT image was linked and
+written to p10. Its recovered SYSTEM log confirms the startup texture test
+completed two fences with 256/256 pixels and no MMU fault, then reports
+`A5XELTE G3D: live IOSurface 2 sample failed` before another GPU job was
+submitted. Patch `0140` stages through the same kernel mapping used by the
+framebuffer and distinguishes import, queue, staging and job failures in the
+next device log. Patch `0142` adds a serialized private tile transfer API;
+it is only groundwork for a larger resource mapping. This does not register
+an IOGPU or Metal user client, and normal frame presentation remains CPU backed.
 See [a5xelte-gpu-resource-interface.md](a5xelte-gpu-resource-interface.md).
 
 ## What currently limits the screen
