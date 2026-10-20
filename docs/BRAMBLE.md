@@ -51,7 +51,13 @@ leaves autorefresh on; plain memory writes reach the panel, no kicks.**
 - CTL0 top 0x20000, intf_active 0x2 (INTF1 = DSI0); CTL1-3 top 0x1f00.
 - Self-changing in 100 ms: TOP+0x300/0x304/0x308, INTF1+0x0ac/0x0b0/0x298/0x2b0
   (INTF tear-check counters: TE-driven autorefresh is running).
-- Phase 2 (CTL_START every 16 ms) blanked the top ~15 %: do not kick.
-- Both boots came back with bootreason `watchdog`; pstore stayed empty.
-  Unclear whether the APSS WDT bit despite petting 0x17c10004 or ABL
-  reports a PSCI reset that way.
+- Phase 2 (CTL_START every 16 ms on top of autorefresh) blanked the top
+  ~15 % and **reset the SoC within ~2 s, in both boots. Never kick.**
+- pstore stays empty after every reset (also the clean PSCI one).
+
+## Milestone 2: watchdog (probe 2, video 2026-10-21)
+
+APSS WDT at entry: **WDT0_EN = 0** (ABL does not arm it), bark 0x7ffff,
+bite 0xfffff. The probe ran 60 s without pets and reset cleanly. Android
+reports `bootreason=watchdog` for any reset it did not initiate (also the
+probe's PSCI reset), so that string means nothing here. XNU needs no pet.
