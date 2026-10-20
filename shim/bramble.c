@@ -1,16 +1,17 @@
 /*
- * bramble (Pixel 4a 5G) milestone 1: display probe, no XNU.
+ * bramble (Pixel 4a 5G) probe, no XNU.
  *
- * sweet's panel runs in video mode, so XNU just writes ABL's framebuffer.
- * bramble's sofef01 is a command-mode panel: the MDP only sends a frame when
- * told to, unless ABL left autorefresh on. One boot answers:
- *   - which SSPP scans out the splash, from where, in which format
- *   - which MDP registers change by themselves (a sign of autorefresh)
- *   - phase 1 draws a big "1" and touches nothing; phase 2 draws "2" and
- *     kicks CTL_START every frame; phase 3 keeps kicking until the reset.
- *     The digits that appear on the panel are the answer.
- * The log also goes into both pstore console zones, then the phone warm-
- * resets into Android: read /sys/fs/pstore/console-ramoops-0 if it survived.
+ * Milestone 1 (display, answered): ABL leaves the command-mode sofef01 panel
+ * on autorefresh, so plain writes to the SSPP0 buffer reach the panel. The
+ * probe still logs the scanout SSPP, CTL state and self-changing MDP words.
+ * Kicking CTL_START on top of autorefresh blanked the top of the panel.
+ *
+ * Milestone 2 (watchdog): two boots reset ~11 s in (bootreason watchdog)
+ * although the probe wrote WDT0_RST. Now: log the APSS WDT registers, pet
+ * for 6 s, then clear WDT0_EN and stop petting, with a live seconds counter.
+ * Where the counter stops is the answer: ~11 = pets do not reach it,
+ * ~17 = pets work but EN=0 does not, 60 = both work (then a clean reset).
+ * The log also goes into both pstore console zones.
  *
  * Everything runs with the MMU off (Device memory), as in sweet's shim.
  */
@@ -35,7 +36,6 @@
 #define SSPP_SRC_OP_MODE	0x38
 #define CTL_TOP			0x014
 #define CTL_FLUSH		0x018
-#define CTL_START		0x01c
 #define CTL_INTF_ACTIVE		0x0f4
 
 /* reserved-memory cont_splash_region: fallback if no SSPP looks active */
@@ -52,7 +52,11 @@
 
 /* APSS watchdog, left armed by ABL: bark after 11 s (qcom,bark-time), then bite */
 #define WDT_BASE		0x17c10000UL
-#define WDT_RST			(WDT_BASE + 0x04)
+#define WDT_RST			(WDT_BASE + 0x04)	/* msm_watchdog.c WDT0_* */
+#define WDT_EN			(WDT_BASE + 0x08)
+#define WDT_STS			(WDT_BASE + 0x0c)
+#define WDT_BARK_TIME		(WDT_BASE + 0x10)
+#define WDT_BITE_TIME		(WDT_BASE + 0x14)
 
 #define IMEM_RESTART_REASON	0x146ab65cUL	/* qcom,msm-imem@146ab000 restart_reason@65c */
 #define RESTART_NORMAL		0x77665501U
@@ -87,10 +91,13 @@ static uint64_t now(void)
 	return rsr("cntpct_el0");
 }
 
-/* Kept armed on purpose: a hung probe still resets after 11 s. */
+/* Pet while the test wants it; drawing and delays call this. */
+static int wdt_petting = 1;
+
 static void wdt_pet(void)
 {
-	wr32(WDT_RST, 1);
+	if (wdt_petting)
+		wr32(WDT_RST, 1);
 }
 
 static void delay_ms(unsigned ms)
@@ -230,6 +237,36 @@ static void draw(char digit, uint8_t bg)
 	}
 	glyph(fb.w - MARGIN - 8 * BIG_SCALE, fb.h - MARGIN - 16 * BIG_SCALE,
 	      digit, BIG_SCALE, 0xff, bg);
+}
+
+/* Live status: one text line just below the log and a big 2-digit counter. */
+static void draw_status(uint32_t secs, uint32_t sts, uint32_t en, uint8_t bg)
+{
+	char line[40];
+	static const char hex[] = "0123456789abcdef";
+	uint32_t row = 1, n = 0;
+
+	for (uint32_t i = 0; i < loglen; i++)
+		row += logbuf[i] == '\n';
+	for (const char *p = "T+"; *p; p++)
+		line[n++] = *p;
+	line[n++] = '0' + secs / 10 % 10;
+	line[n++] = '0' + secs % 10;
+	for (const char *p = "s sts="; *p; p++)
+		line[n++] = *p;
+	for (int i = 7; i >= 0; i--)
+		line[n++] = hex[(sts >> (4 * i)) & 0xf];
+	for (const char *p = " en="; *p; p++)
+		line[n++] = *p;
+	line[n++] = hex[en & 0xf];
+	line[n++] = wdt_petting ? 'P' : '-';
+	for (uint32_t i = 0; i < n; i++)
+		glyph(MARGIN + i * 8 * TEXT_SCALE, MARGIN + row * 16 * TEXT_SCALE,
+		      line[i], TEXT_SCALE, 0xff, bg);
+	glyph(fb.w - MARGIN - 16 * BIG_SCALE, fb.h - MARGIN - 16 * BIG_SCALE,
+	      '0' + secs / 10 % 10, BIG_SCALE, 0xff, bg);
+	glyph(fb.w - MARGIN - 8 * BIG_SCALE, fb.h - MARGIN - 16 * BIG_SCALE,
+	      '0' + secs % 10, BIG_SCALE, 0xff, bg);
 }
 
 /* ---- MDP probe ---- */
@@ -372,18 +409,13 @@ static int active_ctl(void)
 	return 0;
 }
 
-/* Hold the screen for ms; with kick, send one command-mode frame every ~16 ms. */
-static void hold(unsigned ms, int ctl)
+static void log_wdt(const char *when)
 {
-	uint64_t f = rsr("cntfrq_el0"), end = now() + f / 1000 * ms;
-
-	while (now() < end) {
-		if (ctl >= 0) {
-			wr32(CTL(ctl) + CTL_START, 1);
-			__asm__ volatile("dsb sy" ::: "memory");
-		}
-		delay_ms(16);
-	}
+	log_str("WDT ");
+	log_str(when);
+	log_kv("en", rd32(WDT_EN));
+	log_kv("sts", rd32(WDT_STS));
+	log_nl();
 }
 
 static void __attribute__((noreturn)) reset_to_android(void)
@@ -430,8 +462,13 @@ void secondary_main(uint64_t idx)
 
 void shim_main(uint64_t dtb)
 {
+	log_str("BRAMBLE probe 2: watchdog\n");
+	log_wdt("entry");
+	log_kv("bark", rd32(WDT_BARK_TIME));
+	log_kv("bite", rd32(WDT_BITE_TIME));
+	log_nl();
 	wdt_pet();
-	log_str("BRAMBLE display probe 1\n");
+	log_wdt("pet  ");
 	log_kv("dtb", (uint32_t)dtb);
 	log_kv("el", (uint32_t)(rsr("CurrentEL") >> 2));
 	log_nl();
@@ -460,7 +497,7 @@ void shim_main(uint64_t dtb)
 	log_nl();
 
 	int ctl = active_ctl();
-	log_str("KICK ctl");
+	log_str("CTL active ctl");
 	log_hex(ctl, 1);
 	log_nl();
 
@@ -469,22 +506,26 @@ void shim_main(uint64_t dtb)
 	snapshot(snap[1]);
 	log_ticks();
 
-	/* Phase 1: draw, touch no MDP register. Visible "1" = panel refreshes by itself. */
-	log_str("PHASE 1 no kick, 10 s\n");
+	log_str("pet 0-6 s, then EN=0 and no pets until 60 s\n");
 	pstore_put(RAMOOPS_CONSOLE);
 	pstore_put(ALT_RAMOOPS_CONSOLE);
-	draw('1', 0x30);
-	hold(10000, -1);
+	draw(' ', 0x30);
 
-	/* Phase 2: one CTL_START per frame. "2" appearing only now = kicks needed and work. */
-	log_str("PHASE 2 kick ctl every 16 ms, 10 s\n");
-	draw('2', 0x50);
-	hold(10000, ctl);
-
-	log_str("PHASE 3 done, warm reset to Android in 30 s\n");
+	uint64_t f = rsr("cntfrq_el0"), t0 = now();
+	for (uint32_t secs = 0, last = ~0U; secs < 60; secs = (now() - t0) / f) {
+		if (secs >= 6 && wdt_petting) {
+			wdt_petting = 0;
+			wr32(WDT_EN, 0);
+			__asm__ volatile("dsb sy" ::: "memory");
+		}
+		wdt_pet();
+		if (secs != last) {
+			draw_status(secs, rd32(WDT_STS), rd32(WDT_EN), 0x30);
+			last = secs;
+		}
+	}
+	log_wdt("60 s ");
 	pstore_put(RAMOOPS_CONSOLE);
 	pstore_put(ALT_RAMOOPS_CONSOLE);
-	draw('3', 0x30);
-	hold(30000, ctl);
 	reset_to_android();
 }

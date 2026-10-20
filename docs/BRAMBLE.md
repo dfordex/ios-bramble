@@ -38,4 +38,20 @@ registers that change by themselves, then draws a big digit per phase:
 1 = no MDP writes, 2 = CTL_START kick every 16 ms, 3 = done. After 30 s it
 warm-resets into Android with the log in both pstore console zones.
 
-Status: written, compile-checked with clang; not yet linked or booted.
+Boot image: ABL refuses a raw Image ("Unsupported"), text_offset 0
+("Invalid Parameter") and unsigned vbmeta; it boots LZ4 + text_offset 0x80000
++ the signed vbmeta borrowed from the phone's boot_a (hash mismatch is fine
+unlocked). "boot.img missing cmdline or OS version" is printed for stock too.
+
+Result (2026-10-21, two boots, photos): **phase 1 visible full screen = ABL
+leaves autorefresh on; plain memory writes reach the panel, no kicks.**
+- SSPP0 (vig0) scans out: addr 0xa0000000, 1080x2340 (size 0x09240438),
+  stride 0x10e0, fmt 0x000237ff (4 bpp, alpha), unpack 0x03020001 =
+  bytes B,G,R,A = a8r8g8b8 like sweet. SSPP1-4 idle.
+- CTL0 top 0x20000, intf_active 0x2 (INTF1 = DSI0); CTL1-3 top 0x1f00.
+- Self-changing in 100 ms: TOP+0x300/0x304/0x308, INTF1+0x0ac/0x0b0/0x298/0x2b0
+  (INTF tear-check counters: TE-driven autorefresh is running).
+- Phase 2 (CTL_START every 16 ms) blanked the top ~15 %: do not kick.
+- Both boots came back with bootreason `watchdog`; pstore stayed empty.
+  Unclear whether the APSS WDT bit despite petting 0x17c10004 or ABL
+  reports a PSCI reset that way.
