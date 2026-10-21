@@ -83,3 +83,28 @@ These are real GPU pixel results for bounded private jobs. They do not connect
 stock iOS pipeline creation to these compiled functions, resolve every missing
 fragment function, or establish general compositor rendering. The original
 ordered multi-attachment path-blit pass remains excluded on single-target T720.
+
+
+## 0178 — recovered 2026-10-22
+
+SYSTEM flush40 yielded101687raw bytes/1301lines. After correcting the shared
+preload sampler alignment, all16fences terminate normally, header1/MMU0; the
+0177fragment DATA_INVALID_FAULT is absent. Six of seven new tests pass with
+all seven evaluated and immutable regions intact. Actual checked counts:
+rect768/768, cubic697/697, stroke3328/3328, RAW2044096/4096, R8partial
+scissor1024/1024 and standalonephysicalRG82048/2048. Masked path elements
+are excluded from these counts. StandaloneRG8 is not active stockprofile proof.
+
+Dynamic32x32blur completes but matches2962/4096byte components (tolerance1),
+first_bad384 actual64 expected0. Source audit finds legacyRGBAinput was copied
+unchanged into a BGRA-declared runtime texture. Exchanging R/B in the expected
+output predicts the exact observed match count and first mismatch, without
+changing shader arithmetic. The0179fixture therefore converts only its input
+RGBA->BGRA:3712sourcebytes change; G/A, descriptors, uniforms, nativecode,
+expectedpixels and guards remain identical. Exactsourceformat/stride and
+negativealreadyBGRA tests pass. Correctedinput hardware replay is pending.
+
+The native compiler now records read_surf cache hits, genuine downsample_4
+compilation and cache verification, GREEN LINE and DONE. Backboardd accepts14
+pipelines with no recorded crash, but native iOS draw completion and rendered
+frame presentation remain unproven. Full review:a5xelte-0178-log-review.md.

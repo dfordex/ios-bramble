@@ -11,9 +11,29 @@
 #include <string.h>
 #include <assert.h>
 static unsigned char legacy[A5RuntimeJobBytes], out[A5RuntimeJobBytes];
+/* The legacy fixture's *destination* is BGRA; its independent source pattern
+ * is stored as RGBA and declared as RGBA in its texture descriptor. Reusing
+ * those bytes as the real runtime's MetalBGRA8 image requires input conversion. */
+static int legacy_source_is_rgba(const uint8_t*d){
+ pan_unpack((const struct mali_texture_packed*)(d+0x600),TEXTURE,t);
+ pan_unpack((const struct mali_surface_with_stride_packed*)(d+0x620),SURFACE_WITH_STRIDE,s);
+ return t.width==64&&t.height==64&&t.array_size==1&&t.levels==1&&
+  t.format==((MALI_RGBA8_UNORM<<12)|0x688)&&t.swizzle==0x688&&
+  t.dimension==MALI_TEXTURE_DIMENSION_2D&&t.texel_ordering==MALI_TEXTURE_LAYOUT_LINEAR&&
+  s.pointer==0x0200a000&&s.row_stride==256&&s.surface_stride==0x4000;
+}
+static void rgba_source_to_bgra(uint8_t*dst,const uint8_t*src){
+ /* Test-input preparation only: no expected/output framebuffer is generated. */
+ for(unsigned i=0;i<64*64;++i){
+  dst[4*i]=src[4*i+2];dst[4*i+1]=src[4*i+1];
+  dst[4*i+2]=src[4*i];dst[4*i+3]=src[4*i+3];
+ }
+}
+
 int main(int argc,char**argv){
  if(argc!=3)return 2;FILE*f=fopen(argv[1],"rb");if(!f)return 2;
  if(fread(legacy,1,sizeof(legacy),f)!=sizeof(legacy)||fgetc(f)!=EOF)return 2;fclose(f);
+ if(!legacy_source_is_rgba(legacy)){fputs("legacy source must be exact RGBA8 linear64x64 contract\n",stderr);return 2;}
  const A5MaliCompiledProfile*p=NULL;
  for(unsigned i=0;i<sizeof(kA5MaliCompiledProfiles)/sizeof(kA5MaliCompiledProfiles[0]);++i)
   if(kA5MaliCompiledProfiles[i].profileID==100)p=kA5MaliCompiledProfiles+i;
@@ -43,7 +63,7 @@ int main(int argc,char**argv){
  MALI_FRAMEBUFFER_PARAMETERS_pack((struct mali_framebuffer_parameters_packed*)(out+0x320),&fb);
  pan_unpack((struct mali_surface_with_stride_packed*)(out+0x19a0),SURFACE_WITH_STRIDE,preload);
  preload.pointer=d.descriptorGPUVA+0x3e000;MALI_SURFACE_WITH_STRIDE_pack((struct mali_surface_with_stride_packed*)(out+0x19a0),&preload);
- memcpy(out+0x3a000,legacy+0xa000,0x4000);memset(out+0x3e000,0xcd,0x1000);memset(out+0x3f000,0xa7,0x1000);
+ rgba_source_to_bgra(out+0x3a000,legacy+0xa000);memset(out+0x3e000,0xcd,0x1000);memset(out+0x3f000,0xa7,0x1000);
  f=fopen(argv[2],"wb");if(!f)return 2;
  if(fwrite(out,1,sizeof(out),f)!=sizeof(out)||fclose(f))return 2;
  puts("Encoded genuine dynamic blur VS offscreen32x32, real runtime descriptors and caller ortho MVP; no GPU execution claim");return 0;
