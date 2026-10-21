@@ -45,7 +45,8 @@ def main():
         if b'A5XELTE Metal install:' not in args.kernel.read_bytes():
             ap.error('kernel lacks the embedded bundle installer')
         required.update(a5metal_install='1', rootrw='1', emmcwrite='1',
-                        emmcroot='USERDATA')
+                        emmcroot='USERDATA',
+                        sweetnull='backboardd,a5mali-metal-probe')
     words = [w for w in words if w.split('=', 1)[0] not in required]
     words += [f'{k}={v}' for k, v in required.items()]
     cmdline = ' '.join(words)

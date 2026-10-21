@@ -26,6 +26,93 @@ static void rejectSPI(NSString *operation)
 
 @implementation A5MaliRestrictedDevice (UnsupportedStockSPI)
 
+/* _MTLDevice's native builders dereference Apple compiler/target metadata.
+ * This backend has neither. The exact library/render delegates below are the
+ * only accepted compilation paths; unsupported calls must not reach super. */
+- (id)newPipelineLibraryWithFilePath:(NSString *)path error:(NSError **)error
+{
+    (void)path;
+    if (error) *error = spiUnsupported(@"precompiled pipeline libraries");
+    return nil;
+}
+- (id)newLibraryWithFile:(NSString *)path error:(NSError **)error
+{
+    if (![path isKindOfClass:[NSString class]] || !path.length) {
+        if (error) *error = [NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
+            code:kIOReturnBadArgument userInfo:@{NSLocalizedDescriptionKey:
+                @"metallib file path must be a nonempty string"}];
+        return nil;
+    }
+    return [self newLibraryWithURL:[NSURL fileURLWithPath:path] error:error];
+}
+- (void)newLibraryWithSource:(NSString *)source options:(MTLCompileOptions *)options
+    completionHandler:(MTLNewLibraryCompletionHandler)handler
+{
+    (void)source; (void)options;
+    if (handler) handler(nil, spiUnsupported(@"source compilation"));
+}
+- (id)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+    options:(MTLPipelineOption)options reflection:(MTLRenderPipelineReflection **)reflection
+    error:(NSError **)error
+{
+    if (reflection) *reflection = nil;
+    if (options) {
+        if (error) *error = spiUnsupported(@"render pipeline reflection options");
+        return nil;
+    }
+    return [self newRenderPipelineStateWithDescriptor:descriptor error:error];
+}
+- (void)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+    completionHandler:(MTLNewRenderPipelineStateCompletionHandler)handler
+{
+    if (!handler) return;
+    NSError *error = nil;
+    id pipeline = [self newRenderPipelineStateWithDescriptor:descriptor error:&error];
+    handler(pipeline, error);
+}
+- (void)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+    options:(MTLPipelineOption)options
+    completionHandler:(MTLNewRenderPipelineStateWithReflectionCompletionHandler)handler
+{
+    if (!handler) return;
+    if (options) {
+        handler(nil, nil, spiUnsupported(@"render pipeline reflection options"));
+        return;
+    }
+    NSError *error = nil;
+    id pipeline = [self newRenderPipelineStateWithDescriptor:descriptor error:&error];
+    handler(pipeline, nil, error);
+}
+- (id)newComputePipelineStateWithFunction:(id<MTLFunction>)function
+    options:(MTLPipelineOption)options reflection:(MTLComputePipelineReflection **)reflection
+    error:(NSError **)error
+{
+    (void)function; (void)options;
+    if (reflection) *reflection = nil;
+    if (error) *error = spiUnsupported(@"compute pipelines");
+    return nil;
+}
+- (void)newComputePipelineStateWithFunction:(id<MTLFunction>)function
+    completionHandler:(MTLNewComputePipelineStateCompletionHandler)handler
+{
+    (void)function;
+    if (handler) handler(nil, spiUnsupported(@"compute pipelines"));
+}
+- (void)newComputePipelineStateWithFunction:(id<MTLFunction>)function
+    options:(MTLPipelineOption)options
+    completionHandler:(MTLNewComputePipelineStateWithReflectionCompletionHandler)handler
+{
+    (void)function; (void)options;
+    if (handler) handler(nil, nil, spiUnsupported(@"compute pipelines"));
+}
+- (void)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)descriptor
+    options:(MTLPipelineOption)options
+    completionHandler:(MTLNewComputePipelineStateWithReflectionCompletionHandler)handler
+{
+    (void)descriptor; (void)options;
+    if (handler) handler(nil, nil, spiUnsupported(@"compute pipelines"));
+}
+
 - (id)copyIOSurfaceSharedTextureProperties:(id)properties
 { (void)properties; return nil; }
 - (NSUInteger)featureProfile { return NSUIntegerMax; }
@@ -115,6 +202,22 @@ static void rejectSPI(NSString *operation)
     (void)descriptor;
     if (error) *error = spiUnsupported(@"tile render pipelines");
     return nil;
+}
+- (id)newRenderPipelineStateWithTileDescriptor:(MTLTileRenderPipelineDescriptor *)descriptor
+    options:(MTLPipelineOption)options reflection:(MTLRenderPipelineReflection **)reflection
+    error:(NSError **)error
+{
+    (void)descriptor; (void)options;
+    if (reflection) *reflection = nil;
+    if (error) *error = spiUnsupported(@"tile render pipelines");
+    return nil;
+}
+- (void)newRenderPipelineStateWithTileDescriptor:(MTLTileRenderPipelineDescriptor *)descriptor
+    options:(MTLPipelineOption)options
+    completionHandler:(MTLNewRenderPipelineStateWithReflectionCompletionHandler)handler
+{
+    (void)descriptor; (void)options;
+    if (handler) handler(nil, nil, spiUnsupported(@"tile render pipelines"));
 }
 - (id)newResourceGroupFromResources:(const id *)resources count:(NSUInteger)count
 { (void)resources; (void)count; return nil; }

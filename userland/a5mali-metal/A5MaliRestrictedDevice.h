@@ -84,6 +84,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable, copy, atomic) NSString *label;
 @property (nonatomic, readonly) NSArray<NSString *> *functionNames;
 - (nullable A5MaliMetalFunction *)newFunctionWithName:(NSString *)name;
+- (nullable A5MaliMetalFunction *)newFunctionWithDescriptor:
+    (nullable MTLFunctionDescriptor *)descriptor
+    error:(NSError * _Nullable * _Nullable)error;
 @end
 
 @interface A5MaliMetalFunction : NSObject

@@ -23,6 +23,14 @@ static NSError *libraryError(NSString *reason)
         userInfo:@{NSLocalizedDescriptionKey: reason}];
 }
 
+/* Typed getters observed in the staged iOS 16.7.16 descriptor. These are
+ * optional on a host SDK; never infer a private ivar offset from its layout. */
+@interface MTLFunctionDescriptor (A5MaliDescriptorValidation)
+- (NSUInteger)pipelineOptions;
+- (nullable NSDictionary *)pluginData;
+- (nullable NSArray *)privateFunctions;
+@end
+
 @interface A5MaliMetalLibrary () {
     A5MaliRestrictedDevice *_device;
 }
@@ -121,6 +129,35 @@ static NSError *libraryError(NSString *reason)
         type = MTLFunctionTypeFragment;
     else return nil;
     return [[A5MaliMetalFunction alloc] initWithLibrary:self name:name type:type];
+}
+
+- (A5MaliMetalFunction *)newFunctionWithDescriptor:(MTLFunctionDescriptor *)descriptor
+                                            error:(NSError * _Nullable * _Nullable)error
+{
+    if (![descriptor isMemberOfClass:[MTLFunctionDescriptor class]]) {
+        if (error) *error = libraryError(@"a plain function descriptor is required");
+        return nil;
+    }
+    /* QuartzCore uses this selector for both ordinary and specialized shaders.
+     * Only the two already authenticated, unspecialized translations exist.
+     * In particular, an empty constants object is not evidence that all of a
+     * shader's specialization defaults match our translated program. */
+    MTLFunctionDescriptor *snapshot = [descriptor copy];
+    if (snapshot.constantValues || snapshot.specializedName || snapshot.options ||
+        snapshot.binaryArchives.count ||
+        ([snapshot respondsToSelector:@selector(pipelineOptions)] &&
+         snapshot.pipelineOptions) ||
+        ([snapshot respondsToSelector:@selector(pluginData)] &&
+         snapshot.pluginData) ||
+        ([snapshot respondsToSelector:@selector(privateFunctions)] &&
+         snapshot.privateFunctions.count)) {
+        if (error) *error = libraryError(@"function specialization and archives are unsupported");
+        return nil;
+    }
+    A5MaliMetalFunction *function = [self newFunctionWithName:snapshot.name];
+    if (!function && error)
+        *error = libraryError(@"function is outside the authenticated read_surf pair");
+    return function;
 }
 
 @end

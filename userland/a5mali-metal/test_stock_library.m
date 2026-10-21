@@ -27,6 +27,72 @@ static MTLRenderPipelineDescriptor *descriptor(A5MaliMetalLibrary *library)
     return desc;
 }
 
+@interface MTLFunctionDescriptor (A5MaliDescriptorTest)
+- (void)setPipelineOptions:(NSUInteger)options;
+- (void)setPluginData:(NSDictionary *)data;
+- (void)setPrivateFunctions:(NSArray *)functions;
+@end
+
+static void rejectFunction(A5MaliMetalLibrary *library,
+                          MTLFunctionDescriptor *descriptor)
+{
+    NSError *error = nil;
+    assert(![library newFunctionWithDescriptor:descriptor error:&error]);
+    assert(error.code == kIOReturnUnsupported);
+    assert([error.domain isEqualToString:@"com.orhunnx.a5xelte.mali"]);
+    assert(![library newFunctionWithDescriptor:descriptor error:NULL]);
+}
+
+static void functionDescriptors(A5MaliMetalLibrary *library)
+{
+    for (NSString *name in library.functionNames) {
+        MTLFunctionDescriptor *desc = [MTLFunctionDescriptor functionDescriptor];
+        desc.name = name;
+        NSError *error = nil;
+        A5MaliMetalFunction *function =
+            [library newFunctionWithDescriptor:desc error:&error];
+        assert(function && !error && function.library == library);
+        assert([function.name isEqualToString:name]);
+        assert(function.functionType == ([name hasSuffix:@"vert"] ?
+            MTLFunctionTypeVertex : MTLFunctionTypeFragment));
+    }
+
+    rejectFunction(library, nil);
+    rejectFunction(library, (MTLFunctionDescriptor *)[NSObject new]);
+    MTLFunctionDescriptor *desc = [MTLFunctionDescriptor functionDescriptor];
+    rejectFunction(library, desc);
+    desc.name = @"unimplemented_frag";
+    rejectFunction(library, desc);
+    desc.name = @"read_surf_frag";
+    desc.constantValues = [MTLFunctionConstantValues new];
+    rejectFunction(library, desc);
+    desc.constantValues = nil;
+    desc.specializedName = @"";
+    rejectFunction(library, desc);
+    desc.specializedName = nil;
+    desc.options = MTLFunctionOptionCompileToBinary;
+    rejectFunction(library, desc);
+    desc.options = MTLFunctionOptionNone;
+    desc.binaryArchives = @[(id<MTLBinaryArchive>)[NSObject new]];
+    rejectFunction(library, desc);
+    desc.binaryArchives = nil;
+    if ([desc respondsToSelector:@selector(setPipelineOptions:)]) {
+        [desc setPipelineOptions:1];
+        rejectFunction(library, desc);
+        [desc setPipelineOptions:0];
+    }
+    if ([desc respondsToSelector:@selector(setPluginData:)]) {
+        [desc setPluginData:@{}];
+        rejectFunction(library, desc);
+        [desc setPluginData:nil];
+    }
+    if ([desc respondsToSelector:@selector(setPrivateFunctions:)]) {
+        [desc setPrivateFunctions:@[[NSObject new]]];
+        rejectFunction(library, desc);
+        [desc setPrivateFunctions:@[]];
+    }
+}
+
 int main(void)
 {
     @autoreleasepool {
@@ -68,6 +134,7 @@ int main(void)
         assert(vertex.functionType == MTLFunctionTypeVertex);
         assert(fragment.functionType == MTLFunctionTypeFragment);
         assert(vertex.library == fragment.library);
+        functionDescriptors(library);
 
         NSData *stockBytes = [NSData dataWithContentsOfURL:url];
         dispatch_data_t stockData = dispatch_data_create(stockBytes.bytes,

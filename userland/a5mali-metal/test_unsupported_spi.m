@@ -5,6 +5,29 @@
 typedef struct { uint32_t words[3]; } SampleBuffer;
 struct MPSFunctionTable;
 @interface A5MaliRestrictedDevice (SPIResourceTestDeclarations)
+- (id)newPipelineLibraryWithFilePath:(NSString *)path error:(NSError **)error;
+- (id)newLibraryWithFile:(NSString *)path error:(NSError **)error;
+- (void)newLibraryWithSource:(NSString *)source options:(MTLCompileOptions *)options
+    completionHandler:(MTLNewLibraryCompletionHandler)handler;
+- (id)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+    options:(MTLPipelineOption)options reflection:(MTLRenderPipelineReflection **)reflection
+    error:(NSError **)error;
+- (void)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+    completionHandler:(MTLNewRenderPipelineStateCompletionHandler)handler;
+- (void)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+    options:(MTLPipelineOption)options
+    completionHandler:(MTLNewRenderPipelineStateWithReflectionCompletionHandler)handler;
+- (id)newComputePipelineStateWithFunction:(id<MTLFunction>)function
+    options:(MTLPipelineOption)options reflection:(MTLComputePipelineReflection **)reflection
+    error:(NSError **)error;
+- (void)newComputePipelineStateWithFunction:(id<MTLFunction>)function
+    completionHandler:(MTLNewComputePipelineStateCompletionHandler)handler;
+- (void)newComputePipelineStateWithFunction:(id<MTLFunction>)function
+    options:(MTLPipelineOption)options
+    completionHandler:(MTLNewComputePipelineStateWithReflectionCompletionHandler)handler;
+- (void)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)descriptor
+    options:(MTLPipelineOption)options
+    completionHandler:(MTLNewComputePipelineStateWithReflectionCompletionHandler)handler;
 - (NSUInteger)featureProfile;
 - (NSUInteger)doubleFPConfig;
 - (NSUInteger)singleFPConfig;
@@ -26,6 +49,12 @@ struct MPSFunctionTable;
     completionHandler:(MTLNewRenderPipelineStateCompletionHandler)handler;
 - (id)newRenderPipelineStateWithTileDescriptor:(MTLTileRenderPipelineDescriptor *)descriptor
     error:(NSError **)error;
+- (id)newRenderPipelineStateWithTileDescriptor:(MTLTileRenderPipelineDescriptor *)descriptor
+    options:(MTLPipelineOption)options reflection:(MTLRenderPipelineReflection **)reflection
+    error:(NSError **)error;
+- (void)newRenderPipelineStateWithTileDescriptor:(MTLTileRenderPipelineDescriptor *)descriptor
+    options:(MTLPipelineOption)options
+    completionHandler:(MTLNewRenderPipelineStateWithReflectionCompletionHandler)handler;
 - (id)newTextureWithBytesNoCopy:(void *)bytes length:(NSUInteger)length
     descriptor:(MTLTextureDescriptor *)descriptor deallocator:(void (^)(void *, NSUInteger))deallocator;
 - (BOOL)reserveGPUAddressRange:(NSRange)range;
@@ -38,10 +67,31 @@ struct MPSFunctionTable;
 @end
 @interface SPIResourceFixture : A5MaliRestrictedDevice
 @property (nonatomic) NSUInteger bufferCalls;
+@property (nonatomic) NSUInteger libraryCalls;
+@property (nonatomic) NSUInteger pipelineCalls;
+@property (nonatomic, strong) NSURL *lastLibraryURL;
+@property (nonatomic, strong) MTLRenderPipelineDescriptor *lastRenderDescriptor;
+@property (nonatomic, strong) id fixtureResult;
+@property (nonatomic, strong) NSError *fixtureError;
 @end
 @implementation SPIResourceFixture
 - (A5MaliPrivateBuffer *)newBufferWithLength:(NSUInteger)length options:(MTLResourceOptions)options
 { (void)length; (void)options; ++self.bufferCalls; return nil; }
+- (A5MaliMetalLibrary *)newLibraryWithURL:(NSURL *)url error:(NSError **)error
+{
+    ++self.libraryCalls;
+    self.lastLibraryURL = url;
+    if (error) *error = self.fixtureError;
+    return self.fixtureError ? nil : self.fixtureResult;
+}
+- (id)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+    error:(NSError **)error
+{
+    ++self.pipelineCalls;
+    self.lastRenderDescriptor = descriptor;
+    if (error) *error = self.fixtureError;
+    return self.fixtureError ? nil : self.fixtureResult;
+}
 @end
 
 static void expectUnsupported(void (^action)(void))
@@ -55,10 +105,118 @@ static void expectUnsupported(void (^action)(void))
     }
     assert(raised);
 }
+static void nativeBuilderGuards(SPIResourceFixture *device)
+{
+    NSError *error = nil;
+    assert(![device newPipelineLibraryWithFilePath:@"/pipeline.metallib" error:&error]);
+    assert(error.code == kIOReturnUnsupported && !device.libraryCalls);
+    assert(![device newPipelineLibraryWithFilePath:nil error:NULL]);
+    device.fixtureResult = [NSObject new];
+    error = nil;
+    assert(![device newLibraryWithFile:nil error:&error]);
+    assert(error.code == kIOReturnBadArgument && !device.libraryCalls);
+    assert(![device newLibraryWithFile:@"" error:NULL] && !device.libraryCalls);
+    id result = [device newLibraryWithFile:@"/tmp/exact-library.metallib" error:&error];
+    assert(result == device.fixtureResult && !error && device.libraryCalls == 1);
+    assert([device.lastLibraryURL.path isEqualToString:@"/tmp/exact-library.metallib"]);
+    device.fixtureError = [NSError errorWithDomain:@"fixture-authentication-failure"
+        code:42 userInfo:nil];
+    assert(![device newLibraryWithFile:@"/tmp/wrong.metallib" error:&error]);
+    assert(error == device.fixtureError && device.libraryCalls == 2);
+    __block NSUInteger callbacks = 0;
+    [device newLibraryWithSource:@"kernel void x() {}" options:nil
+        completionHandler:^(id<MTLLibrary> library, NSError *failure) {
+            assert(!library && failure.code == kIOReturnUnsupported);
+            ++callbacks;
+        }];
+    assert(callbacks == 1 && device.libraryCalls == 2);
+    [device newLibraryWithSource:@"" options:nil completionHandler:nil];
+
+    MTLRenderPipelineDescriptor *descriptor = [MTLRenderPipelineDescriptor new];
+    MTLRenderPipelineReflection *reflection = (id)[NSObject new];
+    device.fixtureError = nil;
+    result = [device newRenderPipelineStateWithDescriptor:descriptor options:0
+        reflection:&reflection error:&error];
+    assert(result == device.fixtureResult && !error && !reflection);
+    assert(device.pipelineCalls == 1 && device.lastRenderDescriptor == descriptor);
+    reflection = (id)[NSObject new];
+    assert(![device newRenderPipelineStateWithDescriptor:descriptor
+        options:MTLPipelineOptionBindingInfo reflection:&reflection error:&error]);
+    assert(!reflection && error.code == kIOReturnUnsupported && device.pipelineCalls == 1);
+    callbacks = 0;
+    [device newRenderPipelineStateWithDescriptor:descriptor
+        completionHandler:^(id<MTLRenderPipelineState> state, NSError *failure) {
+            assert(state == device.fixtureResult && !failure); ++callbacks;
+        }];
+    assert(callbacks == 1 && device.pipelineCalls == 2);
+    callbacks = 0;
+    [device newRenderPipelineStateWithDescriptor:descriptor options:0
+        completionHandler:^(id<MTLRenderPipelineState> state,
+            MTLRenderPipelineReflection *details, NSError *failure) {
+            assert(state == device.fixtureResult && !details && !failure); ++callbacks;
+        }];
+    assert(callbacks == 1 && device.pipelineCalls == 3);
+    callbacks = 0;
+    [device newRenderPipelineStateWithDescriptor:descriptor options:MTLPipelineOptionBindingInfo
+        completionHandler:^(id<MTLRenderPipelineState> state,
+            MTLRenderPipelineReflection *details, NSError *failure) {
+            assert(!state && !details && failure.code == kIOReturnUnsupported); ++callbacks;
+        }];
+    assert(callbacks == 1 && device.pipelineCalls == 3);
+    device.fixtureError = [NSError errorWithDomain:@"fixture-unsupported-pipeline"
+        code:43 userInfo:nil];
+    callbacks = 0;
+    [device newRenderPipelineStateWithDescriptor:descriptor options:0
+        completionHandler:^(id<MTLRenderPipelineState> state,
+            MTLRenderPipelineReflection *details, NSError *failure) {
+            assert(!state && !details && failure == device.fixtureError); ++callbacks;
+        }];
+    assert(callbacks == 1 && device.pipelineCalls == 4);
+    [device newRenderPipelineStateWithDescriptor:descriptor completionHandler:nil];
+    assert(device.pipelineCalls == 4);
+
+    MTLComputePipelineReflection *computeReflection = (id)[NSObject new];
+    assert(![device newComputePipelineStateWithFunction:nil options:0
+        reflection:&computeReflection error:&error]);
+    assert(!computeReflection && error.code == kIOReturnUnsupported);
+    callbacks = 0;
+    [device newComputePipelineStateWithFunction:nil
+        completionHandler:^(id<MTLComputePipelineState> state, NSError *failure) {
+            assert(!state && failure.code == kIOReturnUnsupported); ++callbacks;
+        }];
+    assert(callbacks == 1);
+    callbacks = 0;
+    [device newComputePipelineStateWithFunction:nil options:0
+        completionHandler:^(id<MTLComputePipelineState> state,
+            MTLComputePipelineReflection *details, NSError *failure) {
+            assert(!state && !details && failure.code == kIOReturnUnsupported); ++callbacks;
+        }];
+    assert(callbacks == 1);
+    callbacks = 0;
+    [device newComputePipelineStateWithDescriptor:[MTLComputePipelineDescriptor new] options:0
+        completionHandler:^(id<MTLComputePipelineState> state,
+            MTLComputePipelineReflection *details, NSError *failure) {
+            assert(!state && !details && failure.code == kIOReturnUnsupported); ++callbacks;
+        }];
+    assert(callbacks == 1);
+    MTLTileRenderPipelineDescriptor *tile = [MTLTileRenderPipelineDescriptor new];
+    reflection = (id)[NSObject new];
+    assert(![device newRenderPipelineStateWithTileDescriptor:tile options:0
+        reflection:&reflection error:&error]);
+    assert(!reflection && error.code == kIOReturnUnsupported);
+    callbacks = 0;
+    [device newRenderPipelineStateWithTileDescriptor:tile options:0
+        completionHandler:^(id<MTLRenderPipelineState> state,
+            MTLRenderPipelineReflection *details, NSError *failure) {
+            assert(!state && !details && failure.code == kIOReturnUnsupported); ++callbacks;
+        }];
+    assert(callbacks == 1);
+}
 int main(void)
 {
     @autoreleasepool {
         SPIResourceFixture *device = [SPIResourceFixture new];
+        nativeBuilderGuards(device);
         assert(device.featureProfile == NSUIntegerMax &&
             !device.doubleFPConfig && !device.halfFPConfig && !device.singleFPConfig);
         assert(![device copyIOSurfaceSharedTextureProperties:@{}]);
