@@ -1,0 +1,95 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -136,6 +136,14 @@
+ 	uint64_t      fPerfDropped;
+ 	uint64_t      fPerfAgeNS;
+ 	uint64_t      fPerfMaxAgeNS;
++	uint64_t      fPerfGPUFrames;
++	uint64_t      fPerfGPUBytes;
++	uint64_t      fPerfCPUFrames;
++	uint64_t      fPerfCPUBytes;
++	uint64_t      fPerfGPUIneligible;
++	uint64_t      fPerfGPURect;
++	uint64_t      fPerfGPUSource;
++	uint64_t      fPerfGPUFallback;
+ 	struct sweet_surface_perf_counts fPerfSurfaceStart;
+ #endif
+ 	bool          fPowerOff;      /* RequestPowerChange(0) */
+@@ -242,6 +250,8 @@
+ 	fPerfLog = perf != 0;
+ 	fPerfFrames = fPerfBytes = fPerfNS = fPerfMaxNS = 0;
+ 	fPerfSwaps = fPerfDropped = fPerfAgeNS = fPerfMaxAgeNS = 0;
++	fPerfGPUFrames = fPerfGPUBytes = fPerfCPUFrames = fPerfCPUBytes = 0;
++	fPerfGPUIneligible = fPerfGPURect = fPerfGPUSource = fPerfGPUFallback = 0;
+ 	fPerfWindowStart = mach_absolute_time();
+ 	sweet_surface_perf_snapshot(&fPerfSurfaceStart);
+ 	int gpuCopy = 0;
+@@ -390,8 +400,20 @@
+ 		    surfaces.unlocks - fb->fPerfSurfaceStart.unlocks,
+ 		    surfaces.writeUnlocks - fb->fPerfSurfaceStart.writeUnlocks,
+ 		    elapsedNS / 1000000);
++		/* The historical bytes/time line includes Mali presentation work.
++		 * These counts distinguish completed GPU panel jobs from CPU copies
++		 * and explain why a candidate swap stayed on the CPU path. */
++		IOLog("A5XELTE FB: present gpu=%llu gpu_bytes=%llu cpu=%llu cpu_bytes=%llu gpu_ineligible=%llu gpu_rect=%llu gpu_source=%llu gpu_fallback=%llu\n",
++		    fb->fPerfGPUFrames, fb->fPerfGPUBytes,
++		    fb->fPerfCPUFrames, fb->fPerfCPUBytes,
++		    fb->fPerfGPUIneligible, fb->fPerfGPURect,
++		    fb->fPerfGPUSource, fb->fPerfGPUFallback);
+ 		fb->fPerfFrames = fb->fPerfBytes = fb->fPerfNS = fb->fPerfMaxNS = 0;
+ 		fb->fPerfAgeNS = fb->fPerfMaxAgeNS = 0;
++		fb->fPerfGPUFrames = fb->fPerfGPUBytes = 0;
++		fb->fPerfCPUFrames = fb->fPerfCPUBytes = 0;
++		fb->fPerfGPUIneligible = fb->fPerfGPURect = 0;
++		fb->fPerfGPUSource = fb->fPerfGPUFallback = 0;
+ 		fb->fPerfSurfaceStart = surfaces;
+ 		fb->fPerfWindowStart = finished;
+ 	}
+@@ -508,16 +530,31 @@
+ 				const A5G3DFramePresentStatus status =
+ 				    a5g3d_frame_present(s);
+ 				s->release();
+-				if (status == kA5G3DFramePresentCompleted)
++				if (status == kA5G3DFramePresentCompleted) {
++					if (fPerfLog) {
++						fPerfGPUFrames++;
++						fPerfGPUBytes += (uint64_t)fWidth * fHeight * 4;
++					}
+ 					return (uint64_t)fWidth * fHeight * 4;
++				}
+ 				if (status == kA5G3DFramePresentDMAUncertain) {
+ 					fGPUUncertain = true;
+ 					return 0;
+ 				}
++				if (fPerfLog)
++					fPerfGPUFallback++;
+ 			} else if (s) {
++				if (fPerfLog)
++					fPerfGPUSource++;
+ 				s->release();
++			} else if (fPerfLog) {
++				fPerfGPUSource++;
+ 			}
++		} else if (fPerfLog) {
++			fPerfGPURect++;
+ 		}
++	} else if (fGPUCopy && fPerfLog) {
++		fPerfGPUIneligible++;
+ 	}
+ #endif
+ 
+@@ -599,7 +636,13 @@
+ 			}
+ 		}
+ 		s->release();
++	}
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++	if (fPerfLog && copied) {
++		fPerfCPUFrames++;
++		fPerfCPUBytes += copied;
+ 	}
++#endif
+ 	return copied;
+ }
+ 

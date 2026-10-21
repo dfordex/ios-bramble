@@ -10,10 +10,13 @@ Status: source and staged iPhone 8 Plus iOS 16.7.16 image inspection on
    IOMobileFramebuffer swap record. `xnu/iokit/Kernel/arm/SweetFramebuffer.cpp`
    handles `SwapBegin` selector 4 and `SwapEnd` selector 5 (0x46c-byte record),
    and stores the latest record in `AppleCLCD::swap()`.
-2. `AppleCLCD::vsyncFired()` notifies clients on a 60 Hz timer and invokes
-   `AppleCLCD::present()` when a pending frame is eligible. `present()` looks up
-   each surface by ID and copies BGRA rectangles row by row from its kernel
-   mapping into the 1080x1920 DECON scanout buffer at `0x67000000`.
+2. `AppleCLCD::vsyncFired()` notifies clients on a timer and invokes
+   `AppleCLCD::present()` when a pending frame is eligible. For an exact single
+   full-screen layer, patches 0144–0146 can transfer an IOSurface to the
+   1080x1920 DECON scanout buffer at `0x67000000` through Mali. Other cases
+   retain the CPU row-copy path. The 0146 phone log completed five full-frame
+   GPU tiler/fragment pairs; the user observed a normal home screen with
+   similar speed to the previous build.
 3. `xnu/iokit/Kernel/arm/SweetSurface.cpp` provides `IOCoreSurfaceRoot` and
    `IOSurfaceRootUserClient`. It implements create (selector 0), lookup (4),
    limits (13), lookup from Mach port (34), and create port (35). Lock/unlock
@@ -34,8 +37,11 @@ frames copied to scanout; `superseded` counts pending swaps replaced by newer
 ones before a vsync. `avg_wait_us` measures SwapEnd-to-present queue time,
 while `avg_copy_us` measures the final CPU copy. The `surf_create`, `lock`,
 `unlock`, and `write_unlock` deltas count IOSurface activity in the same
-window. These counters use the existing `a5fb_perf` switch and contain no
-per-frame logging. If `swaps` is already low while `avg_copy_us` is small,
+window. Since 0144, `bytes` includes both CPU and GPU transfers and
+`avg_copy_us` measures the whole final presentation call, including Mali
+queue work. Patch 0147 adds separate GPU/CPU frame and byte counts. These
+counters use the existing `a5fb_perf` switch and contain no per-frame logging.
+If `swaps` is already low while final presentation time is small,
 the delay is upstream of final presentation. The counters do not imply a
 GPU-backed IOSurface or GPU rendering.
 
@@ -73,9 +79,15 @@ the running port currently reaches all of them:
 These userland components target Apple's A11 AGX graphics stack. The Linux
 Panfrost/DRM API used by the Exynos7580's Mali-T720 cannot be substituted for
 the IOGPU/Metal contract simply by adding a kernel service name. The port's
-current XNU source has no `IOGPU` or `IOAccelerator` implementation, and its
-private Mali job fixture does not import an IOSurface or execute iOS Metal
-commands.
+current XNU source has no `IOGPU` or `IOAccelerator` implementation. Its
+private Mali fixture can read a real IOSurface and present eligible full-screen
+frames, but it does not execute iOS Metal commands. The 0146 phone log shows
+`backboardd` repeatedly matching `IOAcceleratorES` with zero services found.
+Patches 0148–0149 add an opt-in, entitlement-gated private IOSurface resource
+client and one fixed 16 by 16 tile sampling job. They are deliberately not
+advertised as an Apple GPU service and cannot redirect stock iOS rendering.
+The client and its iOS diagnostic executable have compiled locally but have
+not been exercised on the phone.
 
 ## Smallest useful stages
 

@@ -1,7 +1,7 @@
 # iOS Metal backend boundary on Mali T720
 
 This note records local inspection of the staged iOS 16.7.16 root and the
-private XNU GPU work through patches 0142 and 0143. It does not include Apple
+private XNU GPU work through patch 0149. It does not include Apple
 binaries, command streams, or IPSW content. A private GPU fixture and an iOS
 Metal rendering path are separate milestones.
 
@@ -16,9 +16,12 @@ binary in a local temporary directory finds
 `AGXMetalA11` links to IOGPU, IOKit, IOSurface, and Metal. These are Apple
 AGX-specific objects and are not a Midgard job encoder.
 
-Metal exports `MTLCreateSystemDefaultDevice` and contains a bundle discovery
-path under `/System/Library/Extensions`. It checks that a candidate device
-conforms to the `MTLDevice` protocol. QuartzCore imports
+Metal exports `MTLCreateSystemDefaultDevice` and `_MTLAddDevice`, and contains
+a bundle discovery path under `/System/Library/Extensions`. Local binary
+inspection indicates that candidate registration checks `MTLDevice` and
+private `MTLDeviceSPI` conformance. This is a candidate insertion path; it
+does not establish that an unsigned third-party bundle will load on the
+phone. QuartzCore imports
 `MTLCreateSystemDefaultDevice` and `IOSurfaceAcceleratorCreate`, and contains
 references to `AGXAccelerator` and `IOAcceleratorES`. This gives a concrete
 insertion point for a **new Mali Metal implementation**: an extension bundle
@@ -43,26 +46,35 @@ binary cannot be pointed at a Mali service and expected to emit Midgard jobs.
 Patch 0142 adds a private bounded 16 by 16 BGRA tile transfer: kernel code
 copies a retained IOSurface tile to queue-owned backing, submits known
 Midgard tiler and fragment jobs, waits for fences, and compares 256 pixels.
-Patch 0143 adds a private exact-frame mapping lease for the 1080 by 1920
-BGRA source at 4352 bytes per row and the panel at 4320 bytes per row. It maps source and panel destination into Mali's
-address space under a composite queue lock. There is no verified full-frame
-job descriptor, user mapping protocol, or per-client resource/fence contract
-yet. Neither patch accepts iOS Metal command buffers.
+Patch 0143 adds an exact-frame mapping lease for the 1080 by 1920 BGRA source
+at 4352 bytes per row and the panel at 4320 bytes per row. Patches 0144 and
+0146 add a private full-panel Mali copy for exact single-layer swaps and reset
+the reused descriptor fixture before each live job. The 0146 device log
+completed five full-frame tiler/fragment pairs without a recorded GPU fault;
+unsupported frames can still use the CPU copy path. The current transfer-byte
+counter includes both paths, so it does not establish their exact ratio. There
+is no iOS Metal command-buffer parser or general command submission protocol.
+Patches 0148–0149 add an opt-in, entitlement-gated private client with
+versioned IOSurface import/release and one fixed 16 by 16 sampling operation.
+The returned fences cover only that bounded fixture. The client is not an
+IOGPU or IOAccelerator service, and it has not been tested on the phone.
 
-The current framebuffer path still uses CPU presentation. A GPU tile test,
-GPU-written diagnostic square, or even a future GPU framebuffer copy does
-not move SpringBoard's layer composition, shaders, text and icons to Mali.
+This accelerates eligible final framebuffer transfers. SpringBoard's layer
+composition, shaders, text and icons are still produced without a Mali Metal
+backend. The user observed a normal home screen, with similar speed to the
+previous build. The log covers a mostly unclassified 1,042-second interval;
+its 12 swaps cannot establish interactive frame rate.
 
 ## Minimum route to system composition
 
-1. Prove a complete full-frame Midgard job from a retained IOSurface to the
-   scanout buffer, including page lifetime, cache maintenance, fence status,
-   teardown and error recovery. Compare output pixels and frame time on the
-   phone. This is accelerated presentation only.
-2. Define a versioned, bounded private userclient for **that tested set of
-   operations**, with per-task ownership, validated IOSurface Mach rights,
-   opaque resource handles, finite waits, and queue poisoning on ambiguous
-   completion. Do not publish it while 0143 only provides a map lease.
+1. Complete the full-frame Midgard path with producer-completion fencing,
+   synchronized panel ownership, page lifetime, cache maintenance, teardown
+   and fault recovery. Compare output pixels and frame time on the phone. The
+   current fence covers Mali completion, not completion of the iOS producer.
+2. Device-test the 0148–0149 private userclient, including entitlement
+   acceptance, IOSurface ownership, pixel result, fault handling and bounded
+   wait behavior. Extend it only for GPU operations that can be verified on
+   hardware.
 3. Implement a Mali-compatible Metal userland backend that Metal can discover.
    Its `MTLDevice` must create functional queues, buffers, textures, samplers,
    render/compute pipelines and command buffers. Shader translation to
@@ -75,4 +87,4 @@ not move SpringBoard's layer composition, shaders, text and icons to Mali.
 The opt-in `a5metalprobe=1` and `sweetiolog=backboardd,SpringBoard` traces
 from patches 0137 and 0141 can identify service matches and opens during this
 work. They do not reveal the complete private method ABI or prove rendering.
-No IOAccelerator/IOGPU alias or userclient is added by this note.
+No IOAccelerator/IOGPU alias is added by these patches.
