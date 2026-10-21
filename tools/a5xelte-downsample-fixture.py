@@ -10,7 +10,7 @@ from pathlib import Path
 import struct
 
 
-EXPECTED_SHA256 = '6f36c5ebe509919566ecfc1f5fd09db92e98dcb763a860778fae71c8c06dc07c'
+EXPECTED_SHA256 = 'e983a6f5b98a1bbe6aee46d627c1729931ffa6751f469eedb6895a57c92d0a11'
 EXPECTED_SIZE = 0x4000
 BASE = 0x02000000
 
@@ -33,7 +33,7 @@ def validate(data):
     if struct.unpack_from('<I', data, 0x28)[0] != 5 << 26:
         raise ValueError('downsample4 vertex job task split must match release Panfrost')
     producer = (struct.unpack_from('<I', data, 0x7d0)[0] >> 10) & 0x3fffff
-    if producer != ((141 << 12) | 0x688):
+    if producer != ((141 << 12) | 0xb08):
         raise ValueError('downsample4 VS UV descriptor must use RG32UI for ST_VARY.u32')
     if struct.unpack_from('<II', data, 0x220) != (0, 0x00010001):
         raise ValueError('downsample4 fragment bounds must cover tiles 0..1 on both axes')

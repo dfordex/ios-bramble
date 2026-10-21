@@ -218,3 +218,26 @@ static findings as proof of the new candidate's phone result. See the latest
 [A5 progress entry](../A5XELTE_PROGRESS.md) for build, installation and pixel evidence.
 General Metal pipeline/resource coverage, asynchronous IRQ/reset/PM architecture
 and the swizzle/LOD hypotheses are not claimed completed by these source fixes.
+
+## 0170 device result and native UV continuation
+
+Recovered0170 execution fixes all four vertex positions and point sizes and
+writes all1,024 destination pixels, with successful vertex/fragment fences and
+MMU IRQ0. The image still fails:225/1,024 reference matches, all pixels opaque
+black, and all four UV outputs zero. Source and guard allocations are intact.
+The saved window ends near60 seconds and does not establish later iOS rendering.
+
+The continued pinned Mesa26.2.4 comparison found two further exact differences:
+`src/panfrost/lib/pan_format.c:438,452` uses RG01 for RG32UI/RG32F,
+encoded0xb08; our helper used RGBA0x688. `src/panfrost/lib/pan_shader.h:192`
+uses the compiler attribute count; the actual DS4 VS count is2, not the4
+entries reserved in the input layout. Candidate0171 corrects these five packed
+words. The four shader blobs, texture-view swizzle, LOD, UBOs and CPU pixel
+oracle are unchanged. Neither mismatch is yet proven to cause the zero UVs.
+
+Patch0171 starts the32-byte UV output at a nonzero canary and adds an adjacent
+16-byte guard, input UVs and raw attribute/buffer/UBO2 readback after terminal
+GPU completion and cache invalidation. It distinguishes omitted stores from
+written zeros without substituting a shader or synthesizing UV output on CPU.
+The original U32-producer/F32-consumer contract remains: it is intentional in
+released Panfrost and matches actual ST_VARY.u32/LD_VARY.f32 instructions.

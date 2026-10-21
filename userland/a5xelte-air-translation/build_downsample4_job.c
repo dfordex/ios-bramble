@@ -20,6 +20,8 @@ enum {
    PRIVATE_BYTES = 0xc000,
    PSIZ_SWIZZLE = MALI_CHANNEL_R | (MALI_CHANNEL_0 << 3) |
       (MALI_CHANNEL_0 << 6) | (MALI_CHANNEL_1 << 9),
+   RG_SWIZZLE = MALI_CHANNEL_R | (MALI_CHANNEL_G << 3) |
+      (MALI_CHANNEL_0 << 6) | (MALI_CHANNEL_1 << 9),
    VERTEX_JOB = 0, TILER_JOB = 0x100, FRAGMENT_JOB = 0x200,
    FB = 0x300, VS_RSD = 0x500, FS_RSD = 0x540,
    TEXTURE = 0x600, SURFACE = 0x620, TEX_TABLE = 0x660,
@@ -174,7 +176,7 @@ static void renderer_states(uint8_t *d, uint64_t va)
    pan_pack((struct mali_renderer_state_packed *)(d + VS_RSD),
             RENDERER_STATE, cfg) {
       cfg.shader.shader = va + VS_SHADER + 5;
-      cfg.shader.attribute_count = 4; /* real interleaved QC attribute layout */
+      cfg.shader.attribute_count = 2; /* actual compiler attributes_read_count */
       cfg.shader.varying_count = 3; /* position, point size, texcoord0 */
       cfg.properties.uniform_buffer_count = 3;
       cfg.properties.work_register_count = 8;
@@ -227,7 +229,11 @@ static void attribute(uint8_t *d, unsigned at, unsigned buffer,
    pan_pack((struct mali_attribute_packed *)(d + at), ATTRIBUTE, cfg) {
       cfg.buffer_index = buffer;
       cfg.offset_enable = true;
-      cfg.format = (format << 12) | 0x688;
+      /* Match released pan_format.c: two-channel formats use RG01,
+       * four-channel/SNAP_4 use RGBA. Do not request nonexistent B/A. */
+      unsigned swizzle = (format == MALI_RG32F || format == MALI_RG32UI) ?
+         RG_SWIZZLE : 0x688;
+      cfg.format = (format << 12) | swizzle;
       cfg.offset = offset;
    }
 }
@@ -447,8 +453,9 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
    const unsigned offsets[] = {0, 16, 24, 32};
    for (unsigned i = 0; i < 4; ++i) {
       pan_unpack((const struct mali_attribute_packed *)(d + VS_ATTRS + i * 8), ATTRIBUTE, attr);
+      const unsigned swizzle = formats[i] == MALI_RG32F ? RG_SWIZZLE : 0x688;
       if (attr.buffer_index || attr.offset != offsets[i] ||
-          attr.format != ((formats[i] << 12) | 0x688)) return 0;
+          attr.format != ((formats[i] << 12) | swizzle)) return 0;
    }
    const unsigned vs_offsets[] = {VS_PUSH, MVP_DATA, TEXMAT_DATA};
    const unsigned vs_sizes[] = {5, 4, 1};
@@ -478,7 +485,7 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
       vd.thread_storage == va + FB && vd.fbd == va + FB &&
       td.thread_storage == va + FB && td.fbd == va + FB &&
       td.uniform_buffers == va + FS_UBO_DESC && td.position == va + POS_BUF &&
-      vs.shader.shader == va + VS_SHADER + 5 && vs.shader.attribute_count == 4 &&
+      vs.shader.shader == va + VS_SHADER + 5 && vs.shader.attribute_count == 2 &&
       vs.shader.varying_count == 3 && vs.properties.work_register_count == 8 &&
       vs.properties.uniform_buffer_count == 3 && fs.shader.shader == va + FS_SHADER + 5 &&
       fs.properties.uniform_buffer_count == 5 && fs.properties.work_register_count == 7 &&
@@ -489,8 +496,8 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
       ab.pointer == va + VERTEX_DATA && ab.stride == 48 && ab.size == 192 &&
       pos_attr.buffer_index == 0 && pos_attr.format == ((MALI_SNAP_4 << 12) | 0x688) &&
       ps_attr.buffer_index == 1 && ps_attr.format == ((MALI_R16F << 12) | PSIZ_SWIZZLE) &&
-      uv_attr.buffer_index == 2 && uv_attr.format == ((MALI_RG32UI << 12) | 0x688) &&
-      fs_uv_attr.buffer_index == 0 && fs_uv_attr.format == ((MALI_RG32F << 12) | 0x688) &&
+      uv_attr.buffer_index == 2 && uv_attr.format == ((MALI_RG32UI << 12) | RG_SWIZZLE) &&
+      fs_uv_attr.buffer_index == 0 && fs_uv_attr.format == ((MALI_RG32F << 12) | RG_SWIZZLE) &&
       ps.pointer == va + PSIZ_BUF && ps.stride == 2 && ps.size == 8 &&
       uv.pointer == va + UV_BUF && uv.stride == 8 && fi.pointer == uv.pointer &&
       surface.pointer == va + SOURCE && surface.row_stride == 256 &&
