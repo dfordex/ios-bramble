@@ -1,0 +1,414 @@
+diff --git a/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp b/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
+index 19d3c11..0a7dd75 100644
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
+@@ -7,6 +7,7 @@
+
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ #include "A5XELTEGPUUserClient.h"
++#include "A5XELTEGPUUserClientBatch.h"
+ #include "A5XELTEGPUResources.h"
+ #include "A5XELTEGPUTransfer.h"
+ #include "A5XELTEGPUAS1.h"
+@@ -27,6 +28,12 @@ static_assert(sizeof(A5GPUClientHeader) == 16 &&
+     sizeof(A5GPUClientUnmapRequest) == 24 &&
+     sizeof(A5GPUClientSubmitRequest) == 72 &&
+     sizeof(A5GPUClientSubmitResult) == 40 &&
++    sizeof(A5GPUClientBatchCommand) == 56 &&
++    sizeof(A5GPUClientBatchRequest) == 472 &&
++    sizeof(A5GPUClientBatchItemResult) == 24 &&
++    sizeof(A5GPUClientBatchResult) == 224 &&
++    kAS1SubmitCompleted == kA5GPUClientBatchCompleted &&
++    kAS1SubmitInvalid == kA5GPUClientBatchInvalid &&
+     kA5GPUClientTilePixels == kA5G3DTransferTilePixels,
+     "A5XELTE GPU resource protocol layout changed");
+
+@@ -54,6 +61,11 @@ class A5XELTEGPUUserClient : public IOUserClient {
+     IOReturn mapSurface(IOExternalMethodArguments *args);
+     IOReturn unmapSurface(IOExternalMethodArguments *args);
+     IOReturn submitTyped(IOExternalMethodArguments *args);
++    IOReturn submitBatch(IOExternalMethodArguments *args);
++    IOReturn submitOneLocked(const A5GPUClientBatchCommand &,
++        A5GPUClientBatchItemResult *);
++    static bool runBatchOne(void *, const A5GPUClientBatchCommand *,
++        A5GPUClientBatchItemResult *);
+
+ public:
+     bool initWithTask(task_t owningTask, void *securityID, UInt32 type)
+@@ -188,7 +200,7 @@ A5XELTEGPUUserClient::query(IOExternalMethodArguments *args)
+     result.header.version = kA5GPUClientVersion;
+     result.header.size = sizeof(result);
+     result.maxResources = kA5GPUClientMaxResources;
+-    result.supportedOperations = 63; /* import/release/sample/map/unmap/submit */
++    result.supportedOperations = 127; /* selectors 1..7, including batch */
+     result.gpuCommandsSupported = 15; /* sample, BGRA clear/copy/quad */
+     memcpy(args->structureOutput, &result, sizeof(result));
+     args->structureOutputSize = sizeof(result);
+@@ -420,52 +432,30 @@ A5XELTEGPUUserClient::sampleTile(IOExternalMethodArguments *args)
+ }
+
+ IOReturn
+-A5XELTEGPUUserClient::submitTyped(IOExternalMethodArguments *args)
++A5XELTEGPUUserClient::submitOneLocked(
++    const A5GPUClientBatchCommand &request, A5GPUClientBatchItemResult *item)
+ {
+-    if (!a5gpu_valid_input(args, sizeof(A5GPUClientSubmitRequest)) ||
+-        !args->structureOutput ||
+-        args->structureOutputSize < sizeof(A5GPUClientSubmitResult))
++    /* fLock is held from resource validation through the terminal fence.
++     * This serialises user-client submissions, map/unmap and release, even
++     * when source and destination alias across adjacent batch commands. */
++    if (!item)
++        return kIOReturnBadArgument;
++    if (!a5gpu_valid_batch_command(request))
+         return kIOReturnBadArgument;
+-    A5GPUClientSubmitRequest request = {};
+-    memcpy(&request, args->structureInput, sizeof(request));
+-    if (!a5gpu_valid_header(&request.header, sizeof(request)))
+-        return kIOReturnUnsupported;
+     const uint32_t dst = static_cast<uint32_t>(request.destinationToken);
+-    const uint32_t dstGeneration =
+-        static_cast<uint32_t>(request.destinationToken >> 32);
+     const uint32_t src = static_cast<uint32_t>(request.sourceToken);
+-    const uint32_t srcGeneration =
+-        static_cast<uint32_t>(request.sourceToken >> 32);
+     const bool samples = request.operation == kA5GPUClientCopyBGRA ||
+         request.operation == kA5GPUClientDrawTexturedQuadBGRA;
+-    if (!dst || dst > 4 || !dstGeneration ||
+-        (request.operation != kA5GPUClientClearBGRA && !samples) ||
+-        (request.operation == kA5GPUClientClearBGRA &&
+-         (request.sourceToken || request.sourceRect.x ||
+-          request.sourceRect.y || request.sourceRect.width ||
+-          request.sourceRect.height)) ||
+-        (samples &&
+-         (!src || src > 4 || !srcGeneration || src == dst ||
+-          request.clearColor)) ||
+-        (request.operation == kA5GPUClientCopyBGRA &&
+-         (request.sourceRect.width != request.destinationRect.width ||
+-          request.sourceRect.height != request.destinationRect.height)))
+-        return kIOReturnBadArgument;
+-    A5GPUClientSubmitResult result = {};
+-    result.header.version = kA5GPUClientVersion;
+-    result.header.size = sizeof(result);
+-    IOLockLock(fLock);
+     const ResourceSlot &target = fSlots[dst - 1];
+     const bool sourceReady = !samples ||
+-        (fSlots[src - 1].mapped &&
+-         fSlots[src - 1].generation == srcGeneration &&
+-         (fSlots[src - 1].usage & kA5GPUClientRead));
+-    if (fClosed || !fAS1 || !target.mapped ||
+-        target.generation != dstGeneration ||
+-        !(target.usage & kA5GPUClientWrite) || !sourceReady) {
+-        IOLockUnlock(fLock);
++        a5gpu_mapped_token_matches(request.sourceToken, src,
++            fSlots[src - 1].generation, fSlots[src - 1].mapped,
++            fSlots[src - 1].usage, kA5GPUClientRead);
++    if (fClosed || !fAS1 ||
++        !a5gpu_mapped_token_matches(request.destinationToken, dst,
++            target.generation, target.mapped, target.usage,
++            kA5GPUClientWrite) || !sourceReady)
+         return kIOReturnNotFound;
+-    }
+     A5G3DAS1Request work = {};
+     work.operation = request.operation == kA5GPUClientCopyBGRA ?
+         kAS1CopyBGRA : request.operation ==
+@@ -479,10 +469,78 @@ A5XELTEGPUUserClient::submitTyped(IOExternalMethodArguments *args)
+         request.destinationRect.width, request.destinationRect.height};
+     work.clearColor = request.clearColor;
+     A5G3DAS1Completion completed = {};
+-    result.status = a5g3d_as1_submit(fAS1, work, &completed);
++    item->status = a5g3d_as1_submit(fAS1, work, &completed);
++    item->tilerFence = completed.tilerFence;
++    item->fragmentFence = completed.fragmentFence;
++    return kIOReturnSuccess;
++}
++
++IOReturn
++A5XELTEGPUUserClient::submitTyped(IOExternalMethodArguments *args)
++{
++    if (!a5gpu_valid_input(args, sizeof(A5GPUClientSubmitRequest)) ||
++        !args->structureOutput ||
++        args->structureOutputSize < sizeof(A5GPUClientSubmitResult))
++        return kIOReturnBadArgument;
++    A5GPUClientSubmitRequest request = {};
++    memcpy(&request, args->structureInput, sizeof(request));
++    if (!a5gpu_valid_header(&request.header, sizeof(request)))
++        return kIOReturnUnsupported;
++    A5GPUClientBatchCommand command = {};
++    command.operation = request.operation;
++    command.clearColor = request.clearColor;
++    command.sourceToken = request.sourceToken;
++    command.destinationToken = request.destinationToken;
++    command.sourceRect = request.sourceRect;
++    command.destinationRect = request.destinationRect;
++    A5GPUClientBatchItemResult item = {};
++    IOLockLock(fLock);
++    const IOReturn ret = submitOneLocked(command, &item);
++    IOLockUnlock(fLock);
++    if (ret != kIOReturnSuccess)
++        return ret;
++    A5GPUClientSubmitResult result = {};
++    result.header.version = kA5GPUClientVersion;
++    result.header.size = sizeof(result);
++    result.status = item.status;
++    result.tilerFence = item.tilerFence;
++    result.fragmentFence = item.fragmentFence;
++    memcpy(args->structureOutput, &result, sizeof(result));
++    args->structureOutputSize = sizeof(result);
++    return kIOReturnSuccess;
++}
++
++bool
++A5XELTEGPUUserClient::runBatchOne(void *context,
++    const A5GPUClientBatchCommand *command,
++    A5GPUClientBatchItemResult *item)
++{
++    A5XELTEGPUUserClient *client = static_cast<A5XELTEGPUUserClient *>(context);
++    return client->submitOneLocked(*command, item) == kIOReturnSuccess;
++}
++
++IOReturn
++A5XELTEGPUUserClient::submitBatch(IOExternalMethodArguments *args)
++{
++    if (!a5gpu_valid_input(args, sizeof(A5GPUClientBatchRequest)) ||
++        !args->structureOutput ||
++        args->structureOutputSize < sizeof(A5GPUClientBatchResult))
++        return kIOReturnBadArgument;
++    A5GPUClientBatchRequest request = {};
++    memcpy(&request, args->structureInput, sizeof(request));
++    if (!a5gpu_valid_header(&request.header, sizeof(request)))
++        return kIOReturnUnsupported;
++    if (!request.count || request.count > kA5GPUClientBatchMax ||
++        request.reserved)
++        return kIOReturnBadArgument;
++    A5GPUClientBatchResult result = {};
++    result.header.version = kA5GPUClientVersion;
++    result.header.size = sizeof(result);
++    /* The client lock pins every referenced resource for the complete batch.
++     * run_batch returns after each terminal fence, or stops at first error. */
++    IOLockLock(fLock);
++    a5gpu_run_batch(request, &result, this, runBatchOne);
+     IOLockUnlock(fLock);
+-    result.tilerFence = completed.tilerFence;
+-    result.fragmentFence = completed.fragmentFence;
+     memcpy(args->structureOutput, &result, sizeof(result));
+     args->structureOutputSize = sizeof(result);
+     return kIOReturnSuccess;
+@@ -510,6 +568,8 @@ A5XELTEGPUUserClient::externalMethod(uint32_t selector,
+         return unmapSurface(args);
+     case kA5GPUClientSubmitTyped:
+         return submitTyped(args);
++    case kA5GPUClientBatchSubmit:
++        return submitBatch(args);
+     default:
+         return kIOReturnUnsupported;
+     }
+diff --git a/iokit/Kernel/arm/A5XELTEGPUUserClient.h b/iokit/Kernel/arm/A5XELTEGPUUserClient.h
+index f9b189d..be1b103 100644
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.h
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.h
+@@ -21,6 +21,11 @@ enum {
+     kA5GPUClientMapSurface = 4,
+     kA5GPUClientUnmapSurface = 5,
+     kA5GPUClientSubmitTyped = 6,
++    kA5GPUClientBatchSubmit = 7,
++    kA5GPUClientBatchMax = 8,
++    kA5GPUClientBatchCompleted = 0,
++    kA5GPUClientBatchInvalid = 1,
++    kA5GPUClientBatchNotRun = 6,
+     kA5GPUClientClearBGRA = 1,
+     kA5GPUClientCopyBGRA = 2,
+     kA5GPUClientDrawTexturedQuadBGRA = 3,
+@@ -48,7 +53,7 @@ struct A5GPUClientHeader {
+ struct A5GPUClientQueryResult {
+     A5GPUClientHeader header;
+     uint32_t maxResources;
+-    uint32_t supportedOperations; /* bits 0..4: import/release/sample/map/unmap */
++    uint32_t supportedOperations; /* bits 0..6: Query-excluded selectors 1..7 */
+     uint32_t gpuCommandsSupported; /* bits: sample, clear, copy, textured quad */
+     uint32_t reserved;
+ };
+@@ -129,4 +134,37 @@ struct A5GPUClientSubmitResult {
+     uint64_t fragmentFence;
+ };
+
++/* Synchronous bounded batch. Commands execute in array order under one client
++ * resource lock. Each successful item has a terminal GPU fence before the next
++ * command starts. On first failure, later items are NotRun; no rollback of
++ * completed earlier commands is implied. No user-supplied job or GPU VA. */
++struct A5GPUClientBatchCommand {
++    uint32_t operation; /* ClearBGRA, CopyBGRA, DrawTexturedQuadBGRA */
++    uint32_t clearColor;
++    uint64_t sourceToken;
++    uint64_t destinationToken;
++    A5GPUClientRect sourceRect;
++    A5GPUClientRect destinationRect;
++};
++struct A5GPUClientBatchRequest {
++    A5GPUClientHeader header;
++    uint32_t count; /* 1..kA5GPUClientBatchMax */
++    uint32_t reserved;
++    A5GPUClientBatchCommand commands[kA5GPUClientBatchMax];
++};
++struct A5GPUClientBatchItemResult {
++    uint32_t status; /* 0..5 AS1 status, 6 = NotRun */
++    uint32_t reserved;
++    uint64_t tilerFence;
++    uint64_t fragmentFence;
++};
++struct A5GPUClientBatchResult {
++    A5GPUClientHeader header;
++    uint32_t count;
++    uint32_t completedCount;
++    uint32_t failedIndex; /* UINT32_MAX on complete success */
++    uint32_t reserved;
++    A5GPUClientBatchItemResult items[kA5GPUClientBatchMax];
++};
++
+ #endif /* A5XELTE_GPU_USER_CLIENT_H */
+diff --git a/next/iokit/Kernel/arm/A5XELTEGPUUserClientBatch.h b/iokit/Kernel/arm/A5XELTEGPUUserClientBatch.h
+new file mode 100644
+index 0000000..94c662b
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClientBatch.h
+@@ -0,0 +1,64 @@
++/* SPDX-License-Identifier: MIT
++ * Pure ordered batch state machine; host-tested without GPU hardware.
++ * Caller pins resources and serialises map/unmap for the entire call.
++ */
++#ifndef A5XELTE_GPU_USER_CLIENT_BATCH_H
++#define A5XELTE_GPU_USER_CLIENT_BATCH_H
++#include "A5XELTEGPUUserClient.h"
++
++typedef bool (*A5GPUBatchRunOne)(void *, const A5GPUClientBatchCommand *,
++    A5GPUClientBatchItemResult *);
++
++/* Pure shape/ownership checks shared by selector 6 and batch selector 7. */
++static inline bool a5gpu_valid_batch_command(
++    const A5GPUClientBatchCommand &request)
++{
++    const uint32_t dst = static_cast<uint32_t>(request.destinationToken);
++    const uint32_t src = static_cast<uint32_t>(request.sourceToken);
++    const bool samples = request.operation == kA5GPUClientCopyBGRA ||
++        request.operation == kA5GPUClientDrawTexturedQuadBGRA;
++    return dst && dst <= 4 && (request.destinationToken >> 32) &&
++        (request.operation == kA5GPUClientClearBGRA || samples) &&
++        (request.operation != kA5GPUClientClearBGRA ||
++         (!request.sourceToken && !request.sourceRect.x &&
++          !request.sourceRect.y && !request.sourceRect.width &&
++          !request.sourceRect.height)) &&
++        (!samples ||
++         (src && src <= 4 && (request.sourceToken >> 32) &&
++          src != dst && !request.clearColor)) &&
++        (request.operation != kA5GPUClientCopyBGRA ||
++         (request.sourceRect.width == request.destinationRect.width &&
++          request.sourceRect.height == request.destinationRect.height));
++}
++
++static inline bool a5gpu_mapped_token_matches(uint64_t token,
++    uint32_t slotOneBased, uint32_t currentGeneration, bool mapped,
++    uint32_t usage, uint32_t requiredUsage)
++{
++    return mapped && static_cast<uint32_t>(token) == slotOneBased &&
++        static_cast<uint32_t>(token >> 32) == currentGeneration &&
++        (usage & requiredUsage) == requiredUsage;
++}
++
++static inline void a5gpu_run_batch(const A5GPUClientBatchRequest &request,
++    A5GPUClientBatchResult *result, void *context, A5GPUBatchRunOne runOne)
++{
++    result->count = request.count;
++    result->failedIndex = UINT32_MAX;
++    for (uint32_t i = 0; i < kA5GPUClientBatchMax; ++i)
++        result->items[i].status = kA5GPUClientBatchNotRun;
++    if (!request.count || request.count > kA5GPUClientBatchMax) {
++        result->failedIndex = 0;
++        return;
++    }
++    for (uint32_t i = 0; i < request.count; ++i) {
++        if (!runOne(context, &request.commands[i], &result->items[i]))
++            result->items[i].status = kA5GPUClientBatchInvalid;
++        if (result->items[i].status != kA5GPUClientBatchCompleted) {
++            result->failedIndex = i;
++            break;
++        }
++        ++result->completedCount;
++    }
++}
++#endif
+diff --git a/next/iokit/Kernel/arm/tests/test_a5xelte_gpu_batch.cpp b/iokit/Kernel/arm/tests/test_a5xelte_gpu_batch.cpp
+new file mode 100644
+index 0000000..c624e04
+--- /dev/null
++++ b/iokit/Kernel/arm/tests/test_a5xelte_gpu_batch.cpp
+@@ -0,0 +1,70 @@
++/* Host test: clang++ -std=c++17 -I iokit/Kernel/arm
++ * iokit/Kernel/arm/tests/test_a5xelte_gpu_batch.cpp -o /tmp/test-batch
++ */
++#include "A5XELTEGPUUserClientBatch.h"
++#include <assert.h>
++#include <stdio.h>
++
++struct Fake {
++    unsigned calls;
++    unsigned failAt;
++};
++static bool run(void *context, const A5GPUClientBatchCommand *command,
++    A5GPUClientBatchItemResult *item)
++{
++    Fake *fake = static_cast<Fake *>(context);
++    assert(command->clearColor == fake->calls + 1); /* preserves order */
++    const unsigned index = fake->calls++;
++    item->status = index == fake->failAt ? 4 : 0;
++    if (item->status == 0)
++        item->fragmentFence = index + 1;
++    return true;
++}
++int main()
++{
++    static_assert(sizeof(A5GPUClientBatchRequest) == 472, "request ABI");
++    static_assert(sizeof(A5GPUClientBatchResult) == 224, "result ABI");
++    A5GPUClientBatchCommand command = {};
++    command.operation = kA5GPUClientCopyBGRA;
++    command.sourceToken = (static_cast<uint64_t>(7) << 32) | 1;
++    command.destinationToken = (static_cast<uint64_t>(9) << 32) | 2;
++    command.sourceRect = {0, 0, 8, 8};
++    command.destinationRect = {0, 0, 8, 8};
++    assert(a5gpu_valid_batch_command(command));
++    assert(a5gpu_mapped_token_matches(command.sourceToken, 1, 7,
++        true, kA5GPUClientRead, kA5GPUClientRead));
++    assert(!a5gpu_mapped_token_matches(command.sourceToken, 1, 8,
++        true, kA5GPUClientRead, kA5GPUClientRead)); /* stale generation */
++    assert(!a5gpu_mapped_token_matches(command.sourceToken, 1, 7,
++        true, kA5GPUClientWrite, kA5GPUClientRead));
++    command.destinationToken = (static_cast<uint64_t>(9) << 32) | 1;
++    assert(!a5gpu_valid_batch_command(command)); /* source/destination alias */
++    command.destinationToken = (static_cast<uint64_t>(9) << 32) | 2;
++    command.destinationRect.width = 16;
++    assert(!a5gpu_valid_batch_command(command)); /* old copy is unscaled */
++    command.operation = kA5GPUClientDrawTexturedQuadBGRA;
++    assert(a5gpu_valid_batch_command(command));
++    A5GPUClientBatchRequest request = {};
++    request.count = 3;
++    for (unsigned i = 0; i < request.count; ++i)
++        request.commands[i].clearColor = i + 1;
++    A5GPUClientBatchResult result = {};
++    Fake fake = {0, 1};
++    a5gpu_run_batch(request, &result, &fake, run);
++    assert(fake.calls == 2 && result.completedCount == 1);
++    assert(result.failedIndex == 1 && result.items[0].fragmentFence == 1);
++    assert(result.items[1].status == 4);
++    assert(result.items[2].status == kA5GPUClientBatchNotRun);
++    result = {};
++    fake = {0, 99};
++    a5gpu_run_batch(request, &result, &fake, run);
++    assert(fake.calls == 3 && result.completedCount == 3);
++    assert(result.failedIndex == UINT32_MAX);
++    assert(result.items[2].fragmentFence == 3);
++    request.count = kA5GPUClientBatchMax + 1;
++    result = {};
++    fake = {0, 99};
++    a5gpu_run_batch(request, &result, &fake, run);
++    assert(fake.calls == 0 && result.failedIndex == 0);
++    puts("ordered GPU batch state machine: PASS");
++}
