@@ -86,8 +86,7 @@ frames, but it does not execute iOS Metal commands. The 0146 phone log shows
 Patches 0148–0149 add an opt-in, entitlement-gated private IOSurface resource
 client and one fixed 16 by 16 tile sampling job. They are deliberately not
 advertised as an Apple GPU service and cannot redirect stock iOS rendering.
-The client and its iOS diagnostic executable have compiled locally but have
-not been exercised on the phone.
+The client has compiled locally but has not been exercised on the phone.
 
 ## Smallest useful stages
 
