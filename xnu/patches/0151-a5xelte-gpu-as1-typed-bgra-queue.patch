@@ -1,0 +1,1045 @@
+diff --git a/iokit/Kernel/arm/A5XELTEGPUAS1.cpp b/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
+index bc8f059..0d93714 100644
+--- a/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
+@@ -1,5 +1,5 @@
+ /*
+- * Opt-in Mali-T720 AS1 mapper. This is a prerequisite for a typed renderer,
+- * not a GPU command interface. Userland never supplies page tables, physical
+- * addresses, descriptors or GPU virtual addresses.
++ * Private Mali-T720 AS1 resource map and bounded typed BGRA jobs.
++ * Userland never supplies page tables, physical addresses, descriptors,
++ * shaders or GPU virtual addresses.
+  */
+@@ -6,6 +6,7 @@
+ #include "A5XELTEGPUAS1.h"
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ #include "A5XELTEGPUQueue.h"
++#include "midgard_encode.h"
+ #include "SweetSurface.h"
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+@@ -16,20 +17,25 @@ enum {
+     kAS1Slots = 4,
+     kAS1PagesPerSlot = 2048,
+     kAS1TablesPerSlot = 4,
+-    kAS1TablePages = 3 + kAS1Slots * kAS1TablesPerSlot,
++    kAS1TablePages = 4 + kAS1Slots * kAS1TablesPerSlot,
+     kAS1TableBytes = kAS1TablePages * kAS1Page,
+     kAS1Base = 0x10000000,
+     kAS1Window = 0x800000,
++    kAS1JobVA = 0x12000000,
++    kAS1JobBytes = 0x2000,
+     kAS1BGRA = 0x42475241,
+ };
+ static const uint64_t kAS1PageDescriptor = 0x2c1ULL;
+-static_assert(kAS1TableBytes == 0x13000 &&
+-    kAS1Slots * kAS1Window == 0x2000000, "AS1 bounds");
++static_assert(kAS1TableBytes == 0x14000 &&
++    kAS1Slots * kAS1Window == kAS1JobVA - kAS1Base,
++    "AS1 bounds");
+ 
+ struct A5G3DAS1Context {
+     IOBufferMemoryDescriptor *tables;
++    IOBufferMemoryDescriptor *jobs;
+     SweetSurface *surface[kAS1Slots];
+     uint32_t mappedBytes[kAS1Slots];
++    uint64_t nextFence;
+     bool installed;
+     bool poisoned;
+ };
+@@ -123,8 +129,14 @@ a5g3d_as1_tables_init(A5G3DAS1Context *ctx)
+     IOByteCount span = 0;
+     const uint64_t physical = ctx->tables->getPhysicalSegment(0, &span,
+         kIOMemoryMapperNone);
++    IOByteCount jobSpan = 0;
++    const uint64_t jobPhysical = ctx->jobs->getPhysicalSegment(0,
++        &jobSpan, kIOMemoryMapperNone);
+     if (!bytes || !physical || (physical & 4095) ||
+-        span < kAS1TableBytes || physical > 0xfffecfffULL)
++        span < kAS1TableBytes || physical > 0xfffecfffULL ||
++        !ctx->jobs->getBytesNoCopy() || !jobPhysical ||
++        (jobPhysical & 4095) || jobSpan < kAS1JobBytes ||
++        jobPhysical > 0xffffdfffULL)
+         return false;
+     bzero(bytes, kAS1TableBytes);
+     uint64_t *l0 = reinterpret_cast<uint64_t *>(bytes);
+@@ -140,6 +152,12 @@ a5g3d_as1_tables_init(A5G3DAS1Context *ctx)
+                 table) * kAS1Page) | 3u;
+         }
+     }
++    l2[kAS1JobVA >> 21] =
++        (physical + (kAS1TablePages - 1) * kAS1Page) | 3u;
++    uint64_t *jobsL3 = reinterpret_cast<uint64_t *>(
++        bytes + (kAS1TablePages - 1) * kAS1Page);
++    jobsL3[0] = jobPhysical | kAS1PageDescriptor;
++    jobsL3[1] = (jobPhysical + kAS1Page) | kAS1PageDescriptor;
+     return ctx->tables->performOperation(kIOMemoryIncoherentIOStore,
+         0, kAS1TableBytes) == kIOReturnSuccess;
+ }
+@@ -184,8 +202,8 @@ a5g3d_as1_update(A5G3DAS1Context *ctx, bool disable)
+         if (!a5g3d_as1_wait(gpu))
+             break;
+         if (!disable) {
+-            /* Panfrost lock_region: 0x10000000..0x11ffffff, 32 MiB. */
+-            a5g3d_as1_write(gpu, 0x2450, kAS1Base | 24u);
++            /* Include the kernel-owned descriptor pages after four windows. */
++            a5g3d_as1_write(gpu, 0x2450, kAS1Base | 25u);
+             a5g3d_as1_write(gpu, 0x2454, 0);
+             a5g3d_as1_write(gpu, 0x2458, 2u); /* LOCK */
+             if (!a5g3d_as1_wait(gpu))
+@@ -217,9 +235,14 @@ a5g3d_as1_create()
+     ctx->tables = IOBufferMemoryDescriptor::withOptions(
+         kIODirectionInOut | kIOMemoryPhysicallyContiguous,
+         kAS1TableBytes, kAS1Page);
+-    if (!ctx->tables || !a5g3d_as1_tables_init(ctx)) {
++    ctx->jobs = IOBufferMemoryDescriptor::withOptions(
++        kIODirectionInOut | kIOMemoryPhysicallyContiguous,
++        kAS1JobBytes, kAS1Page);
++    if (!ctx->tables || !ctx->jobs || !a5g3d_as1_tables_init(ctx)) {
+         if (ctx->tables)
+             ctx->tables->release();
++        if (ctx->jobs)
++            ctx->jobs->release();
+         IODelete(ctx, A5G3DAS1Context, 1);
+         return nullptr;
+     }
+@@ -227,6 +250,7 @@ a5g3d_as1_create()
+     if (gAS1Owner) {
+         IOLockUnlock(lock);
+         ctx->tables->release();
++        ctx->jobs->release();
+         IODelete(ctx, A5G3DAS1Context, 1);
+         return nullptr;
+     }
+@@ -315,6 +339,217 @@ a5g3d_as1_unmap(A5G3DAS1Context *ctx, uint32_t slot)
+     return update == kAS1UpdateApplied;
+ }
+ 
++static a5_midgard_image
++a5g3d_as1_image(const A5G3DAS1Context *ctx, uint32_t slot)
++{
++    SweetSurface *surface = ctx->surface[slot];
++    a5_midgard_image image = {};
++    image.gpu_va = kAS1Base + static_cast<uint64_t>(slot) * kAS1Window;
++    image.mapped_bytes = ctx->mappedBytes[slot];
++    image.width = surface->width;
++    image.height = surface->height;
++    image.row_bytes = surface->bytesPerRow;
++    return image;
++}
++
++static a5_midgard_rect
++a5g3d_as1_rect(const A5G3DAS1Rect &rect)
++{
++    a5_midgard_rect encoded = {};
++    encoded.x = rect.x;
++    encoded.y = rect.y;
++    encoded.width = rect.width;
++    encoded.height = rect.height;
++    return encoded;
++}
++
++/* The caller holds the AS1 lease lock and the global GPU staging token.
++ * Neither the descriptor BO nor an imported surface may be freed after START
++ * until this function proves a terminal fence and an idle job slot.
++ */
++static A5G3DAS1SubmitStatus
++a5g3d_as1_run_job(A5G3DAS1Context *ctx, vm_offset_t gpu,
++    uint32_t slot, uint32_t jobOffset, A5G3DAS1Completion *completion,
++    uint64_t *fence, bool *started)
++{
++    const uint32_t slotBase = 0x1800 + slot * 0x80;
++    const uint32_t slotMask = (1u << slot) | (1u << (slot + 16));
++    const uint32_t shader = a5g3d_as1_read(gpu, 0x140);
++    if (!shader || !(a5g3d_as1_read(gpu, 0x018) & 2u) ||
++        !(a5g3d_as1_read(gpu, 0x01c) & (1u << slot)) ||
++        !ctx->installed || ctx->poisoned)
++        return kAS1SubmitBusy;
++    /* Clearing JOB_IRQ refreshes sampled JS_STATE on Mali-T720. */
++    a5g3d_as1_write(gpu, 0x1004, slotMask);
++    if ((a5g3d_as1_read(gpu, 0x1010) & slotMask) ||
++        a5g3d_as1_read(gpu, slotBase + 0x24) ||
++        a5g3d_as1_read(gpu, slotBase + 0x60) ||
++        a5g3d_as1_read(gpu, 0x245c) ||
++        (a5g3d_as1_read(gpu, 0x200c) & 0x00020002u))
++        return kAS1SubmitFault;
++    if (ctx->jobs->performOperation(kIOMemoryIncoherentIOStore,
++        0, kAS1JobBytes) != kIOReturnSuccess)
++        return kAS1SubmitIOError;
++    __sync_synchronize();
++    *fence = ++ctx->nextFence;
++    a5g3d_as1_write(gpu, slotBase + 0x40, kAS1JobVA + jobOffset);
++    a5g3d_as1_write(gpu, slotBase + 0x44, 0);
++    a5g3d_as1_write(gpu, slotBase + 0x50, shader);
++    a5g3d_as1_write(gpu, slotBase + 0x54, 0);
++    /* Low config bits choose AS1; no userspace-controlled register fields. */
++    a5g3d_as1_write(gpu, slotBase + 0x58,
++        (8u << 16) | (3u << 8) | (3u << 12) | 1u);
++    __sync_synchronize();
++    *started = true;
++    a5g3d_as1_write(gpu, slotBase + 0x60, 1u);
++    uint32_t jobIRQ = 0, mmuIRQ = 0, gpuIRQ = 0;
++    for (unsigned i = 0; i < 20000; ++i) {
++        jobIRQ = a5g3d_as1_read(gpu, 0x1000);
++        mmuIRQ = a5g3d_as1_read(gpu, 0x2000);
++        gpuIRQ = a5g3d_as1_read(gpu, 0x20);
++        if ((jobIRQ & slotMask) || mmuIRQ || (gpuIRQ & 0x81u))
++            break;
++        IODelay(10);
++    }
++    if (completion) {
++        completion->jobIRQ = jobIRQ;
++        completion->mmuIRQ = mmuIRQ;
++        completion->gpuIRQ = gpuIRQ;
++    }
++    if (!((jobIRQ & slotMask) || mmuIRQ || (gpuIRQ & 0x81u)))
++        return kAS1SubmitTimeout;
++    bool idle = false;
++    for (unsigned i = 0; i < 1000; ++i) {
++        if (!a5g3d_as1_read(gpu, slotBase + 0x24) &&
++            !a5g3d_as1_read(gpu, slotBase + 0x60)) {
++            idle = true;
++            break;
++        }
++        IODelay(10);
++    }
++    if (!idle)
++        return kAS1SubmitFault;
++    if (ctx->jobs->performOperation(kIOMemoryIncoherentIOFlush,
++        jobOffset, 16) != kIOReturnSuccess)
++        return kAS1SubmitIOError;
++    __sync_synchronize();
++    const uint32_t header = *reinterpret_cast<const uint32_t *>(
++        static_cast<const uint8_t *>(ctx->jobs->getBytesNoCopy()) + jobOffset);
++    if (completion)
++        completion->headerStatus = header;
++    if (jobIRQ)
++        a5g3d_as1_write(gpu, 0x1004, jobIRQ);
++    if (mmuIRQ)
++        a5g3d_as1_write(gpu, 0x2004, mmuIRQ);
++    if (!(jobIRQ & (1u << slot)) ||
++        (jobIRQ & (1u << (slot + 16))) || mmuIRQ || (gpuIRQ & 0x81u) ||
++        (header & 0xffu) != 1u ||
++        (a5g3d_as1_read(gpu, 0x1010) & slotMask))
++        return kAS1SubmitFault;
++    *started = false;
++    return kAS1SubmitCompleted;
++}
++
++A5G3DAS1SubmitStatus
++a5g3d_as1_submit(A5G3DAS1Context *ctx,
++    const A5G3DAS1Request &request, A5G3DAS1Completion *completion)
++{
++    if (completion)
++        bzero(completion, sizeof(*completion));
++    if (!ctx || request.destinationSlot >= kAS1Slots ||
++        (request.operation != kAS1ClearBGRA &&
++         request.operation != kAS1CopyBGRA) ||
++        (request.operation == kAS1CopyBGRA &&
++         (request.sourceSlot >= kAS1Slots ||
++          request.sourceSlot == request.destinationSlot)))
++        return kAS1SubmitInvalid;
++    IOLock *lock = a5g3d_as1_lock();
++    IOLockLock(lock);
++    if (gAS1Owner != ctx || ctx->poisoned || !ctx->installed ||
++        !ctx->surface[request.destinationSlot] ||
++        (request.operation == kAS1CopyBGRA &&
++         !ctx->surface[request.sourceSlot])) {
++        IOLockUnlock(lock);
++        return kAS1SubmitInvalid;
++    }
++    a5_midgard_image destination = a5g3d_as1_image(ctx,
++        request.destinationSlot);
++    a5_midgard_rect destinationRect = a5g3d_as1_rect(request.destination);
++    a5_midgard_status encoded = A5_MIDGARD_INVALID;
++    if (request.operation == kAS1ClearBGRA) {
++        encoded = a5_midgard_encode_clear(ctx->jobs->getBytesNoCopy(),
++            kAS1JobBytes, kAS1JobVA, &destination, &destinationRect,
++            request.clearColor);
++    } else {
++        a5_midgard_image source = a5g3d_as1_image(ctx, request.sourceSlot);
++        a5_midgard_rect sourceRect = a5g3d_as1_rect(request.source);
++        encoded = a5_midgard_encode_copy(ctx->jobs->getBytesNoCopy(),
++            kAS1JobBytes, kAS1JobVA, &source, &sourceRect,
++            &destination, &destinationRect);
++    }
++    if (encoded != A5_MIDGARD_OK) {
++        IOLockUnlock(lock);
++        return kAS1SubmitInvalid;
++    }
++    /* Store every CPU dirty page before the GPU reads or overwrites it. */
++    if ((request.operation == kAS1CopyBGRA &&
++         ctx->surface[request.sourceSlot]->memory->performOperation(
++             kIOMemoryIncoherentIOStore, 0,
++             ctx->mappedBytes[request.sourceSlot]) != kIOReturnSuccess) ||
++        ctx->surface[request.destinationSlot]->memory->performOperation(
++            kIOMemoryIncoherentIOStore, 0,
++            ctx->mappedBytes[request.destinationSlot]) != kIOReturnSuccess) {
++        IOLockUnlock(lock);
++        return kAS1SubmitIOError;
++    }
++    IOService *owner = nullptr;
++    IOBufferMemoryDescriptor *as0 = nullptr;
++    vm_offset_t gpu = 0;
++    uint64_t token = 0;
++    if (!a5g3d_queue_acquire_runtime(&owner, &token, &as0, &gpu)) {
++        IOLockUnlock(lock);
++        return kAS1SubmitBusy;
++    }
++    bool started = false;
++    A5G3DAS1SubmitStatus status = kAS1SubmitCompleted;
++    if (request.operation == kAS1CopyBGRA) {
++        uint64_t tilerFence = 0;
++        status = a5g3d_as1_run_job(ctx, gpu, 1,
++            A5_MIDGARD_TILER_OFFSET, completion, &tilerFence, &started);
++        if (completion)
++            completion->tilerFence = tilerFence;
++        if (status == kAS1SubmitCompleted &&
++            ctx->jobs->performOperation(kIOMemoryIncoherentIOFlush,
++                0x1000, 0x1000) != kIOReturnSuccess)
++            status = kAS1SubmitIOError;
++    }
++    if (status == kAS1SubmitCompleted) {
++        uint64_t fragmentFence = 0;
++        status = a5g3d_as1_run_job(ctx, gpu, 0,
++            A5_MIDGARD_FRAGMENT_OFFSET, completion, &fragmentFence,
++            &started);
++        if (completion)
++            completion->fragmentFence = fragmentFence;
++    }
++    if (status == kAS1SubmitCompleted &&
++        ctx->surface[request.destinationSlot]->memory->performOperation(
++            kIOMemoryIncoherentIOFlush, 0,
++            ctx->mappedBytes[request.destinationSlot]) != kIOReturnSuccess)
++        status = kAS1SubmitIOError;
++    if (started || status == kAS1SubmitFault ||
++        status == kAS1SubmitTimeout) {
++        ctx->poisoned = true;
++        a5g3d_queue_poison(owner, token); /* retain AS0 and AS1 pages */
++        IOLog("A5XELTE G3D: AS1 job uncertain; both queues pinned until reboot\n");
++    } else if (!a5g3d_queue_release(owner, token)) {
++        ctx->poisoned = true;
++        status = kAS1SubmitFault;
++    }
++    owner->release();
++    IOLockUnlock(lock);
++    return status;
++}
++
+ void
+ a5g3d_as1_destroy(A5G3DAS1Context *ctx)
+ {
+@@ -326,8 +561,8 @@ a5g3d_as1_destroy(A5G3DAS1Context *ctx)
+         IOLockUnlock(lock);
+         return;
+     }
+-    /* No selector can submit AS1 work. A future renderer must add fence
+-     * retirement before this path may release any retained resource.
++    /* Submit holds this lock through a terminal fence. A failed or ambiguous
++     * job poisons the context, so teardown never releases pages still in use.
+      */
+     if (!ctx->poisoned && ctx->installed) {
+         if (a5g3d_as1_update(ctx, true) != kAS1UpdateApplied)
+@@ -343,6 +578,7 @@ a5g3d_as1_destroy(A5G3DAS1Context *ctx)
+         if (ctx->surface[i])
+             ctx->surface[i]->release();
+     ctx->tables->release();
++    ctx->jobs->release();
+     IODelete(ctx, A5G3DAS1Context, 1);
+     IOLockUnlock(lock);
+ }
+diff --git a/iokit/Kernel/arm/A5XELTEGPUAS1.h b/iokit/Kernel/arm/A5XELTEGPUAS1.h
+index 7980a11..2d9459c 100644
+--- a/iokit/Kernel/arm/A5XELTEGPUAS1.h
++++ b/iokit/Kernel/arm/A5XELTEGPUAS1.h
+@@ -1,4 +1,4 @@
+-/* Private per-client Mali AS1 resource mappings. No job submission. */
++/* Private per-client Mali AS1 resource mappings and typed jobs. */
+ #ifndef A5XELTE_GPU_AS1_H
+ #define A5XELTE_GPU_AS1_H
+ #include <pexpert/arm64/board_config.h>
+@@ -13,6 +13,41 @@ A5G3DAS1Context *a5g3d_as1_create();
+ bool a5g3d_as1_map(A5G3DAS1Context *, uint32_t slot, SweetSurface *,
+     uint32_t *mappedBytes);
+ bool a5g3d_as1_unmap(A5G3DAS1Context *, uint32_t slot);
++enum A5G3DAS1Operation {
++    kAS1ClearBGRA = 1,
++    kAS1CopyBGRA = 2,
++};
++enum A5G3DAS1SubmitStatus {
++    kAS1SubmitCompleted,
++    kAS1SubmitInvalid,
++    kAS1SubmitBusy,
++    kAS1SubmitIOError,
++    kAS1SubmitTimeout,
++    kAS1SubmitFault,
++};
++struct A5G3DAS1Rect {
++    uint32_t x, y, width, height;
++};
++struct A5G3DAS1Request {
++    A5G3DAS1Operation operation;
++    uint32_t sourceSlot;
++    uint32_t destinationSlot;
++    A5G3DAS1Rect source;
++    A5G3DAS1Rect destination;
++    uint32_t clearColor;
++};
++struct A5G3DAS1Completion {
++    uint64_t tilerFence;
++    uint64_t fragmentFence;
++    uint32_t jobIRQ;
++    uint32_t mmuIRQ;
++    uint32_t gpuIRQ;
++    uint32_t headerStatus;
++};
++/* Typed clear/copy only. The kernel owns descriptors, shader, GPU VAs,
++ * resource mappings and all job/fence lifetime decisions. */
++A5G3DAS1SubmitStatus a5g3d_as1_submit(A5G3DAS1Context *,
++    const A5G3DAS1Request &, A5G3DAS1Completion *);
+ /* On an ambiguous MMU update, keep the context and all surfaces pinned. */
+ void a5g3d_as1_destroy(A5G3DAS1Context *);
+ #endif
+diff --git a/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp b/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
+index bfc7253..ec2f328 100644
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
+@@ -1,6 +1,6 @@
+ /*
+- * Opt-in, private resource and fixed tile sampling for a Mali-compatible iOS
+- * backend. This client has no raw job or GPU address-space access.
++ * Opt-in private resource and typed BGRA operations for a Mali backend.
++ * This client has no raw job or GPU address-space access.
+  * AGXMetalA11 and the stock iOS Metal stack cannot use this protocol.
+  */
+ #include <pexpert/arm64/board_config.h>
+@@ -25,6 +25,8 @@ static_assert(sizeof(A5GPUClientHeader) == 16 &&
+     sizeof(A5GPUClientMapRequest) == 24 &&
+     sizeof(A5GPUClientMapResult) == 32 &&
+     sizeof(A5GPUClientUnmapRequest) == 24 &&
++    sizeof(A5GPUClientSubmitRequest) == 72 &&
++    sizeof(A5GPUClientSubmitResult) == 40 &&
+     kA5GPUClientTilePixels == kA5G3DTransferTilePixels,
+     "A5XELTE GPU resource protocol layout changed");
+ 
+@@ -34,6 +36,7 @@ class A5XELTEGPUUserClient : public IOUserClient {
+     struct ResourceSlot {
+         A5G3DImportedSurface surface;
+         uint32_t generation;
++        uint32_t usage;
+         bool mapped;
+     };
+ 
+@@ -50,6 +53,7 @@ class A5XELTEGPUUserClient : public IOUserClient {
+     IOReturn sampleTile(IOExternalMethodArguments *args);
+     IOReturn mapSurface(IOExternalMethodArguments *args);
+     IOReturn unmapSurface(IOExternalMethodArguments *args);
++    IOReturn submitTyped(IOExternalMethodArguments *args);
+ 
+ public:
+     bool initWithTask(task_t owningTask, void *securityID, UInt32 type)
+@@ -140,6 +144,7 @@ A5XELTEGPUUserClient::releaseAll()
+         retained[i] = fSlots[i].surface;
+         bzero(&fSlots[i].surface, sizeof(fSlots[i].surface));
+         fSlots[i].mapped = false;
++        fSlots[i].usage = 0;
+         if (++fSlots[i].generation == 0)
+             fSlots[i].generation = 1;
+     }
+@@ -183,8 +188,8 @@ A5XELTEGPUUserClient::query(IOExternalMethodArguments *args)
+     result.header.version = kA5GPUClientVersion;
+     result.header.size = sizeof(result);
+     result.maxResources = kA5GPUClientMaxResources;
+-    result.supportedOperations = 31; /* plus AS1 map/unmap, no AS1 jobs */
+-    result.gpuCommandsSupported = 1; /* fixed sample only, no raw jobs */
++    result.supportedOperations = 63; /* import/release/sample/map/unmap/submit */
++    result.gpuCommandsSupported = 7; /* sample, BGRA clear, BGRA copy */
+     memcpy(args->structureOutput, &result, sizeof(result));
+     args->structureOutputSize = sizeof(result);
+     return kIOReturnSuccess;
+@@ -201,7 +206,8 @@ A5XELTEGPUUserClient::importSurface(IOExternalMethodArguments *args)
+     memcpy(&request, args->structureInput, sizeof(request));
+     if (!a5gpu_valid_header(&request.header, sizeof(request)))
+         return kIOReturnUnsupported;
+-    if (request.surfacePort == 0 || request.usage != kA5GPUClientRead ||
++    if (request.surfacePort == 0 || !request.usage ||
++        (request.usage & ~(kA5GPUClientRead | kA5GPUClientWrite)) ||
+         request.reserved != 0)
+         return kIOReturnBadArgument;
+ 
+@@ -217,6 +223,7 @@ A5XELTEGPUUserClient::importSurface(IOExternalMethodArguments *args)
+             if (fSlots[i].surface.surface == nullptr) {
+                 fSlots[i].surface = imported;
+                 fSlots[i].mapped = false;
++                fSlots[i].usage = request.usage;
+                 handle = (static_cast<uint64_t>(fSlots[i].generation) << 32) |
+                     (i + 1);
+                 break;
+@@ -270,6 +277,7 @@ A5XELTEGPUUserClient::releaseSurface(IOExternalMethodArguments *args)
+         retained = entry.surface;
+         bzero(&entry.surface, sizeof(entry.surface));
+         entry.mapped = false;
++        entry.usage = 0;
+         if (++entry.generation == 0)
+             entry.generation = 1;
+     }
+@@ -308,6 +316,7 @@ A5XELTEGPUUserClient::mapSurface(IOExternalMethodArguments *args)
+         fAS1 = a5g3d_as1_create();
+     const bool ok = fAS1 && a5g3d_as1_map(fAS1, slot - 1,
+         entry.surface.surface, &mappedBytes);
++    const uint32_t usage = entry.usage;
+     if (ok)
+         entry.mapped = true;
+     IOLockUnlock(fLock);
+@@ -318,7 +327,7 @@ A5XELTEGPUUserClient::mapSurface(IOExternalMethodArguments *args)
+     result.header.size = sizeof(result);
+     result.mappingToken = request.handle;
+     result.mappedBytes = mappedBytes;
+-    result.flags = 1; /* BGRA8 read resource, no submit yet */
++    result.flags = usage;
+     memcpy(args->structureOutput, &result, sizeof(result));
+     args->structureOutputSize = sizeof(result);
+     return kIOReturnSuccess;
+@@ -378,6 +387,7 @@ A5XELTEGPUUserClient::sampleTile(IOExternalMethodArguments *args)
+     IOLockLock(fLock);
+     ResourceSlot &entry = fSlots[slot - 1];
+     if (!fClosed && entry.generation == generation &&
++        (entry.usage & kA5GPUClientRead) &&
+         entry.surface.surface != nullptr) {
+         source = entry.surface;
+         source.surface->retain();
+@@ -409,6 +419,69 @@ A5XELTEGPUUserClient::sampleTile(IOExternalMethodArguments *args)
+     return kIOReturnSuccess;
+ }
+ 
++IOReturn
++A5XELTEGPUUserClient::submitTyped(IOExternalMethodArguments *args)
++{
++    if (!a5gpu_valid_input(args, sizeof(A5GPUClientSubmitRequest)) ||
++        !args->structureOutput ||
++        args->structureOutputSize < sizeof(A5GPUClientSubmitResult))
++        return kIOReturnBadArgument;
++    A5GPUClientSubmitRequest request = {};
++    memcpy(&request, args->structureInput, sizeof(request));
++    if (!a5gpu_valid_header(&request.header, sizeof(request)))
++        return kIOReturnUnsupported;
++    const uint32_t dst = static_cast<uint32_t>(request.destinationToken);
++    const uint32_t dstGeneration =
++        static_cast<uint32_t>(request.destinationToken >> 32);
++    const uint32_t src = static_cast<uint32_t>(request.sourceToken);
++    const uint32_t srcGeneration =
++        static_cast<uint32_t>(request.sourceToken >> 32);
++    if (!dst || dst > 4 || !dstGeneration ||
++        (request.operation != kA5GPUClientClearBGRA &&
++         request.operation != kA5GPUClientCopyBGRA) ||
++        (request.operation == kA5GPUClientClearBGRA &&
++         (request.sourceToken || request.sourceRect.x ||
++          request.sourceRect.y || request.sourceRect.width ||
++          request.sourceRect.height)) ||
++        (request.operation == kA5GPUClientCopyBGRA &&
++         (!src || src > 4 || !srcGeneration || src == dst ||
++          request.clearColor)))
++        return kIOReturnBadArgument;
++    A5GPUClientSubmitResult result = {};
++    result.header.version = kA5GPUClientVersion;
++    result.header.size = sizeof(result);
++    IOLockLock(fLock);
++    const ResourceSlot &target = fSlots[dst - 1];
++    const bool sourceReady = request.operation != kA5GPUClientCopyBGRA ||
++        (fSlots[src - 1].mapped &&
++         fSlots[src - 1].generation == srcGeneration &&
++         (fSlots[src - 1].usage & kA5GPUClientRead));
++    if (fClosed || !fAS1 || !target.mapped ||
++        target.generation != dstGeneration ||
++        !(target.usage & kA5GPUClientWrite) || !sourceReady) {
++        IOLockUnlock(fLock);
++        return kIOReturnNotFound;
++    }
++    A5G3DAS1Request work = {};
++    work.operation = request.operation == kA5GPUClientCopyBGRA ?
++        kAS1CopyBGRA : kAS1ClearBGRA;
++    work.sourceSlot = src ? src - 1 : 0;
++    work.destinationSlot = dst - 1;
++    work.source = {request.sourceRect.x, request.sourceRect.y,
++        request.sourceRect.width, request.sourceRect.height};
++    work.destination = {request.destinationRect.x, request.destinationRect.y,
++        request.destinationRect.width, request.destinationRect.height};
++    work.clearColor = request.clearColor;
++    A5G3DAS1Completion completed = {};
++    result.status = a5g3d_as1_submit(fAS1, work, &completed);
++    IOLockUnlock(fLock);
++    result.tilerFence = completed.tilerFence;
++    result.fragmentFence = completed.fragmentFence;
++    memcpy(args->structureOutput, &result, sizeof(result));
++    args->structureOutputSize = sizeof(result);
++    return kIOReturnSuccess;
++}
++
+ IOReturn
+ A5XELTEGPUUserClient::externalMethod(uint32_t selector,
+     IOExternalMethodArguments *args, __unused IOExternalMethodDispatch *dispatch,
+@@ -429,6 +502,8 @@ A5XELTEGPUUserClient::externalMethod(uint32_t selector,
+         return mapSurface(args);
+     case kA5GPUClientUnmapSurface:
+         return unmapSurface(args);
++    case kA5GPUClientSubmitTyped:
++        return submitTyped(args);
+     default:
+         return kIOReturnUnsupported;
+     }
+diff --git a/iokit/Kernel/arm/A5XELTEGPUUserClient.h b/iokit/Kernel/arm/A5XELTEGPUUserClient.h
+index 11fded7..bccf4be 100644
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.h
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.h
+@@ -1,8 +1,8 @@
+ /* Private A5XELTE Mali resource protocol, version 1.
+  * This is deliberately not IOGPU, IOAccelerator, AGX or Metal. No selector
+- * accepts a GPU command, physical address, GPU virtual address or shader.
+- * SampleTile runs one fixed 16x16 texture fixture synchronously; its two
+- * hardware fences are complete before this method returns.
++ * accepts a raw GPU command, physical address, GPU virtual address or shader.
++ * SampleTile and typed BGRA operations complete synchronously. A timeout
++ * retains all potentially GPU-visible pages for the rest of this boot.
+  */
+ #ifndef A5XELTE_GPU_USER_CLIENT_H
+ #define A5XELTE_GPU_USER_CLIENT_H
+@@ -13,12 +13,16 @@ enum {
+     kA5GPUClientVersion = 1,
+     kA5GPUClientMaxResources = 32,
+     kA5GPUClientRead = 1,
++    kA5GPUClientWrite = 2,
+     kA5GPUClientQuery = 0,
+     kA5GPUClientImportSurface = 1,
+     kA5GPUClientReleaseSurface = 2,
+     kA5GPUClientSampleTile = 3,
+     kA5GPUClientMapSurface = 4,
+     kA5GPUClientUnmapSurface = 5,
++    kA5GPUClientSubmitTyped = 6,
++    kA5GPUClientClearBGRA = 1,
++    kA5GPUClientCopyBGRA = 2,
+     kA5GPUClientTilePixels = 16 * 16,
+ };
+ 
+@@ -44,14 +48,14 @@ struct A5GPUClientQueryResult {
+     A5GPUClientHeader header;
+     uint32_t maxResources;
+     uint32_t supportedOperations; /* bits 0..4: import/release/sample/map/unmap */
+-    uint32_t gpuCommandsSupported; /* bit 0: fixed 16x16 sample; no raw jobs */
++    uint32_t gpuCommandsSupported; /* bits: sample, typed clear, typed copy */
+     uint32_t reserved;
+ };
+ 
+ struct A5GPUClientImportRequest {
+     A5GPUClientHeader header;
+     uint32_t surfacePort; /* Mach send right in the opening task */
+-    uint32_t usage;       /* kA5GPUClientRead only */
++    uint32_t usage;       /* kA5GPUClientRead / Write bitmask */
+     uint64_t reserved;
+ };
+ 
+@@ -85,7 +89,7 @@ struct A5GPUClientSampleResult {
+     uint32_t pixels[kA5GPUClientTilePixels]; /* valid only on completion */
+ };
+ 
+-/* AS1 is a private per-client page-table map. No command can target it yet.
++/* AS1 is a private per-client page-table map.
+  * The mapping token is an opaque slot generation; no GPU VA is exported.
+  */
+ struct A5GPUClientMapRequest {
+@@ -96,11 +100,32 @@ struct A5GPUClientMapResult {
+     A5GPUClientHeader header;
+     uint64_t mappingToken;
+     uint32_t mappedBytes;
+-    uint32_t flags; /* currently 1: BGRA8 read resource */
++    uint32_t flags; /* BGRA8 read/write permissions from import */
+ };
+ struct A5GPUClientUnmapRequest {
+     A5GPUClientHeader header;
+     uint64_t mappingToken;
+ };
+ 
++struct A5GPUClientRect {
++    uint32_t x, y, width, height;
++};
++/* Opaque mapping tokens bind both resources to the opening user client. */
++struct A5GPUClientSubmitRequest {
++    A5GPUClientHeader header;
++    uint32_t operation; /* ClearBGRA or CopyBGRA */
++    uint32_t clearColor;
++    uint64_t sourceToken; /* zero for clear */
++    uint64_t destinationToken;
++    A5GPUClientRect sourceRect; /* all zero for clear */
++    A5GPUClientRect destinationRect;
++};
++struct A5GPUClientSubmitResult {
++    A5GPUClientHeader header;
++    uint32_t status; /* A5G3DAS1SubmitStatus */
++    uint32_t reserved;
++    uint64_t tilerFence;
++    uint64_t fragmentFence;
++};
++
+ #endif /* A5XELTE_GPU_USER_CLIENT_H */
+diff --git a/iokit/Kernel/arm/A5XELTEMidgardEncode.cpp b/iokit/Kernel/arm/A5XELTEMidgardEncode.cpp
+new file mode 100644
+index 0000000..9d4c165
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTEMidgardEncode.cpp
+@@ -0,0 +1,207 @@
++/* SPDX-License-Identifier: MIT
++ * Fixed-pipeline Midgard v4 lowering for two typed BGRA8 operations.
++ * This is suitable for a trusted kernel encoder after AS/BO ownership checks;
++ * it is not a Metal shader compiler or an IOUserClient command parser.
++ */
++#include "midgard_encode.h"
++
++#include <string.h>
++
++#if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
++#error "The T720 packed descriptor template is little-endian"
++#endif
++
++struct fixture_word {
++    uint16_t offset;
++    uint32_t value;
++};
++
++static const struct fixture_word fixture_words[] = {
++#include "t720_fixture_words.inc"
++};
++
++static void put32(uint8_t *out, size_t offset, uint32_t value)
++{
++    memcpy(out + offset, &value, sizeof(value));
++}
++
++static void put64(uint8_t *out, size_t offset, uint64_t value)
++{
++    memcpy(out + offset, &value, sizeof(value));
++}
++
++static void put_float(uint8_t *out, size_t offset, float value)
++{
++    memcpy(out + offset, &value, sizeof(value));
++}
++
++static int valid_gpu_va(uint64_t va)
++{
++    /* Midgard LPAE uses 4 KiB pages in the Exynos7580 port. */
++    return va && !(va & 0xfff) && va < (1ULL << 40);
++}
++
++static int valid_image(const struct a5_midgard_image *image)
++{
++    if (!image || !valid_gpu_va(image->gpu_va) ||
++        !image->width || image->width > 2048 ||
++        !image->height || image->height > 2048 ||
++        image->row_bytes < image->width * 4 ||
++        image->row_bytes > 8192 ||
++        (image->row_bytes & 15) ||
++        image->mapped_bytes < (uint64_t)image->row_bytes * image->height ||
++        image->mapped_bytes > UINT32_MAX)
++        return 0;
++    return image->gpu_va + image->mapped_bytes <= (1ULL << 40);
++}
++
++static int valid_rect(const struct a5_midgard_rect *r,
++    const struct a5_midgard_image *image)
++{
++    return r && image && r->width && r->height &&
++        r->x < image->width && r->y < image->height &&
++        r->width <= image->width - r->x &&
++        r->height <= image->height - r->y;
++}
++
++static int valid_descriptors(void *cpu, size_t bytes, uint64_t va)
++{
++    return cpu && bytes >= A5_MIDGARD_DESCRIPTOR_BYTES && valid_gpu_va(va) &&
++        va + A5_MIDGARD_DESCRIPTOR_BYTES <= (1ULL << 40);
++}
++
++static void encode_framebuffer(uint8_t *out, uint64_t desc_va,
++    const struct a5_midgard_image *dst, const struct a5_midgard_rect *bounds,
++    uint32_t clear_color, int preload)
++{
++    const size_t fb = 0x100;
++    const uint32_t min_xy = (bounds->y << 16) | bounds->x;
++    const uint32_t max_xy = ((bounds->y + bounds->height - 1) << 16) |
++        (bounds->x + bounds->width - 1);
++    put32(out, fb + 4, 31);                 /* no local workgroup storage */
++    put32(out, fb + 8 * 4, 0xb84da201u | (preload ? (1u << 30) : 0));
++    put32(out, fb + 9 * 4, 0x00141000u);  /* linear BGRA8 writeback */
++    put32(out, fb + 10 * 4, min_xy);
++    put32(out, fb + 11 * 4, max_xy);
++    put64(out, fb + 20 * 4, dst->gpu_va);
++    put32(out, fb + 22 * 4, dst->row_bytes);
++    if (preload) {
++        put64(out, fb + 32 * 4, dst->gpu_va);
++        put32(out, fb + 34 * 4, dst->row_bytes);
++        put32(out, fb + 35 * 4, dst->row_bytes * dst->height);
++    } else {
++        for (unsigned i = 0; i < 4; ++i)
++            put32(out, fb + (32 + i) * 4, clear_color);
++    }
++    put64(out, fb + 25 * 8, desc_va + 0x1000);
++    put64(out, fb + 26 * 8, desc_va + 0x1200);
++    put64(out, fb + 27 * 8, desc_va + 0x1000);
++    put64(out, fb + 28 * 8, desc_va + 0x1000);
++    if (preload) {
++        const uint32_t bins_x = (dst->width + 1023) / 1024;
++        const uint32_t bins_y = (dst->height + 1023) / 1024;
++        put32(out, fb + 48 * 4, 0x200 + bins_x * bins_y * 0x200);
++        put32(out, fb + 49 * 4, 0x01c7); /* 1024x1024 flat tiles */
++    } else {
++        put32(out, fb + 48 * 4, 0x204); /* no geometry, 512+4 bytes */
++        put32(out, fb + 49 * 4, 0x0fff); /* no hierarchy */
++    }
++    put32(out, 0x1200, 0xa0000000u);   /* empty polygon-list body */
++}
++
++static void encode_fragment_job(uint8_t *out, uint64_t desc_va,
++    uint32_t job_index)
++{
++    put32(out, 0x10, (job_index << 16) | 0x13u); /* 64-bit fragment job */
++    put64(out, 0x28, desc_va + 0x100);
++}
++
++static void set_vertices(uint8_t *out, size_t offset,
++    const struct a5_midgard_rect *r)
++{
++    const float x0 = (float)r->x, y0 = (float)r->y;
++    const float x1 = (float)(r->x + r->width);
++    const float y1 = (float)(r->y + r->height);
++    const float xy[8] = {x0, y0, x1, y0, x0, y1, x1, y1};
++    for (unsigned vertex = 0; vertex < 4; ++vertex) {
++        put_float(out, offset + vertex * 16, xy[vertex * 2]);
++        put_float(out, offset + vertex * 16 + 4, xy[vertex * 2 + 1]);
++        put_float(out, offset + vertex * 16 + 8, 0.0f);
++        put_float(out, offset + vertex * 16 + 12, 1.0f);
++    }
++}
++
++enum a5_midgard_status a5_midgard_encode_copy(
++    void *descriptor_cpu, size_t descriptor_bytes, uint64_t descriptor_va,
++    const struct a5_midgard_image *source,
++    const struct a5_midgard_rect *source_rect,
++    const struct a5_midgard_image *destination,
++    const struct a5_midgard_rect *destination_rect)
++{
++    if (!valid_descriptors(descriptor_cpu, descriptor_bytes, descriptor_va) ||
++        !valid_image(source) || !valid_image(destination) ||
++        !valid_rect(source_rect, source) ||
++        !valid_rect(destination_rect, destination))
++        return A5_MIDGARD_INVALID;
++    if (source_rect->width != destination_rect->width ||
++        source_rect->height != destination_rect->height ||
++        (source->gpu_va < destination->gpu_va + destination->mapped_bytes &&
++        destination->gpu_va < source->gpu_va + source->mapped_bytes) ||
++        (descriptor_va < source->gpu_va + source->mapped_bytes &&
++        source->gpu_va < descriptor_va + A5_MIDGARD_DESCRIPTOR_BYTES) ||
++        (descriptor_va < destination->gpu_va + destination->mapped_bytes &&
++        destination->gpu_va < descriptor_va + A5_MIDGARD_DESCRIPTOR_BYTES))
++        return A5_MIDGARD_UNSUPPORTED;
++
++    uint8_t *out = (uint8_t *)descriptor_cpu;
++    memset(out, 0, A5_MIDGARD_DESCRIPTOR_BYTES);
++    for (size_t i = 0; i < sizeof(fixture_words) / sizeof(fixture_words[0]);
++        ++i)
++        put32(out, fixture_words[i].offset, fixture_words[i].value);
++
++    /* Relocate the Mesa-generated T720 shader and fixed draw descriptors. */
++    static const uint16_t pointer_offsets[] = {
++        0x350, 0x360, 0x368, 0x378, 0x390, 0x398, 0x3a0,
++        0x3b0, 0x600, 0x740,
++    };
++    static const uint16_t pointer_targets[] = {
++        0x880, 0x740, 0x780, 0x600, 0x820, 0x800, 0x900,
++        0x100, 0x505, 0x700,
++    };
++    for (unsigned i = 0; i < sizeof(pointer_offsets) /
++        sizeof(pointer_offsets[0]); ++i)
++        put64(out, pointer_offsets[i], descriptor_va + pointer_targets[i]);
++    put64(out, 0x820, (descriptor_va + 0x8c0) | 1u);
++    put32(out, 0x700, ((source->height - 1) << 16) | (source->width - 1));
++    put64(out, 0x720, source->gpu_va);
++    put32(out, 0x728, source->row_bytes);
++    put32(out, 0x72c, source->row_bytes * source->height);
++    set_vertices(out, 0x880, destination_rect);
++    set_vertices(out, 0x8c0, source_rect);
++    put32(out, 0x91c, ((destination->height - 1) << 16) |
++        (destination->width - 1));
++    encode_framebuffer(out, descriptor_va, destination, destination_rect,
++        0, 1);
++    encode_fragment_job(out, descriptor_va, 2);
++    return A5_MIDGARD_OK;
++}
++
++enum a5_midgard_status a5_midgard_encode_clear(
++    void *descriptor_cpu, size_t descriptor_bytes, uint64_t descriptor_va,
++    const struct a5_midgard_image *destination,
++    const struct a5_midgard_rect *destination_rect, uint32_t bgra8_word)
++{
++    if (!valid_descriptors(descriptor_cpu, descriptor_bytes, descriptor_va) ||
++        !valid_image(destination) ||
++        !valid_rect(destination_rect, destination))
++        return A5_MIDGARD_INVALID;
++    if (descriptor_va < destination->gpu_va + destination->mapped_bytes &&
++        destination->gpu_va < descriptor_va + A5_MIDGARD_DESCRIPTOR_BYTES)
++        return A5_MIDGARD_UNSUPPORTED;
++    uint8_t *out = (uint8_t *)descriptor_cpu;
++    memset(out, 0, A5_MIDGARD_DESCRIPTOR_BYTES);
++    encode_framebuffer(out, descriptor_va, destination, destination_rect,
++        bgra8_word, 0);
++    encode_fragment_job(out, descriptor_va, 1);
++    return A5_MIDGARD_OK;
++}
+diff --git a/iokit/Kernel/arm/midgard_encode.h b/iokit/Kernel/arm/midgard_encode.h
+new file mode 100644
+index 0000000..17f1430
+--- /dev/null
++++ b/iokit/Kernel/arm/midgard_encode.h
+@@ -0,0 +1,54 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef A5XELTE_MIDGARD_ENCODE_H
++#define A5XELTE_MIDGARD_ENCODE_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++/* Kernel-owned, pinned and already mapped in the submitting GPU address space.
++ * These fields must never be populated directly from an IOUserClient request.
++ */
++struct a5_midgard_image {
++    uint64_t gpu_va;
++    uint64_t mapped_bytes;
++    uint32_t width;
++    uint32_t height;
++    uint32_t row_bytes;
++};
++
++struct a5_midgard_rect {
++    uint32_t x;
++    uint32_t y;
++    uint32_t width;
++    uint32_t height;
++};
++
++enum a5_midgard_status {
++    A5_MIDGARD_OK = 0,
++    A5_MIDGARD_INVALID = 1,
++    A5_MIDGARD_UNSUPPORTED = 2,
++};
++
++enum {
++    A5_MIDGARD_DESCRIPTOR_BYTES = 0x2000,
++    A5_MIDGARD_TILER_OFFSET = 0x300,
++    A5_MIDGARD_FRAGMENT_OFFSET = 0,
++};
++
++/* A complete copy uses the Mesa-generated T720 sample shader, then submits
++ * JS1 tiler and JS0 fragment in order. The caller owns cache and fence work.
++ * The destination is a separate, bounded BGRA8 resource. */
++enum a5_midgard_status a5_midgard_encode_copy(
++    void *descriptor_cpu, size_t descriptor_bytes, uint64_t descriptor_va,
++    const struct a5_midgard_image *source,
++    const struct a5_midgard_rect *source_rect,
++    const struct a5_midgard_image *destination,
++    const struct a5_midgard_rect *destination_rect);
++
++/* One bounded BGRA8 clear. Submit JS0 fragment only. */
++enum a5_midgard_status a5_midgard_encode_clear(
++    void *descriptor_cpu, size_t descriptor_bytes, uint64_t descriptor_va,
++    const struct a5_midgard_image *destination,
++    const struct a5_midgard_rect *destination_rect, uint32_t bgra8_word);
++
++#endif
+diff --git a/iokit/Kernel/arm/t720_fixture_words.inc b/iokit/Kernel/arm/t720_fixture_words.inc
+new file mode 100644
+index 0000000..484ef6a
+--- /dev/null
++++ b/iokit/Kernel/arm/t720_fixture_words.inc
+@@ -0,0 +1,71 @@
++/* Mesa 26.2.4 Panfrost v4 fixture, nonzero descriptor words only.
++ * Source: tools/a5xelte-gpu/t720-texture-fixture.bin, offsets 0x300..0x93f.
++ * Excludes test texels at 0xa00. */
++    { 0x310, 0x0001100fu },
++    { 0x320, 0x00000003u },
++    { 0x324, 0x28000000u },
++    { 0x328, 0x1803800au },
++    { 0x334, 0x00000003u },
++    { 0x340, 0x00000007u },
++    { 0x350, 0x02000880u },
++    { 0x360, 0x02000740u },
++    { 0x368, 0x02000780u },
++    { 0x378, 0x02000600u },
++    { 0x390, 0x02000820u },
++    { 0x398, 0x02000800u },
++    { 0x3a0, 0x02000900u },
++    { 0x3b0, 0x02000100u },
++    { 0x3b8, 0x3f800000u },
++    { 0x500, 0xc87a9835u },
++    { 0x504, 0x01403939u },
++    { 0x508, 0x00000030u },
++    { 0x510, 0x210b1293u },
++    { 0x514, 0x00e43c60u },
++    { 0x520, 0x08220019u },
++    { 0x524, 0x841f0018u },
++    { 0x528, 0x4000027bu },
++    { 0x52c, 0x0240ffaeu },
++    { 0x530, 0xc0a00000u },
++    { 0x534, 0x0000004fu },
++    { 0x538, 0x0000ffffu },
++    { 0x540, 0x08220019u },
++    { 0x544, 0x841f0018u },
++    { 0x548, 0x4000027bu },
++    { 0x54c, 0x0240ffaeu },
++    { 0x550, 0xc0a00000u },
++    { 0x554, 0xfffffc4fu },
++    { 0x558, 0x0000ffffu },
++    { 0x600, 0x02000505u },
++    { 0x608, 0x00010001u },
++    { 0x60c, 0x00010000u },
++    { 0x610, 0x00020400u },
++    { 0x620, 0x0700ffffu },
++    { 0x624, 0x02f00000u },
++    { 0x638, 0xf0122122u },
++    { 0x700, 0x000f000fu },
++    { 0x708, 0x328bb688u },
++    { 0x710, 0x00000688u },
++    { 0x720, 0x02000a00u },
++    { 0x728, 0x00000040u },
++    { 0x72c, 0x00000400u },
++    { 0x740, 0x02000700u },
++    { 0x780, 0x00000003u },
++    { 0x788, 0x00000999u },
++    { 0x800, 0x2dea2200u },
++    { 0x820, 0x02000881u },
++    { 0x828, 0x00000010u },
++    { 0x82c, 0x00000040u },
++    { 0x88c, 0x3f800000u },
++    { 0x890, 0x41800000u },
++    { 0x89c, 0x3f800000u },
++    { 0x8a4, 0x41800000u },
++    { 0x8ac, 0x3f800000u },
++    { 0x8b0, 0x41800000u },
++    { 0x8b4, 0x41800000u },
++    { 0x8bc, 0x3f800000u },
++    { 0x900, 0xff800000u },
++    { 0x904, 0xff800000u },
++    { 0x908, 0x7f800000u },
++    { 0x90c, 0x7f800000u },
++    { 0x914, 0x3f800000u },
++    { 0x91c, 0x000f000fu },
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index 5b208f4..989de14 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -19,6 +19,7 @@ iokit/Kernel/arm/A5XELTEGPU.cpp                                 optional iokitcp
+ iokit/Kernel/arm/A5XELTEGPUResources.cpp                        optional iokitcpp
+ iokit/Kernel/arm/A5XELTEGPUUserClient.cpp                       optional iokitcpp
+ iokit/Kernel/arm/A5XELTEGPUAS1.cpp                              optional iokitcpp
++iokit/Kernel/arm/A5XELTEMidgardEncode.cpp                    optional iokitcpp
+ iokit/Kernel/arm/A5XELTEGPUTransfer.cpp                         optional iokitcpp
+ iokit/Kernel/arm/A5XELTEGPUFrameMap.cpp                         optional iokitcpp
+ iokit/Kernel/arm/A5XELTEGPUFramePresent.cpp                     optional iokitcpp
