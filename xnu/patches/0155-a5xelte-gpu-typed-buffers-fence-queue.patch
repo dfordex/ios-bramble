@@ -21,15 +21,6 @@
  enum A5G3DAS1Operation {
      kAS1ClearBGRA = 1,
      kAS1CopyBGRA = 2,
-@@ -47,7 +54,7 @@
-     uint32_t headerStatus;
-     uint32_t linkedHeaderStatus;
- };
--/* Typed clear/copy only. The kernel owns descriptors, shader, GPU VAs,
-+/* Typed bounded BGRA operations only. The kernel owns descriptors, shader, GPU VAs,
-  * resource mappings and all job/fence lifetime decisions. */
- A5G3DAS1SubmitStatus a5g3d_as1_submit(A5G3DAS1Context *,
-     const A5G3DAS1Request &, A5G3DAS1Completion *);
 --- a/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
 +++ b/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
 @@ -27,18 +27,24 @@
@@ -269,24 +260,6 @@
      kA5GPUClientBatchMax = 8,
      kA5GPUClientBatchCompleted = 0,
      kA5GPUClientBatchInvalid = 1,
-@@ -120,7 +131,7 @@
- /* Opaque mapping tokens bind both resources to the opening user client. */
- struct A5GPUClientSubmitRequest {
-     A5GPUClientHeader header;
--    uint32_t operation; /* ClearBGRA, CopyBGRA or DrawTexturedQuadBGRA */
-+    uint32_t operation; /* typed BGRA operation 1..4; op4 is build-gated */
-     uint32_t clearColor;
-     uint64_t sourceToken; /* zero for clear */
-     uint64_t destinationToken;
-@@ -140,7 +151,7 @@
-  * command starts. On first failure, later items are NotRun; no rollback of
-  * completed earlier commands is implied. No user-supplied job or GPU VA. */
- struct A5GPUClientBatchCommand {
--    uint32_t operation; /* ClearBGRA, CopyBGRA, DrawTexturedQuadBGRA */
-+    uint32_t operation; /* typed BGRA operation 1..4; op4 is build-gated */
-     uint32_t clearColor;
-     uint64_t sourceToken;
-     uint64_t destinationToken;
 @@ -168,4 +179,45 @@
      A5GPUClientBatchItemResult items[kA5GPUClientBatchMax];
  };
