@@ -23,7 +23,9 @@ of the **staged iOS 16.7.16 dyld cache** gives a more precise discovery path:
    iterates the matched I/O Registry services. The existing private
    `A5XELTEGPU` service is not one of them. The 0146 device log also records
    BackBoard matching `IOProviderClass=IOAcceleratorES` and finding zero
-   services.
+   services. XNU's `IOService::matchPassive` checks this class through
+   `metaCast`; setting a registry property with that string on the private
+   service would not make it an `IOAcceleratorES` subclass.
 2. `_getMetalPluginClassForService` reads each service's `MetalPluginName`
    property (a `CFString`) and optional `MetalPluginClassName`. It forms
    `/System/Library/Extensions/<MetalPluginName>.bundle`, loads the bundle,
