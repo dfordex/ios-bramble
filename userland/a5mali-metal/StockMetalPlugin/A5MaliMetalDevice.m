@@ -96,13 +96,23 @@ static unsigned missingRequiredMethods(Class cls, Protocol *protocol)
     if (!limits) [NSException raise:NSInternalInconsistencyException
         format:@"Mali provider limits ABI changed"];
     memset(limits, 0, sizeof(*limits));
-    limits->maxFramebufferStorageBits = 32;
-    limits->maxColorAttachments = 1;
+    /* Logical API capacity for strictly registered sequential native passes.
+     * Each physical v4 SFBD still has one color target. */
+    limits->maxFramebufferStorageBits = 160;
+    limits->maxColorAttachments = 3;
+    /* These limits count original Metal binding slots, not the dense native
+     * descriptor-table count. Blur/misc/path use Metal VB1..3/5, FB1/6/9 and textures3/4. */
+    limits->maxVertexAttributes = 4;
+    limits->maxVertexBuffers = 6;
+    limits->maxVertexInlineDataSize = 4096;
+    limits->maxFragmentBuffers = 10;
+    limits->maxFragmentInlineDataSize = 4096;
     limits->maxVertexTextures = 0;
-    limits->maxFragmentTextures = 1;
-    limits->maxFragmentSamplers = 1;
-    limits->maxInterpolants = 1;
-    limits->maxInterpolatedComponents = 4;
+    limits->maxFragmentTextures = 5;
+    limits->maxFragmentSamplers = 2;
+    limits->maxInterpolants = 5;
+    limits->maxInterpolatedComponents = 8;
+    limits->maxConstantBufferArguments = 10;
     limits->maxLineWidth = 1.0f;
     limits->maxPointSize = 1.0f;
     limits->minConstantBufferAlignmentBytes = 16;
@@ -118,7 +128,7 @@ static unsigned missingRequiredMethods(Class cls, Protocol *protocol)
     limits->maxViewportCount = 1;
     limits->maxBufferLength = A5MaliMaxPrivateBufferLength;
     _limitsInitialized = YES;
-    fprintf(stderr, "A5XELTE Metal: initLimits complete; BGRA8 1080x1920 private buffers=4x1MiB\n");
+    fprintf(stderr, "A5XELTE Metal: initLimits complete; registered profiles, FT slots=5 FB slots=10 private buffers=4x8MiB\n");
 }
 
 - (void)initFeatureQueries
@@ -154,7 +164,7 @@ static unsigned missingRequiredMethods(Class cls, Protocol *protocol)
 - (NSUInteger)readWriteTextureSupport { return MTLReadWriteTextureTierNone; }
 - (NSUInteger)maxBufferLength { return A5MaliMaxPrivateBufferLength; }
 - (NSUInteger)currentAllocatedSize { return A5MaliAllocatedPrivateBufferBytes(self); }
-- (uint64_t)recommendedMaxWorkingSetSize { return 4u * A5MaliMaxPrivateBufferLength + 4u * 0x800000u; }
+- (uint64_t)recommendedMaxWorkingSetSize { return 4u * A5MaliMaxPrivateBufferLength + 4u * 0x2000000u; }
 - (uint64_t)sharedMemorySize { return 0; }
 - (uint64_t)dedicatedMemorySize { return 0; }
 - (MTLSize)maxThreadsPerThreadgroup { return MTLSizeMake(0, 0, 0); }

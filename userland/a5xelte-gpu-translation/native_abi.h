@@ -7,7 +7,7 @@
 #include <stdint.h>
 enum { A5NativeQuerySelector=17, A5NativeSubmitSelector=18,
        A5NativeCapability=32, A5NativeSlots=4, A5NativeJobBytes=0x40000,
-       A5NativeJobVA=0x12000000, A5NativeBulkWriteSelector=19,
+       A5NativeJobVA=0x18000000, A5NativeBulkWriteSelector=19,
        A5NativeBulkWriteMax=0x100000, A5NativeBufferMax=0x800000 };
 typedef struct { uint32_t version,size,reserved0,reserved1; } A5NativeHeader;
 typedef struct {

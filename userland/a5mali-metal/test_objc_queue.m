@@ -110,6 +110,41 @@ int main(void)
         queue = nil;
         device = nil;
         assert(fake.releases == 2);
+
+        /* Native callbacks execute at commit, in encoded order, and require
+         * real terminal fence values. The mock never executes a GPU job. */
+        A5MaliDevice *native=[[A5MaliDevice alloc] initWithTransport:mock context:&fake
+            commandCapabilities:63 operationCapabilities:127|(1u<<16)|(1u<<17)];
+        assert([native supportsNativePrograms]);
+        __block unsigned sequence=0, mutableValue=4;
+        A5MaliCommandBuffer *work=[native newCommandBuffer];
+        assert([work encodeNativeWork:^kern_return_t(A5MaliClient *client,A5MaliFence *fence){
+            assert(client && sequence++==0 && mutableValue==9);
+            fence->tilerFence=300;fence->fragmentFence=301;return KERN_SUCCESS;
+        }]);
+        assert([work encodeNativeWork:^kern_return_t(A5MaliClient *client,A5MaliFence *fence){
+            assert(client && sequence++==1);fence->tilerFence=302;fence->fragmentFence=303;return KERN_SUCCESS;
+        }]);
+        mutableValue=9;assert(sequence==0);
+        assert([work commitAndWait:&error] && sequence==2);
+        assert(work.completedFence.fragmentFence==303);
+        assert(![work commitAndWait:&error]);assert(sequence==2);
+        assert(![work encodeNativeWork:^kern_return_t(A5MaliClient *c,A5MaliFence *f){
+            (void)c;(void)f;assert(0);return KERN_SUCCESS;
+        }]);
+        work=[native newCommandBuffer];
+        assert([work encodeNativeWork:^kern_return_t(A5MaliClient *c,A5MaliFence *f){
+            (void)c;(void)f;return KERN_SUCCESS; /* no fences is not completion */
+        }]);
+        assert([work encodeNativeWork:^kern_return_t(A5MaliClient *c,A5MaliFence *f){
+            (void)c;(void)f;assert(0 && "work after a failed native command");return KERN_SUCCESS;
+        }]);
+        assert(![work commitAndWait:&error] && error.code==kIOReturnError);
+        A5MaliDevice *withoutQuery=[[A5MaliDevice alloc] initWithTransport:mock context:&fake
+            commandCapabilities:63 operationCapabilities:127|(1u<<17)];
+        assert(![withoutQuery supportsNativePrograms]);
+        assert(![[withoutQuery newCommandBuffer] encodeNativeWork:
+            ^kern_return_t(A5MaliClient *c,A5MaliFence *f){(void)c;(void)f;return KERN_SUCCESS;}]);
     }
     return 0;
 }

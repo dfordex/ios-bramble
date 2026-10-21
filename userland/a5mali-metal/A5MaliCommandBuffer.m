@@ -41,6 +41,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
     A5MaliKindCopy = A5MaliCopyBGRA,
     A5MaliKindTexturedQuad = A5MaliDrawTexturedQuadBGRA,
     A5MaliKindReadSurf = A5MaliReadSurfBGRA,
+    A5MaliKindNative = 0x100,
 };
 
 @interface A5MaliOperation : NSObject
@@ -50,6 +51,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
 @property (nonatomic) A5MaliRect sourceRect;
 @property (nonatomic) A5MaliRect destinationRect;
 @property (nonatomic) uint32_t color;
+@property (nonatomic, copy, nullable) A5MaliNativeWork nativeWork;
 @end
 
 @implementation A5MaliOperation
@@ -146,6 +148,12 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
 - (BOOL)supportsPrivateReadSurf
 {
     return (_client.gpuCommandsSupported & (1U << 4)) != 0;
+}
+- (BOOL)supportsNativePrograms
+{
+    const uint32_t required = (1U << 16) | (1U << 17);
+    return (_client.gpuCommandsSupported & 32U) &&
+        (_client.supportedOperations & required) == required;
 }
 
 #ifdef A5_MALI_HOST_TEST
@@ -305,7 +313,10 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
     _committed = YES;
     [[_device lock] lock];
     A5MaliClient *client = [_device client];
-    if (client->supportedOperations & (1U << 6)) {
+    BOOL hasNative = NO;
+    for (A5MaliOperation *operation in _operations)
+        if (operation.kind == A5MaliKindNative) { hasNative = YES; break; }
+    if (!hasNative && (client->supportedOperations & (1U << 6))) {
         for (NSUInteger start = 0; start < _operations.count;
              start += A5MaliBatchMaxCommands) {
             const uint32_t count = (uint32_t)MIN(
@@ -343,7 +354,12 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
     for (A5MaliOperation *operation in _operations) {
         A5MaliFence fence = {0};
         kern_return_t kr;
-        if (operation.kind == A5MaliKindClear) {
+        if (operation.kind == A5MaliKindNative) {
+            kr = operation.nativeWork ? operation.nativeWork(client, &fence) :
+                kIOReturnBadArgument;
+            if (kr == KERN_SUCCESS && (!fence.fragmentFence ||
+                fence.fragmentFence < fence.tilerFence)) kr = kIOReturnError;
+        } else if (operation.kind == A5MaliKindClear) {
             A5MaliResource destination = operation.destination.resource;
             kr = A5MaliClear([_device client], &destination,
                 operation.destinationRect, operation.color, &fence);
@@ -372,6 +388,17 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
         _completedFence = fence;
     }
     [[_device lock] unlock];
+    return YES;
+}
+
+- (BOOL)encodeNativeWork:(A5MaliNativeWork)work
+{
+    if (_committed || !work || _operations.count >= 64 ||
+        ![_device supportsNativePrograms]) return NO;
+    A5MaliOperation *operation = [A5MaliOperation new];
+    operation.kind = A5MaliKindNative;
+    operation.nativeWork = work;
+    [_operations addObject:operation];
     return YES;
 }
 

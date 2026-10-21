@@ -89,7 +89,41 @@ int main(void)
         Fake fake = {0};
         A5MaliRestrictedDevice *device = [[ResourceDeviceFixture alloc]
             initWithFake:&fake operations:32767];
-        assert(![device newBufferWithLength:8191 options:MTLResourceStorageModeShared]);
+        @autoreleasepool {
+            A5MaliPrivateBuffer *shared = [device newBufferWithLength:8191
+                options:MTLResourceStorageModeShared];
+            assert(shared && shared.contents && shared.storageMode == MTLStorageModeShared);
+            assert(!shared.privateKernelHandle && shared.allocatedSize == 8192);
+            assert(A5MaliAllocatedSharedReadBufferBytes(device) == 8192 && !fake.creates);
+            NSError *error = nil;
+            A5MaliBufferBinding *binding = [A5MaliBufferBinding bindingWithBuffer:shared
+                offset:17 length:32 device:device error:&error];
+            assert(binding && !error && !binding.inlineBytes && !binding.privateKernelHandle);
+            /* Capture happens at submission, not at setBuffer encoding. */
+            memset((uint8_t *)shared.contents + 17, 0xa7, 32);
+            NSData *captured = [binding captureBytesForSubmission:&error];
+            assert(captured.length == 32 && !error && ((const uint8_t *)captured.bytes)[0] == 0xa7);
+            memset((uint8_t *)shared.contents + 17, 0x55, 32);
+            assert(((const uint8_t *)captured.bytes)[0] == 0xa7);
+            assert(((const uint8_t *)[binding captureBytesForSubmission:NULL].bytes)[0] == 0x55);
+            assert(![A5MaliBufferBinding bindingWithBuffer:shared offset:NSUIntegerMax
+                length:1 device:device error:&error] && error);
+            assert(![A5MaliBufferBinding bindingWithBuffer:shared offset:8190
+                length:2 device:device error:&error]);
+            uint8_t bytes[4] = {1, 2, 3, 4};
+            A5MaliBufferBinding *inlineBinding = [A5MaliBufferBinding bindingWithBytes:bytes
+                length:sizeof(bytes) device:device error:&error];
+            bytes[0] = 99;
+            assert(inlineBinding.inlineBytes &&
+                ((const uint8_t *)[inlineBinding captureBytesForSubmission:NULL].bytes)[0] == 1);
+            assert(![A5MaliBufferBinding bindingWithBytes:bytes length:4097
+                device:device error:&error]);
+            A5MaliRestrictedDevice *other = [[ResourceDeviceFixture alloc]
+                initWithFake:&fake operations:32767];
+            assert(![A5MaliBufferBinding bindingWithBuffer:shared offset:0 length:1
+                device:other error:&error]);
+        }
+        assert(!A5MaliAllocatedSharedReadBufferBytes(device));
         assert(![device newBufferWithLength:0 options:MTLResourceStorageModePrivate]);
         assert(![device newBufferWithLength:A5MaliMaxPrivateBufferLength + 1
             options:MTLResourceStorageModePrivate]);
@@ -120,7 +154,21 @@ int main(void)
             fake.corruptRead = NO;
             fake.failWrite = YES;
             assert([buffer uploadBytes:input offset:0 length:1] == kIOReturnError);
+            assert(!buffer.readyForRead);
+            assert(![A5MaliBufferBinding bindingWithBuffer:buffer offset:0 length:1
+                device:device error:NULL]);
             fake.failWrite = NO;
+            assert([buffer uploadBytes:input offset:0 length:sizeof(input)] == KERN_SUCCESS);
+            assert(!buffer.readyForRead); /* partial success does not repair the failed resource */
+            uint8_t whole[8191] = {0};
+            assert([buffer uploadBytes:whole offset:0 length:sizeof(whole)] == KERN_SUCCESS);
+            assert(buffer.readyForRead);
+            A5MaliBufferBinding *privateBinding = [A5MaliBufferBinding bindingWithBuffer:buffer
+                offset:16 length:64 device:device error:NULL];
+            assert(privateBinding.privateKernelHandle == buffer.privateKernelHandle);
+            NSError *privateError = nil;
+            assert(![privateBinding captureBytesForSubmission:&privateError] &&
+                privateError.code == kIOReturnUnsupported);
             assert(![buffer newTextureWithDescriptor:[MTLTextureDescriptor new]
                 offset:0 bytesPerRow:256]);
             buffer = nil;
@@ -154,7 +202,26 @@ int main(void)
         size = [device heapTextureSizeAndAlignWithDescriptor:texture];
         assert(size.size == 8294400 && size.align == 4096);
         texture.pixelFormat = MTLPixelFormatRGBA16Float;
+        /* The surface window is32MiB; buffers independently remain8MiB. */
+        assert([device heapTextureSizeAndAlignWithDescriptor:texture].size==16588800);
+        texture.width=2048;texture.height=2048;
+        assert([device heapTextureSizeAndAlignWithDescriptor:texture].size==A5MaliSurfaceMaxBytes);
+        texture.height=2049;
         assert(![device heapTextureSizeAndAlignWithDescriptor:texture].size);
+        texture.width=63; texture.height=31;
+        size=[device heapTextureSizeAndAlignWithDescriptor:texture];
+        assert(size.size==16384 && size.align==4096);
+        texture.width=2049;
+        assert(![device heapTextureSizeAndAlignWithDescriptor:texture].size);
+        texture.width=63; texture.mipmapLevelCount=2;
+        assert(![device heapTextureSizeAndAlignWithDescriptor:texture].size);
+        texture.mipmapLevelCount=1;
+        texture.pixelFormat=MTLPixelFormatR8Unorm;
+        assert([device heapTextureSizeAndAlignWithDescriptor:texture].size==4096);
+        texture.pixelFormat=MTLPixelFormatRG8Unorm;
+        assert([device heapTextureSizeAndAlignWithDescriptor:texture].size==4096);
+        texture.pixelFormat=MTLPixelFormatR32Float;
+        assert([device heapTextureSizeAndAlignWithDescriptor:texture].size==8192);
         MTLSamplerDescriptor *sampler = [MTLSamplerDescriptor new];
         sampler.label = @"immutable sampler";
         A5MaliSamplerState *state = [device newSamplerStateWithDescriptor:sampler];

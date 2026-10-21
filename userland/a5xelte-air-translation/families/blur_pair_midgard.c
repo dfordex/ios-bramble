@@ -13,6 +13,7 @@
 #include "panfrost/compiler/midgard/disassemble.h"
 #include "misc_native_rt.h"
 static bool native_rgba16;
+static bool dynamic_viewport;
 
 #ifdef NDEBUG
 #error This bounded compiler requires active NIR validation
@@ -65,9 +66,15 @@ static bool lower_fixed_viewport(nir_builder *b,
    bool offset = intr->intrinsic == nir_intrinsic_load_viewport_offset;
    if (!scale && !offset) return false;
    b->cursor = nir_after_instr(&intr->instr);
-   /* Proof only: the actual display pipeline must supply a dynamic viewport. */
-   nir_def *v = scale ? nir_imm_vec3(b, 540.0f, 960.0f, 0.5f)
-                      : nir_imm_vec3(b, 540.0f, 960.0f, 0.5f);
+   /* Released pan_nir_lower_sysvals maps each viewport intrinsic to a
+    * driver-populated 16-byte UBO record. Reserve stage-local UBO0 records
+    * 512/528, separate from the unmodified Metal uniform buffers/push data.
+    * The legacy fixed profile remains reproducible unless explicitly opted in. */
+   nir_def *v = dynamic_viewport
+      ? nir_load_ubo(b, 3, 32, nir_imm_int(b, 0),
+                     nir_imm_int(b, scale ? 512 : 528), .align_mul = 16,
+                     .range_base = scale ? 512 : 528, .range = 12)
+      : nir_imm_vec3(b, 540.0f, 960.0f, 0.5f);
    nir_def_replace(&intr->def, v);
    return true;
 }
@@ -389,11 +396,15 @@ static int compile_spirv(const char *input, const char *output,
 
 int main(int argc, char **argv)
 {
-   if (argc != 8 && (argc != 9 || strcmp(argv[8], "rgba16f"))) {
-      fprintf(stderr, "usage: %s vert.spv frag.spv vert.bin frag.bin vertex-fnv fragment-fnv fragment-buffer-bytes [rgba16f]\n", argv[0]);
+   if (argc < 8 || argc > 10) {
+      fprintf(stderr, "usage: %s vert.spv frag.spv vert.bin frag.bin vertex-fnv fragment-fnv fragment-buffer-bytes [rgba16f] [--dynamic-viewport]\n", argv[0]);
       return 2;
    }
-   native_rgba16 = argc == 9;
+   for (unsigned i = 8; i < (unsigned)argc; ++i) {
+      if (!strcmp(argv[i], "rgba16f") && !native_rgba16) native_rgba16 = true;
+      else if (!strcmp(argv[i], "--dynamic-viewport") && !dynamic_viewport) dynamic_viewport = true;
+      else return 2;
+   }
    char *end = NULL;
    family_vertex_fingerprint = strtoull(argv[5], &end, 16);
    if (!*argv[5] || *end) return 2;

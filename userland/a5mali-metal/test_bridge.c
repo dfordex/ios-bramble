@@ -43,6 +43,7 @@ typedef struct {
     int failSubmit;
     int malformedImport;
     uint32_t batchFailIndex;
+    uint32_t importWidth,importHeight,importRow,importFormat,mapBytes;
 } Fake;
 
 static kern_return_t fakeCall(void *opaque, uint32_t selector,
@@ -59,6 +60,8 @@ static kern_return_t fakeCall(void *opaque, uint32_t selector,
             {1, sizeof(ImportReply), 0, 0},
             0x100000001ULL + fake->imports, 64, 64, 256, 0x42475241
         };
+        if(fake->importWidth){reply.width=fake->importWidth;reply.height=fake->importHeight;
+            reply.rowBytes=fake->importRow;reply.format=fake->importFormat;}
         if (fake->malformedImport) reply.h.version = 99;
         memcpy(output, &reply, sizeof(reply));
         *outputSize = sizeof(reply);
@@ -73,6 +76,7 @@ static kern_return_t fakeCall(void *opaque, uint32_t selector,
             {1, sizeof(MapReply), 0, 0}, request->handle,
             64 * 256, A5MaliRead | A5MaliWrite
         };
+        if(fake->mapBytes)reply.mappedBytes=fake->mapBytes;
         memcpy(output, &reply, sizeof(reply));
         *outputSize = sizeof(reply);
         fake->maps++;
@@ -249,6 +253,27 @@ int main(void)
     assert(A5MaliReleaseSurface(&client, &source) == KERN_SUCCESS);
     assert(A5MaliReleaseSurface(&client, &destination) == KERN_SUCCESS);
     assert(fake.unmaps == 2 && fake.releases == 3);
+    A5MaliClose(&client);
+    Fake bounds={.batchFailIndex=UINT32_MAX,.importWidth=1080,.importHeight=1920,
+        .importRow=8640,.importFormat=0x52476841,.mapBytes=16588800};
+    assert(A5MaliInitTransportWithCapabilities(&client,fakeCall,&bounds,15)==KERN_SUCCESS);
+    A5MaliResource half;
+    assert(A5MaliImportSurface(&client,123,A5MaliRead|A5MaliWrite,&half)==KERN_SUCCESS);
+    assert(half.width==1080&&half.height==1920&&half.rowBytes==8640);
+    assert(A5MaliReleaseSurface(&client,&half)==KERN_SUCCESS);
+    bounds.importWidth=2048;bounds.importHeight=2048;bounds.importRow=16384;bounds.mapBytes=A5MaliSurfaceMaxBytes;
+    assert(A5MaliImportSurface(&client,123,A5MaliRead|A5MaliWrite,&half)==KERN_SUCCESS);
+    assert(A5MaliReleaseSurface(&client,&half)==KERN_SUCCESS);
+    uint32_t maps=bounds.maps,releases=bounds.releases;
+    bounds.mapBytes=A5MaliSurfaceMaxBytes+4096;
+    assert(A5MaliImportSurface(&client,123,A5MaliRead,&half)==kIOReturnBadArgument);
+    assert(!half.token&&bounds.maps==maps+1&&bounds.releases==releases+1);
+    maps=bounds.maps;bounds.mapBytes=A5MaliSurfaceMaxBytes;bounds.importWidth=UINT32_MAX;
+    assert(A5MaliImportSurface(&client,123,A5MaliRead,&half)==kIOReturnBadArgument&&bounds.maps==maps);
+    bounds.importWidth=2048;bounds.importHeight=2049;
+    assert(A5MaliImportSurface(&client,123,A5MaliRead,&half)==kIOReturnBadArgument&&bounds.maps==maps);
+    bounds.importHeight=2048;bounds.importRow=16400;
+    assert(A5MaliImportSurface(&client,123,A5MaliRead,&half)==kIOReturnBadArgument&&bounds.maps==maps);
     A5MaliClose(&client);
     return 0;
 }

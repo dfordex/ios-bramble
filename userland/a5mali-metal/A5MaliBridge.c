@@ -184,8 +184,10 @@ kern_return_t A5MaliImportSurface(A5MaliClient *client,
         reply.format==0x52476841 ? 8 : reply.format==0x4c303038 ? 1 :
         reply.format==0x32433038 ? 2 : reply.format==0x4c303066 ? 4 : 0;
     if (!elementBytes || !reply.width || !reply.height ||
-        reply.width > UINT32_MAX / elementBytes ||
-        reply.rowBytes < reply.width * elementBytes) {
+        reply.width > 2048 || reply.height > 2048 ||
+        (reply.rowBytes & 15) || reply.rowBytes > 2048 * elementBytes ||
+        reply.rowBytes < reply.width * elementBytes ||
+        (uint64_t)reply.rowBytes * reply.height > A5MaliSurfaceMaxBytes) {
         call(client, A5MaliRelease, &map, sizeof(map), NULL, NULL);
         return kIOReturnBadArgument;
     }
@@ -196,6 +198,7 @@ kern_return_t A5MaliImportSurface(A5MaliClient *client,
         (!validReply(&mapped.h, sizeof(mapped), size) ||
          mapped.token != reply.handle ||
          (mapped.flags & usage) != usage ||
+         mapped.mappedBytes > A5MaliSurfaceMaxBytes ||
          mapped.mappedBytes < (uint64_t)reply.rowBytes * reply.height))
         kr = kIOReturnBadArgument;
     if (kr != KERN_SUCCESS) {

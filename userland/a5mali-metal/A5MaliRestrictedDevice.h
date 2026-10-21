@@ -25,6 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 @class A5MaliMetalBuffer, A5MaliMetalBlitEncoder;
 @class A5MaliReadSurfCandidate, A5MaliMetalRenderEncoder;
 @class A5MaliMetalLibrary, A5MaliMetalFunction;
+@class A5MaliPrivateBuffer, A5MaliSamplerState, A5MaliDepthStencilState;
 
 @interface A5MaliRestrictedDevice : A5_MALI_DEVICE_SUPER
 /* The selector Metal calls after discovering a genuine IOAcceleratorES.
@@ -41,6 +42,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithTransport:(A5MaliTransport)transport context:(void *)context;
 - (instancetype)initWithTransport:(A5MaliTransport)transport context:(void *)context
              commandCapabilities:(uint32_t)commands;
+- (instancetype)initWithTransport:(A5MaliTransport)transport context:(void *)context
+             commandCapabilities:(uint32_t)commands operationCapabilities:(uint32_t)operations;
 #endif
 /* No shader compiler or general Midgard renderer is wired yet. */
 - (nullable id)newPrivateRenderPipelineWithVertex:(NSString *)vertex
@@ -110,12 +113,21 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 @property (nonatomic, readonly) NSUInteger height;
 @property (nonatomic, readonly) MTLPixelFormat pixelFormat;
 @property (nonatomic, readonly) MTLTextureType textureType;
+@property (nonatomic, readonly) MTLTextureSwizzleChannels swizzle;
 @property (nonatomic, readonly) NSUInteger mipmapLevelCount;
 @property (nonatomic, readonly) NSUInteger arrayLength;
 @property (nonatomic, readonly) NSUInteger sampleCount;
 @property (nonatomic, readonly) MTLTextureUsage usage;
 @property (nonatomic, readonly) MTLStorageMode storageMode;
-@property (nonatomic, readonly) IOSurfaceRef iosurface;
+@property (nonatomic, readonly) IOSurfaceRef _Nullable iosurface;
+@property (nonatomic, readonly) MTLResourceOptions resourceOptions;
+@property (nonatomic, readonly) MTLCPUCacheMode cpuCacheMode;
+@property (nonatomic, readonly) MTLHazardTrackingMode hazardTrackingMode;
+@property (nonatomic, readonly) NSUInteger allocatedSize;
+- (void)getBytes:(void *)bytes bytesPerRow:(NSUInteger)row fromRegion:(MTLRegion)region mipmapLevel:(NSUInteger)level;
+- (void)getBytes:(void *)bytes bytesPerRow:(NSUInteger)row bytesPerImage:(NSUInteger)image fromRegion:(MTLRegion)region mipmapLevel:(NSUInteger)level slice:(NSUInteger)slice;
+- (void)replaceRegion:(MTLRegion)region mipmapLevel:(NSUInteger)level withBytes:(const void *)bytes bytesPerRow:(NSUInteger)row;
+- (void)replaceRegion:(MTLRegion)region mipmapLevel:(NSUInteger)level slice:(NSUInteger)slice withBytes:(const void *)bytes bytesPerRow:(NSUInteger)row bytesPerImage:(NSUInteger)image;
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
 @property (nullable, copy, atomic) NSString *label;
 @end
@@ -153,11 +165,41 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 @end
 
 @interface A5MaliMetalRenderEncoder : NSObject
+@property (nonatomic, readonly) A5MaliRestrictedDevice *device;
+@property (nullable, copy, atomic) NSString *label;
+- (void)insertDebugSignpost:(NSString *)string;
+- (void)pushDebugGroup:(NSString *)string;
+- (void)popDebugGroup;
+- (void)setCullMode:(MTLCullMode)mode;
+- (void)setFrontFacingWinding:(MTLWinding)winding;
+- (void)setTriangleFillMode:(MTLTriangleFillMode)mode;
+- (void)setDepthClipMode:(MTLDepthClipMode)mode;
+- (void)setDepthBias:(float)bias slopeScale:(float)slope clamp:(float)clamp;
+- (void)setDepthStencilState:(nullable A5MaliDepthStencilState *)state;
+- (void)setStencilReferenceValue:(uint32_t)value;
+- (void)setStencilFrontReferenceValue:(uint32_t)front backReferenceValue:(uint32_t)back;
+- (void)setBlendColorRed:(float)red green:(float)green blue:(float)blue alpha:(float)alpha;
+- (void)setVisibilityResultMode:(MTLVisibilityResultMode)mode offset:(NSUInteger)offset;
+- (void)setVertexBuffers:(A5MaliPrivateBuffer * _Nullable const * _Nonnull)buffers offsets:(const NSUInteger *)offsets withRange:(NSRange)range;
+- (void)setFragmentBuffers:(A5MaliPrivateBuffer * _Nullable const * _Nonnull)buffers offsets:(const NSUInteger *)offsets withRange:(NSRange)range;
+- (void)setFragmentTextures:(A5MaliMetalTexture * _Nullable const * _Nonnull)textures withRange:(NSRange)range;
+- (void)setFragmentSamplerStates:(A5MaliSamplerState * _Nullable const * _Nonnull)samplers withRange:(NSRange)range;
+
 - (void)setRenderPipelineState:(A5MaliReadSurfCandidate *)pipeline;
-- (void)setFragmentTexture:(A5MaliMetalTexture *)texture atIndex:(NSUInteger)index;
+- (void)setFragmentTexture:(nullable A5MaliMetalTexture *)texture atIndex:(NSUInteger)index;
+- (void)setVertexBuffer:(nullable A5MaliPrivateBuffer *)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
+- (void)setFragmentBuffer:(nullable A5MaliPrivateBuffer *)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
+- (void)setVertexBufferOffset:(NSUInteger)offset atIndex:(NSUInteger)index;
+- (void)setFragmentBufferOffset:(NSUInteger)offset atIndex:(NSUInteger)index;
+- (void)setVertexBytes:(const void * _Nullable)bytes length:(NSUInteger)length atIndex:(NSUInteger)index;
+- (void)setFragmentBytes:(const void * _Nullable)bytes length:(NSUInteger)length atIndex:(NSUInteger)index;
+- (void)setFragmentSamplerState:(nullable A5MaliSamplerState *)sampler atIndex:(NSUInteger)index;
+- (void)setScissorRect:(MTLScissorRect)rect;
 - (void)setViewport:(MTLViewport)viewport;
 - (void)drawPrimitives:(MTLPrimitiveType)primitiveType
           vertexStart:(NSUInteger)vertexStart vertexCount:(NSUInteger)vertexCount;
+- (void)drawPrimitives:(MTLPrimitiveType)primitiveType vertexStart:(NSUInteger)vertexStart
+    vertexCount:(NSUInteger)vertexCount instanceCount:(NSUInteger)instanceCount;
 - (void)endEncoding;
 @end
 

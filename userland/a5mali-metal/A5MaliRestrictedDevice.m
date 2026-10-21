@@ -55,9 +55,15 @@
 - (instancetype)initWithTransport:(A5MaliTransport)transport context:(void *)context
              commandCapabilities:(uint32_t)commands
 {
+    return [self initWithTransport:transport context:context
+        commandCapabilities:commands operationCapabilities:127];
+}
+- (instancetype)initWithTransport:(A5MaliTransport)transport context:(void *)context
+             commandCapabilities:(uint32_t)commands operationCapabilities:(uint32_t)operations
+{
     if ((self = [super init]))
         _privateDevice = [[A5MaliDevice alloc] initWithTransport:transport
-            context:context commandCapabilities:commands operationCapabilities:127];
+            context:context commandCapabilities:commands operationCapabilities:operations];
     return _privateDevice ? self : nil;
 }
 #endif

@@ -12,6 +12,7 @@
 /* This ABI mirrors XNU A5XELTEGPUUserClient.h version 1. */
 enum {
     A5MaliProtocolVersion = 1,
+    A5MaliSurfaceMaxBytes = 0x2000000,
     A5MaliRead = 1,
     A5MaliWrite = 2,
     A5MaliQuery = 0,

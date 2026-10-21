@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Emit a private authenticated Metal registry from actual local translations.
+
+No Apple/AIR/SPIR-V/Midgard bytes are written into the source tree. The registry
+contains native code and complete binding contracts. Selection is distinct from
+kernel runtime support; full MRT profiles remain gated by the provider.
+"""
+import argparse
+import hashlib
+import copy
+import importlib.util
+import json
+from pathlib import Path
+import re
+
+METALLIB_SHA = '11c74cc42ce5137b73d44d427f75764f886656d4ddb374422d56b609ed2762d9'
+FORMATS = {'BGRA8Unorm':80, 'RGBA16Float':115, 'R8Unorm':10}
+VK_METAL = {44:80, 97:115, 9:10, 16:30, 100:55}
+STAGE = {'Vertex':1, 'Fragment':2}
+# Verified QC packing0 (no L token), including inactive declared attributes.
+ATTRIBUTES = [[0,31,0,1], [1,29,16,1], [2,29,24,1], [3,27,32,1]]
+# MTLVertexFormat Float4=31,Float2=29,Half4=27; PerVertex=1.
+LAYOUTS = [[1,48,1,1]]
+BLUR_NAMES = ['downsample_8_frag_lph']+[f'narrow_blur_{n}_frag_lph' for n in (7,11,15,19,23,27)]+['single_pass_blur_3_lph']
+DS4_PINS = ['f5556b29f212c3674cb16b166a7dbf93671b4c27b7c65e54b78d77a2837f2be1',
+            '1771f55d5bf91525734b33166e001bdf2b402e7467988c366016c8c1f8ff2a82']
+
+
+def sha(data): return hashlib.sha256(data).hexdigest()
+def fail(message): raise ValueError(message)
+def name(value):
+    if not isinstance(value,str) or not re.fullmatch(r'[A-Za-z0-9_]{1,100}',value): fail('invalid bounded name')
+    return value
+
+
+def shader(path, info):
+    data=path.read_bytes()
+    if not 0<len(data)<=0x10000 or len(data)!=info['bytes'] or sha(data)!=info['sha256']:
+        fail(f'changed native shader: {path}')
+    if not 1<=info['first_tag']<=15 or not 1<=info['work_regs']<=16 or info['tls'] not in (0,16,32,64) or info['wls']:
+        fail('unsupported native shader resources')
+    return {'path':str(path.resolve()), 'sha256':sha(data), 'bytes':len(data),
+            'first_tag':info['first_tag'],'work_regs':info['work_regs'],'tls':info['tls'],'wls':0}
+
+
+def contract(meta, blur=False):
+    """Keep actual descriptor bindings, readonly windows and push offsets."""
+    interface=meta['interface'] if 'interface' in meta else meta['resources']
+    slots={(s['stage'],s['class'],s['index']):r for s,r in interface['slots']}
+    pushes=[]; bind_push={}
+    rules=dict(meta.get('graphics',{}).get('color_write_rules',[]))
+    for group in interface['push']:
+        stage=STAGE[group['stage']]
+        for field in group['fields']:
+            off=field['loc']['Push']['offset']; size=field['size']
+            if size!=4 or off<0 or off+size>560: fail('unsupported push field')
+            if 'SlotBindOffset' in field['field']:
+                slot=field['field']['SlotBindOffset'];key=(slot['stage'],slot['class'],slot['index'])
+                bind_push[key]=off;pushes.append([stage,1,slot['index'],off,4,0])
+            elif 'ColorWriteRule' in field['field']:
+                target=field['field']['ColorWriteRule']
+                if target not in rules: fail('missing actual color write rule')
+                pushes.append([stage,2,target,off,4,rules[target]])
+            else:fail('unknown push semantic')
+    resources=[]; texture_count={1:0,2:0}
+    for group in meta['layout']['sets']:
+        if group['set']!=0:fail('only descriptor set0 supported')
+        for b in group['bindings']:
+            if b['count']!=1 or b.get('flags',0):fail('descriptor array or flags unsupported')
+            src=b['source'];binding=b['binding']
+            if 'Buffer' in src:
+                slot=src['Buffer'];key=(slot['stage'],'Buffer',slot['index']);r=slots[key]['Buffer']
+                access=r['access']; flags=int(access['read'])+2*int(access['write'])
+                if not flags or flags&2:fail('writable shader buffer unsupported')
+                window=r['window'];form=r['form']['Descriptor'];stage=STAGE[slot['stage']]
+                if form=='Storage' and window=='Whole': flags|=4;start=size=0;sysval=96+16*binding
+                elif form=='UniformWords' and 'Bounded' in window:
+                    start=window['Bounded']['start'];size=window['Bounded']['len'];sysval=0
+                else:fail('unreviewed buffer view')
+                resources.append([stage,1,slot['index'],binding,binding+1,flags,start,size,sysval,bind_push[key]])
+            elif 'CombinedTextureSampler' in src:
+                c=src['CombinedTextureSampler'];t=c['texture'];stage=STAGE[t['stage']];native=texture_count[stage];texture_count[stage]+=1
+                if c['sampler']['compare'] or c['sampler']['integer'] or c['sampler']['raw']:fail('unsupported sampler semantic')
+                sm=c['sampler']['sampler'];imm=b['immutable_sampler'];constant='Constexpr' in sm
+                if constant != bool(imm):fail('ambiguous sampler binding')
+                # Constexpr state is carried as a private metadata receipt too;
+                # providers must synthesize it, never require caller slot0.
+                sampler_index=sm['Slot'] if not constant else native
+                resources.append([stage,2,t['index'],binding,native,1,0,0,0 if blur else 352+32*native,0])
+                resources.append([stage,3,sampler_index,binding,native,1|(8 if constant else 0),0,0,0,0])
+            elif 'InputAttachment' in src:
+                resources.append([2,4,src['InputAttachment'],binding,src['InputAttachment'],1,0,0,0,0])
+            else:fail('unknown descriptor source')
+    if len(resources)>16 or len(pushes)>32:fail('contract exceeds provider bounds')
+    return resources,pushes
+
+
+def blur_profiles(path, ds4):
+    result=[];j=json.loads(path.read_text())
+    if j['metallib_sha256']!=METALLIB_SHA:fail('changed QuartzCore identity')
+    pairs=j['pairs']
+    for pair in pairs:
+        if pair['status']!='compiled' or pair['air_function_constants'] is not None:fail('uncompiled or specialized blur profile')
+        fragment=name(pair['fragment']);rgba=pair['attachment_format']=='RGBA16Float'
+        identifier=108 if rgba else 100+BLUR_NAMES.index(fragment)
+        if rgba and (fragment!='narrow_blur_23_frag_lph' or not pair.get('native_packing_verified')):fail('unverified native raw64 packing')
+        directory=path.parent/(fragment+('_RGBA16Float' if rgba else ''))
+        meta=json.loads((directory/'meta.json').read_text())
+        recipe=Path(__file__).resolve().parents[1]/'userland/a5xelte-air-translation/families/translate_blur.py'
+        spec=importlib.util.spec_from_file_location('registry_blur_contract',recipe)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        core=module.load_contract();expected=copy.deepcopy(core.PAIRS['downsample_4'])
+        expected['buffer_windows'][2]=('UniformWords',32 if fragment=='downsample_8_frag_lph' else 82)
+        checked=module.check_attachment_meta(meta,expected,pair['attachment_format'],core)
+        if json.loads(json.dumps(checked))!=pair['io_abi']:fail('metadata no longer matches the compiler contract receipt')
+        resources,pushes=contract(meta,True)
+        if pair['io_abi']['resource_slots'] != [['Vertex','Buffer',2],['Vertex','Buffer',3],['Fragment','Buffer',1],['Fragment','Buffer',6],['Fragment','Texture',3],['Fragment','Sampler',0]]:fail('changed blur interface')
+        vs=shader(directory/'pair.vert.midgard',pair['vert_midgard']);fs=shader(directory/'pair.frag.midgard',pair['frag_midgard'])
+        result.append({'id':identifier,'name':fragment+('_rgba16f' if rgba else '_bgra8'),'vertex':pair['vertex'],'fragment':fragment,
+            'formats':[FORMATS[pair['attachment_format']]],'flags':1|2|4|(0 if rgba else 16),'viewport':[1080,1920],
+            'resources':resources,'push':pushes,'attributes':ATTRIBUTES,'layouts':LAYOUTS,
+            'passes':[{'id':identifier,'target':0,'vertex':vs,'fragment':fs}]})
+    if ds4:
+        if len(ds4)!=2:fail('both genuine DS4 stages required')
+        template=next(p for p in result if p['id']==100)
+        p=json.loads(json.dumps(template));p.update(id=99,name='downsample_4_frag_lph_bgra8',fragment='downsample_4_frag_lph')
+        p['resources'][2][7]=72
+        p['passes']=[{'id':99,'target':0,'vertex':shader(ds4[0],{'bytes':2048,'sha256':DS4_PINS[0],'first_tag':5,'work_regs':8,'tls':0,'wls':0}),
+            'fragment':shader(ds4[1],{'bytes':3472,'sha256':DS4_PINS[1],'first_tag':5,'work_regs':7,'tls':0,'wls':0})}]
+        result.insert(0,p)
+    return result
+
+
+def misc_profiles(path):
+    j=json.loads(path.read_text());result={}
+    if j['metallib_sha256']!=METALLIB_SHA:fail('changed QuartzCore identity')
+    for index,pair in enumerate(j['profiles']):
+        if index>=9 or pair['status']!='compiled':fail('unreviewed misc manifest')
+        family=name(pair['family']);variant=name(pair['variant']);target=pair['render_target'];pid=200+index
+        key=(family,variant);prefix=path.parent/(family+'_'+variant+'_rt'+str(target))
+        meta={'resources':pair['resources'],'layout':pair['layout'],'graphics':pair['graphics']}
+        resources,pushes=contract(meta)
+        native={'id':pid,'target':target,
+            'vertex':shader(Path(str(prefix)+'.vert.midgard'),pair['midgard']['vert']),
+            'fragment':shader(Path(str(prefix)+'.frag.midgard'),pair['midgard']['frag'])}
+        if key not in result:
+            formats=[VK_METAL[x['format']] for x in pair['graphics']['color_attachments']]
+            result[key]={'id':pid,'name':family+'_'+variant,'vertex':pair['vertex'],'fragment':pair['fragment'],
+                'formats':formats,'flags':(8 if pair['execution']=='single_SFBD_target_replay' else 0)|(16 if pid in (200,202) else 0),'viewport':[0,0],
+                'resources':resources,'push':pushes,'attributes':ATTRIBUTES,'layouts':LAYOUTS,'passes':[]}
+        profile=result[key]
+        if profile['resources']!=resources or profile['push']!=pushes:fail('MRT replay resource contracts differ')
+        profile['passes'].append(native)
+    return list(result.values())
+
+
+def path_profiles(path):
+    j=json.loads(path.read_text())
+    if j['metallib']['sha256']!=METALLIB_SHA:fail('changed QuartzCore identity')
+    result=[]
+    ids={'path_blit':400,'path_cubic':401,'path_rect':402,'stroke_line':403}
+    for pair in j['pairs']:
+        if pair['pair'] not in ids or pair['status'] not in ('compiled','compiled_native_ordered_fetch'):
+            fail('unreviewed original path program')
+        pid=ids[pair['pair']];meta=pair['reflection'];resources,pushes=contract(meta)
+        stage_info={}
+        for stage,line in zip(('vert','frag'),pair['info']):
+            info=dict(pair['midgard'][stage])
+            for source,dest in [('first_tag','first_tag'),('work_regs','work_regs'),('tls','tls'),('wls','wls')]:
+                match=re.search(r'\b'+source+r'=(\d+)',line)
+                if not match:fail('native compiler receipt missing')
+                info[dest]=int(match.group(1))
+            stage_info[stage]=shader(path.parent/(pair['pair']+'.'+stage+'.midgard'),info)
+        result.append({'id':pid,'name':pair['pair']+'_original_mrt','vertex':pair['vertex'],'fragment':pair['fragment'],
+            'formats':[VK_METAL[x['format']] for x in meta['graphics']['color_attachments']],
+            'flags':32,'viewport':[0,0],'resources':resources,'push':pushes,'attributes':ATTRIBUTES,'layouts':LAYOUTS,
+            'passes':[{'id':pid,'target':2,'vertex':stage_info['vert'],'fragment':stage_info['frag']}],
+            'limitation':'Host-compiled original MRT or ordered-fetch program only; not executable on the native SFBD runtime.'})
+    return result
+
+
+def runtime_path_profiles(path, original_path):
+    j=json.loads(path.read_text());originals=json.loads(original_path.read_text())
+    if j['metallib_sha256']!=METALLIB_SHA:fail('changed path source identity')
+    result=[]
+    for record in j['programs']:
+        kind=record['name'];pid={'path_rect':300,'path_cubic':301,'stroke_line':302}[kind]
+        original=next(p for p in originals['pairs'] if p['pair']==kind)
+        if any(record['original_spirv'][stage]!=original['spirv'][stage]['sha256'] for stage in ('vert','frag')):fail('runtime path program source changed')
+        meta=original['reflection'];resources,pushes=contract(meta)
+        vs=shader(Path(record['stages']['vert']['path']),record['stages']['vert'])
+        fs=shader(Path(record['stages']['frag']['path']),record['stages']['frag'])
+        passes=[{'id':pid,'target':0 if pid==302 else 2,'vertex':vs,'fragment':fs}]
+        result.append({'id':pid,'name':kind+'_runtime_blend','vertex':original['vertex'],'fragment':original['fragment'],
+          'formats':[VK_METAL[x['format']] for x in meta['graphics']['color_attachments']],
+          'flags':128 if pid==302 else 64,'viewport':[0,0],'resources':resources,'push':pushes,
+          'attributes':ATTRIBUTES if pid==302 else [],'layouts':LAYOUTS if pid==302 else [],'passes':passes})
+    return result
+
+
+def apply_blur_runtime(profiles, path, original):
+    j=json.loads(path.read_text())
+    if j['source_manifest_sha256']!=sha(original.read_bytes()) or j['profile_ids']!=list(range(99,109)):
+        fail('runtime blur source/profile identity changed')
+    if j['viewport_sysval']!={'stage':'Vertex','ubo':0,'scale_offset':512,'offset_offset':528,'record_bytes':16,'ubo_bytes':576} or j['base_vertex']!=0:
+        fail('unreviewed viewport contract')
+    programs=j['pairs']
+    if len(programs)!=9:fail('runtime blur coverage incomplete')
+    vertices=set()
+    for entry in programs:
+        if entry['vert_spirv_sha256']!='218bd3c9428002ed2c74b907f9b4296de35fbdc306608b7ab1d51ac140bcbbe6':fail('changed actual blur vertex AIR translation')
+        vertices.add(entry['vert_midgard']['sha256'])
+    if len(vertices)!=1:fail('runtime blur vertex contracts differ')
+    for p in profiles:
+        if not 99<=p['id']<=108:continue
+        entries=[e for e in programs if e['fragment']==p['fragment'] and FORMATS[e['attachment_format']]==p['formats'][0]]
+        entry=entries[0] if entries else programs[0] if p['id']==99 else None
+        if entry is None:fail('runtime blur profile missing')
+        if p['id']!=99 and entry['frag_midgard']['sha256']!=p['passes'][0]['fragment']['sha256']:fail('runtime blur unexpectedly changed fragment')
+        p['passes'][0]['vertex']=shader(Path(entry['vert_midgard']['path']),entry['vert_midgard'])
+        p['flags'] &= ~1
+        p['viewport']=[0,0]
+
+def array(symbol,data):
+    return 'static const uint8_t '+symbol+'[] = {\n'+''.join('  '+','.join(f'0x{x:02x}' for x in data[i:i+24])+',\n' for i in range(0,len(data),24))+'};\n'
+
+
+def emit(profiles,output):
+    if not profiles or len(profiles)>32:fail('registry profile count invalid')
+    lines=['/* Generated private compiler outputs. Never commit. */\n'];rows=[];seen=set();blobs={}
+    for p in profiles:
+        if p['id'] in seen:fail('duplicate profile ID')
+        seen.add(p['id']);prefix='a5compiled_'+str(p['id']);passes=[]
+        for entry in p['passes']:
+            stages=[]
+            for stage in ('vertex','fragment'):
+                info=entry[stage];data=Path(info['path']).read_bytes()
+                if sha(data)!=info['sha256']:fail('native bytes changed during emission')
+                if info['sha256'] not in blobs:
+                    symbol='a5shader_'+info['sha256'];blobs[info['sha256']]=symbol;lines.append(array(symbol,data))
+                stages.append('{'+','.join([blobs[info['sha256']],str(info['bytes']),str(info['first_tag']),str(info['work_regs']),str(info['tls']),str(info['wls']),json.dumps(info['sha256'])])+'}')
+            passes.append('{'+f'{entry["id"]},{entry["target"]},'+','.join(stages)+'}')
+        lines.append('static const A5MaliCompiledPass '+prefix+'_passes[] = {'+','.join(passes)+'};\n')
+        for field,ctype in [('resources','A5MaliCompiledResource'),('push','A5MaliCompiledPushField'),('attributes','A5MaliCompiledVertexAttribute'),('layouts','A5MaliCompiledVertexLayout')]:
+            if p[field]:lines.append('static const '+ctype+' '+prefix+'_'+field+'[] = {'+','.join('{'+','.join(map(str,v))+'}' for v in p[field])+'};\n')
+        fmt=p['formats']+[0]*(8-len(p['formats']))
+        values=[str(p['id']),json.dumps(name(p['name'])),json.dumps(name(p['vertex'])),json.dumps(name(p['fragment'])),'{'+','.join(map(str,fmt))+'}',str(p['flags']),*map(str,p['viewport']),prefix+'_passes',str(len(p['passes']))]
+        for field in ('resources','push','attributes','layouts'):values += [prefix+'_'+field if p[field] else 'NULL',str(len(p[field]))]
+        rows.append('{'+','.join(values)+'}')
+    lines.append('static const A5MaliCompiledProfile kA5MaliCompiledProfiles[] = {\n'+',\n'.join(rows)+'\n};\n')
+    output.write_text(''.join(lines))
+
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--blur-manifest',type=Path,required=True)
+    p.add_argument('--misc-manifest',type=Path)
+    p.add_argument('--blur-runtime-manifest',type=Path)
+    p.add_argument('--path-manifest',type=Path)
+    p.add_argument('--path-runtime-manifest',type=Path)
+    p.add_argument('--ds4-vertex',type=Path);p.add_argument('--ds4-fragment',type=Path)
+    p.add_argument('--output-dir',type=Path,required=True)
+    a=p.parse_args();out=a.output_dir.resolve()
+    source=Path(__file__).resolve().parents[1]
+    if out==source or source in out.parents:fail('private generated data must remain outside Git source tree')
+    if bool(a.ds4_vertex)!=bool(a.ds4_fragment):fail('both DS4 stages required')
+    profiles=blur_profiles(a.blur_manifest.resolve(),[a.ds4_vertex,a.ds4_fragment] if a.ds4_vertex else None)
+    if a.blur_runtime_manifest:apply_blur_runtime(profiles,a.blur_runtime_manifest.resolve(),a.blur_manifest.resolve())
+    if a.misc_manifest:profiles+=misc_profiles(a.misc_manifest.resolve())
+    if a.path_runtime_manifest:
+        if not a.path_manifest:fail('original path manifest required')
+        profiles+=runtime_path_profiles(a.path_runtime_manifest.resolve(),a.path_manifest.resolve())
+    if a.path_manifest:profiles+=path_profiles(a.path_manifest.resolve())
+    out.mkdir(parents=True,exist_ok=True);include=out/'A5MaliCompiledRegistryData.inc';emit(profiles,include)
+    receipt={'schema':1,'metallib_sha256':METALLIB_SHA,'include_sha256':sha(include.read_bytes()),
+             'generator_sha256':sha(Path(__file__).read_bytes()),
+             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest) if path},'profiles':profiles,
+             'claim':'Authenticated native program and binding registry; pipeline/runtime acceptance is separately gated.'}
+    (out/'compiled-registry.json').write_text(json.dumps(receipt,indent=2)+'\n')
+    print(json.dumps({'profiles':len(profiles),'native_passes':sum(len(x['passes']) for x in profiles),'include':str(include),'sha256':receipt['include_sha256']}))
+
+if __name__=='__main__':main()

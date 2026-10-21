@@ -2,6 +2,8 @@
 #import "A5MaliMetalDeviceResources.h"
 #import <objc/runtime.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdatomic.h>
 
 enum { CreateBuffer = 8, ReleaseBuffer = 9, WriteBuffer = 14,
        ReadBuffer = 15, TransferMax = 256 };
@@ -30,6 +32,7 @@ _Static_assert(sizeof(TransferRequest) == 288 && sizeof(ReadReply) == 280,
 
 @interface A5MaliResourceAccounting : NSObject
 @property (nonatomic) NSUInteger bytes;
+@property (nonatomic) NSUInteger sharedBytes;
 @end
 @implementation A5MaliResourceAccounting
 @end
@@ -50,6 +53,11 @@ NSUInteger A5MaliAllocatedPrivateBufferBytes(A5MaliRestrictedDevice *device)
 {
     A5MaliResourceAccounting *state = accounting(device);
     @synchronized (state) { return state.bytes; }
+}
+NSUInteger A5MaliAllocatedSharedReadBufferBytes(A5MaliRestrictedDevice *device)
+{
+    A5MaliResourceAccounting *state = accounting(device);
+    @synchronized (state) { return state.sharedBytes; }
 }
 
 static A5MaliHeader wireHeader(NSUInteger size)
@@ -85,14 +93,23 @@ MTLSizeAndAlign A5MaliPrivateBufferSizeAndAlign(NSUInteger length,
 }
 MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 {
-    if (!d || d.textureType != MTLTextureType2D ||
-        d.pixelFormat != MTLPixelFormatBGRA8Unorm || !d.width || !d.height ||
+    NSUInteger pixelBytes=0;
+    switch(d.pixelFormat){case MTLPixelFormatBGRA8Unorm:case MTLPixelFormatR32Float:pixelBytes=4;break;
+    case MTLPixelFormatRGBA16Float:pixelBytes=8;break;case MTLPixelFormatR8Unorm:pixelBytes=1;break;
+    case MTLPixelFormatRG8Unorm:pixelBytes=2;break;default:break;}
+    MTLTextureSwizzleChannels sw=d.swizzle;
+    if (!d || sw.red!=MTLTextureSwizzleRed || sw.green!=MTLTextureSwizzleGreen ||
+        sw.blue!=MTLTextureSwizzleBlue || sw.alpha!=MTLTextureSwizzleAlpha || d.textureType != MTLTextureType2D ||
+        !pixelBytes || !d.width || !d.height ||
         d.width > 2048 || d.height > 2048 || d.depth != 1 ||
         d.mipmapLevelCount != 1 || d.arrayLength != 1 || d.sampleCount != 1 ||
-        d.storageMode != MTLStorageModeShared || !d.usage ||
+        (d.storageMode != MTLStorageModeShared && d.storageMode != MTLStorageModePrivate) || !d.usage ||
         (d.usage & ~(MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget)))
         return (MTLSizeAndAlign){0, 0};
-    return (MTLSizeAndAlign){(d.width * d.height * 4 + 4095) & ~(NSUInteger)4095, 4096};
+    NSUInteger row = (d.width * pixelBytes + 15) & ~(NSUInteger)15;
+    NSUInteger bytes = row * d.height;
+    if (bytes > A5MaliSurfaceMaxBytes) return (MTLSizeAndAlign){0, 0};
+    return (MTLSizeAndAlign){(bytes + 4095) & ~(NSUInteger)4095, 4096};
 }
 
 @interface A5MaliPrivateBuffer () {
@@ -102,6 +119,7 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     NSUInteger _length, _allocatedSize;
     uint64_t _handle;
     NSLock *_transferLock;
+    atomic_bool _readyForRead;
 }
 - (nullable instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
     length:(NSUInteger)length options:(MTLResourceOptions)options;
@@ -141,6 +159,7 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     _length = length;
     _allocatedSize = size.size;
     _transferLock = [NSLock new];
+    _readyForRead = YES;
     _accounting = accounting(device);
     @synchronized (_accounting) { _accounting.bytes += size.size; }
     return self;
@@ -164,6 +183,12 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 - (MTLHazardTrackingMode)hazardTrackingMode { return MTLHazardTrackingModeDefault; }
 - (MTLResourceOptions)resourceOptions { return MTLResourceStorageModePrivate; }
 - (uint64_t)privateKernelHandle { return _handle; }
+- (BOOL)readyForRead
+{
+    /* A command owns the device lock while checking this flag. Taking the
+     * transfer lock here would invert upload's transfer -> device lock order. */
+    return _handle && atomic_load_explicit(&_readyForRead,memory_order_acquire);
+}
 - (void *)contents { return NULL; }
 - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
     offset:(NSUInteger)offset bytesPerRow:(NSUInteger)bytesPerRow
@@ -174,6 +199,8 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     if (!bytes || !length || offset > _length || length > _length - offset)
         return kIOReturnBadArgument;
     [_transferLock lock];
+    BOOL wasReady=atomic_load_explicit(&_readyForRead,memory_order_acquire);
+    if(write)atomic_store_explicit(&_readyForRead,NO,memory_order_release);
     kern_return_t result = KERN_SUCCESS;
     for (NSUInteger done = 0; done < length; ) {
         NSUInteger count = MIN((NSUInteger)TransferMax, length - done);
@@ -199,6 +226,10 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
         }
         done += count;
     }
+    if (write) {
+        BOOL complete=result==KERN_SUCCESS && (wasReady || (!offset && length==_length));
+        atomic_store_explicit(&_readyForRead,complete,memory_order_release);
+    }
     [_transferLock unlock];
     return result;
 }
@@ -208,6 +239,139 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 - (kern_return_t)readBytes:(void *)bytes offset:(NSUInteger)offset
     length:(NSUInteger)length
 { return [self transferBytes:bytes offset:offset length:length write:NO]; }
+@end
+
+@interface A5MaliSharedReadBuffer ()
+- (nullable instancetype)initSharedWithDevice:(A5MaliRestrictedDevice *)device
+    length:(NSUInteger)length;
+@end
+@implementation A5MaliSharedReadBuffer {
+    A5MaliRestrictedDevice *_sharedDevice;
+    A5MaliResourceAccounting *_sharedAccounting;
+    NSLock *_sharedLock;
+    void *_sharedContents;
+    NSUInteger _sharedLength, _sharedAllocation;
+}
+- (instancetype)initSharedWithDevice:(A5MaliRestrictedDevice *)device length:(NSUInteger)length
+{
+    if (!device || !length || length > A5MaliMaxPrivateBufferLength ||
+        !(self = [super init])) return nil;
+    NSUInteger allocation = (length + 4095) & ~(NSUInteger)4095;
+    A5MaliResourceAccounting *state = accounting(device);
+    @synchronized (state) {
+        /* Read staging is bounded separately from the four pinned kernel BOs. */
+        if (state.sharedBytes > 64 * 1024 * 1024 - allocation) return nil;
+        void *pointer = NULL;
+        if (posix_memalign(&pointer, 4096, allocation)) return nil;
+        memset(pointer, 0, allocation);
+        state.sharedBytes += allocation;
+        _sharedContents = pointer;
+    }
+    _sharedDevice = device; _sharedAccounting = state;
+    _sharedLength = length; _sharedAllocation = allocation;
+    _sharedLock = [NSLock new];
+    return self;
+}
+- (void)dealloc
+{
+    if (_sharedContents) {
+        free(_sharedContents);
+        @synchronized (_sharedAccounting) { _sharedAccounting.sharedBytes -= _sharedAllocation; }
+    }
+}
+- (A5MaliRestrictedDevice *)device { return _sharedDevice; }
+- (NSUInteger)length { return _sharedLength; }
+- (NSUInteger)allocatedSize { return _sharedAllocation; }
+- (MTLStorageMode)storageMode { return MTLStorageModeShared; }
+- (MTLResourceOptions)resourceOptions { return MTLResourceStorageModeShared; }
+- (uint64_t)privateKernelHandle { return 0; }
+- (BOOL)readyForRead { return _sharedContents != NULL; }
+- (void *)contents { return _sharedContents; }
+- (kern_return_t)sharedTransfer:(void *)bytes offset:(NSUInteger)offset
+    length:(NSUInteger)length write:(BOOL)write
+{
+    if (!bytes || !length || offset > _sharedLength || length > _sharedLength - offset)
+        return kIOReturnBadArgument;
+    [_sharedLock lock];
+    if (write) memcpy((uint8_t *)_sharedContents + offset, bytes, length);
+    else memcpy(bytes, (uint8_t *)_sharedContents + offset, length);
+    [_sharedLock unlock];
+    return KERN_SUCCESS;
+}
+- (kern_return_t)uploadBytes:(const void *)bytes offset:(NSUInteger)offset length:(NSUInteger)length
+{ return [self sharedTransfer:(void *)bytes offset:offset length:length write:YES]; }
+- (kern_return_t)readBytes:(void *)bytes offset:(NSUInteger)offset length:(NSUInteger)length
+{ return [self sharedTransfer:bytes offset:offset length:length write:NO]; }
+@end
+
+static NSError *bindingError(kern_return_t status, NSString *message)
+{
+    return [NSError errorWithDomain:@"com.orhunnx.a5xelte.mali" code:status
+        userInfo:@{NSLocalizedDescriptionKey: message}];
+}
+@implementation A5MaliBufferBinding {
+    A5MaliRestrictedDevice *_device;
+    A5MaliPrivateBuffer *_buffer;
+    NSData *_bytes;
+    NSUInteger _offset, _length;
+}
++ (instancetype)bindingWithBuffer:(A5MaliPrivateBuffer *)buffer offset:(NSUInteger)offset
+    length:(NSUInteger)length device:(A5MaliRestrictedDevice *)device error:(NSError **)error
+{
+    if (error) *error = nil;
+    if (![buffer isKindOfClass:[A5MaliPrivateBuffer class]] || buffer.device != device ||
+        !length || offset > buffer.length || length > buffer.length - offset ||
+        !buffer.readyForRead) {
+        if (error) *error = bindingError(kIOReturnBadArgument, @"invalid or unreadable same-device buffer range");
+        return nil;
+    }
+    A5MaliBufferBinding *binding = [self new];
+    binding->_device = device; binding->_buffer = buffer;
+    binding->_offset = offset; binding->_length = length;
+    return binding;
+}
++ (instancetype)bindingWithBytes:(const void *)bytes length:(NSUInteger)length
+    device:(A5MaliRestrictedDevice *)device error:(NSError **)error
+{
+    if (error) *error = nil;
+    if (!bytes || !device || !length || length > 4096) {
+        if (error) *error = bindingError(kIOReturnBadArgument, @"setBytes requires 1..4096 actual bytes");
+        return nil;
+    }
+    A5MaliBufferBinding *binding = [self new];
+    binding->_device = device; binding->_length = length;
+    binding->_bytes = [NSData dataWithBytes:bytes length:length];
+    return binding;
+}
+- (A5MaliRestrictedDevice *)device { return _device; }
+- (A5MaliPrivateBuffer *)buffer { return _buffer; }
+- (NSUInteger)offset { return _offset; }
+- (NSUInteger)length { return _length; }
+- (uint64_t)privateKernelHandle { return _buffer.privateKernelHandle; }
+- (BOOL)inlineBytes { return _bytes != nil; }
+- (NSData *)captureBytesForSubmission:(NSError **)error
+{ return [self capturePrefixBytesForSubmission:_length error:error]; }
+- (NSData *)capturePrefixBytesForSubmission:(NSUInteger)length error:(NSError **)error
+{
+    if (error) *error = nil;
+    if (!length || length > _length) {
+        if (error) *error = bindingError(kIOReturnBadArgument, @"submission window exceeds bound buffer bytes");
+        return nil;
+    }
+    if (_bytes) return [_bytes subdataWithRange:NSMakeRange(0, length)];
+    if (![_buffer isKindOfClass:[A5MaliSharedReadBuffer class]] || !_buffer.readyForRead) {
+        if (error) *error = bindingError(kIOReturnUnsupported,
+            @"private buffer bindings require the retained kernel handle and range");
+        return nil;
+    }
+    NSMutableData *data = [NSMutableData dataWithLength:length];
+    kern_return_t result = [_buffer readBytes:data.mutableBytes offset:_offset length:length];
+    if (result != KERN_SUCCESS) {
+        if (error) *error = bindingError(result, @"shared read binding capture failed");
+        return nil;
+    }
+    return [data copy];
+}
 @end
 
 @interface A5MaliSamplerState ()
@@ -248,19 +412,29 @@ static BOOL noStencilOperation(MTLStencilDescriptor *stencil)
 
 @implementation A5MaliRestrictedDevice (PrivateBufferResources)
 - (A5MaliPrivateBuffer *)newBufferWithLength:(NSUInteger)length options:(MTLResourceOptions)options
-{ return [[A5MaliPrivateBuffer alloc] initWithDevice:self length:length options:options]; }
+{
+    if (options == MTLResourceStorageModeShared)
+        return [[A5MaliSharedReadBuffer alloc] initSharedWithDevice:self length:length];
+    return [[A5MaliPrivateBuffer alloc] initWithDevice:self length:length options:options];
+}
 - (A5MaliPrivateBuffer *)newBufferWithBytes:(const void *)bytes length:(NSUInteger)length
     options:(MTLResourceOptions)options
 {
-    /* The Metal bytes initializer requires CPU-accessible storage. */
-    (void)bytes; (void)length; (void)options;
-    return nil;
+    if (!bytes || options != MTLResourceStorageModeShared) return nil;
+    A5MaliSharedReadBuffer *buffer = [[A5MaliSharedReadBuffer alloc]
+        initSharedWithDevice:self length:length];
+    return [buffer uploadBytes:bytes offset:0 length:length] == KERN_SUCCESS ? buffer : nil;
 }
 - (A5MaliPrivateBuffer *)newBufferWithBytesNoCopy:(void *)bytes length:(NSUInteger)length
     options:(MTLResourceOptions)options deallocator:(void (^)(void *, NSUInteger))deallocator
 { (void)bytes; (void)length; (void)options; (void)deallocator; return nil; }
 - (MTLSizeAndAlign)heapBufferSizeAndAlignWithLength:(NSUInteger)length options:(MTLResourceOptions)options
-{ return A5MaliPrivateBufferSizeAndAlign(length, options); }
+{
+    if (options == MTLResourceStorageModeShared && length &&
+        length <= A5MaliMaxPrivateBufferLength)
+        return (MTLSizeAndAlign){(length + 4095) & ~(NSUInteger)4095, 4096};
+    return A5MaliPrivateBufferSizeAndAlign(length, options);
+}
 - (MTLSizeAndAlign)heapTextureSizeAndAlignWithDescriptor:(MTLTextureDescriptor *)descriptor
 { return A5MaliBGRA8TextureSizeAndAlign(descriptor); }
 - (A5MaliSamplerState *)newSamplerStateWithDescriptor:(MTLSamplerDescriptor *)d

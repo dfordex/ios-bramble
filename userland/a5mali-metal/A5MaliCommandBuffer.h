@@ -9,6 +9,10 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @class A5MaliSurface, A5MaliCommandBuffer, A5MaliCommandQueue;
+/* Called exactly in encoded order under the device transport lock. Captured
+ * resources stay retained until work has completed. Success requires real
+ * nonzero GPU fences, not merely descriptor construction. */
+typedef kern_return_t (^A5MaliNativeWork)(A5MaliClient *client, A5MaliFence *fence);
 
 @interface A5MaliDevice : NSObject
 - (nullable instancetype)initWithError:(NSError * _Nullable * _Nullable)error;
@@ -25,6 +29,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (A5MaliCommandBuffer *)newCommandBuffer;
 - (A5MaliCommandQueue *)newCommandQueue;
 - (BOOL)supportsPrivateReadSurf;
+- (BOOL)supportsNativePrograms;
 #ifdef A5_MALI_HOST_TEST
 - (A5MaliSurface *)hostTestSurfaceWithResource:(A5MaliResource)resource;
 #endif
@@ -55,6 +60,7 @@ NS_ASSUME_NONNULL_BEGIN
           destinationRect:(A5MaliRect)destinationRect;
 - (BOOL)encodeReadSurf:(A5MaliSurface *)source
                    to:(A5MaliSurface *)destination;
+- (BOOL)encodeNativeWork:(A5MaliNativeWork)work;
 /* 0151 completes each job synchronously; this call serializes and waits. */
 - (BOOL)commitAndWait:(NSError * _Nullable * _Nullable)error;
 @property (nonatomic, readonly) A5MaliFence completedFence;

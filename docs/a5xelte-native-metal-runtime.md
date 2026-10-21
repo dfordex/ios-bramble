@@ -17,11 +17,13 @@ native T720 queue. Device execution of this new route remains to be measured.
    Pipeline selection checks both genuine functions, all eight attachment slots,
    blend/depth/sample state and the actual vertex layout. Native Apple pipeline
    libraries and unknown constants remain unsupported.
-3. Executable initial profiles are DS4 and nine downsample/blur attachment
-   variants, IDs 99–108. The encoder captures actual buffer/range identities,
-   texture slot 3, sampler slot 0, viewport/scissor and draw geometry. Shared
-   buffer data is captured at commit; setBytes is copied at encoding. Private
-   buffers retain real kernel handles and failed uploads cannot be drawn.
+3. Executable profiles include DS4/blur 99–108, misc 200/202/204/206/207
+   and rect/cubic/stroke 300–302. The complete registry has 22 logical profiles,
+   including metadata-only original paths; 22 native passes are executable
+   and four original path metadata passes remain gated. Shared buffer bytes are captured at commit, while setBytes is copied
+   at encoding. Large storage buffers use real kernel allocations and bounded
+   bulk uploads rather than truncation to the descriptor arena.
+   Private buffers retain real handles; failed uploads cannot be drawn.
 4. The runtime emitter uses released Mesa 26.2.4 v4 packing and the authenticated
    native code. It stages actual uniforms/vertices, derives target tile bounds
    from real dimensions and emits real vertex, tiler and fragment jobs. There
@@ -37,20 +39,36 @@ native T720 queue. Device execution of this new route remains to be measured.
    failure on allocation of the fifth live texture, within the existing bound
    of 32 retained handles and four simultaneously mapped surfaces.
 
-## Exact bounds
+## Formats, layouts and exact bounds
 
-- The shader viewport lowering is currently fixed at (0,0,1080,1920,0,1).
-  Other viewports are rejected, not approximated. Actual target dimensions,
-  scissors and source dimensions may vary within mapped bounds.
-- Zero base vertex; 3–256 vertices; triangles or triangle strip; one instance.
-- BGRA8 copy and premultiplied source-over use the released blend equation.
-  RGBA16Float uses native raw half packing; fixed-function blending of that
-  packed export is rejected.
-- Descriptor/code/scratch allocation is 256 KiB. TLS assumes the verified
-  T720 shader-present mask 3 and checks the core-ID range before submission.
-- BGRA8 and RGBA16Float IOSurface imports are checked by actual element size,
-  FourCC, row pitch, allocation size and single-plane geometry. Existing typed
-  BGRA operations still reject half-format surfaces.
+- Linear Metal formats 80 BGRA8, 10 R8, 30 RG8, 55 R32Float and 115
+  RGBA16Float use their actual FourCC, element size, row pitch and allocation
+  bounds. Shared external imports preserve shared storage. One-level private
+  textures own real IOSurface backing, expose Private storage and hide the
+  IOSurface from the public Metal API. There is no fake mip chain.
+- Blur and path vertex programs load actual viewport scale/offset from UBO0
+  offsets 512/528; offscreen viewport state is not replaced with 1080×1920.
+- Blur geometry supports zero base vertex, 3–256 vertices, triangles or triangle
+  strip and one instance. VertexID/InstanceID misc and path contracts currently
+  support one four-vertex quad. Indexed or general instanced geometry is not
+  implemented.
+- Misc MRT outputs are real ordered native passes retaining their actual
+  targets. Home uses two actual source textures with the AIR constexpr sampler
+  state. Rect/cubic write only RT2 R32Float with additive destination loads;
+  stroke writes only RT0 RGBA16Float with inline premultiplied source-over.
+  These masks follow QuartzCore pipeline construction, not just AIR exports.
+- BGRA blur copy/source-over use the released blend equation. RAW64 blur
+  RGBA16Float permits copying; blending its packed export remains rejected.
+- GPU clear submits a real fragment job for each supported format; its clear
+  packing is compared against the unmodified released Mesa pan_clear.c.
+- Descriptor/code/scratch storage is 256 KiB; four buffer windows support up
+  to 8 MiB each with transfers of at most 1 MiB. Logical IOSurface handles
+  remain bounded at 32, with four simultaneously mapped 32 MiB surface windows
+  so full-screen RGBA16Float targets fit.
+- Native jobs have a nominal two-second poll delay budget plus MMIO overhead;
+  existing typed jobs retain their previous budget. Faults terminate polling
+  immediately and uncertain DMA backing stays pinned until reboot.
+- TLS assumes the verified T720 shader-present mask 3 and checks core-ID bounds.
 
 The native interface is an explicitly privileged lab interface enabled only by
 `a5native=1` on the existing entitlement-gated connection. Unlike the earlier
@@ -60,13 +78,13 @@ security boundary. Physical addresses, page tables and MMIO are never accepted.
 
 ## Remaining compositor coverage
 
-Compiled function/format metadata for misc and original path pipelines is
-separate from executable runtime admission. Their multi-target, storage-buffer,
-instancing and ordered framebuffer-read semantics need actual pass encoders and
-resource lifetimes. Original path-blit is not replaced with a texture fixture.
-Unsupported paths return errors; metadata or function creation must never count
-as GPU drawing. Consequently this change alone cannot promise that backboardd
-will stop aborting at the next unsupported compositor pipeline.
+Original path-blit needs ordered framebuffer read/clear of RT2 together with
+color outputs. It remains explicitly nonexecutable: an immutable texture replay
+cannot preserve that ordering. Constant-specialized generic programs, mip chains,
+memoryless attachments and general indexed/instanced geometry are also outside
+this implementation. Unsupported paths return errors. Function discovery or
+successful pipeline creation alone never counts as GPU drawing or proof that
+backboardd is stable.
 
 ## Verification
 
@@ -80,3 +98,10 @@ will stop aborting at the next unsupported compositor pipeline.
   fence handling and rejected input sizes/capabilities. These are transport
   tests, not hardware execution.
 - iOS arm64 Cortex-A53 builds are distinct from the next device result.
+
+The new dynamic viewport and inline path blend variants require device proof
+separate from 0175. The next image includes GPU oracle cases with nonzero old
+destination values so overwrite cannot accidentally pass as additive/source-over.
+Host transport tests run the real registry and v4 emitters, mocking only IOKit;
+real Mac IOSurface allocation tests and the iOS Cortex-A53 build are separate
+checks from execution on the phone.
