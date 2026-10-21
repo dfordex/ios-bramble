@@ -96,3 +96,15 @@ fragment Texture0 read and a BGRA color attachment, but its out-of-bounds
 alpha specialization and sRGB variants still require semantic validation.
 Neither the translation metadata nor the typed quad operation proves that a
 stock iOS render command has reached Mali.
+
+
+The0158–0159 stock-provider target is built separately with
+`sh StockMetalPlugin/build_local.sh OUTPUT_DIRECTORY`. It links the resource
+and unsupported-SPI categories, performs required-selector and iOS16 layout
+checks, and attaches the actual OS device protocols. See
+[STOCK_ACCEPTANCE_ABI.md](STOCK_ACCEPTANCE_ABI.md) for the static contract and
+[DISCOVERY_GATING.md](DISCOVERY_GATING.md) for BOOT-carried VFS installation.
+This target is distinct from the deliberately unadvertised restricted class
+used by the earlier host tests. Phone acceptance requires the logged stock
+entry-point result; complete iOS shader rendering is still outside its bounded
+profile.
