@@ -1,0 +1,45 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 2f83696..173a992 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -357,6 +357,8 @@ ufs_find_partition(const char *want)
+ 	return ENOENT;
+ }
+ 
++#define UFS_DEVICE_WLUN         0xd0    /* UFS Device well-known LU (UPIU LUN field) */
++
+ static int
+ ufs_take_over_host(void)
+ {
+@@ -629,6 +631,20 @@ sweet_ufs_init(void)
+ 	error = ufs_take_over_host();
+ 	if (!error) {
+ 		static const uint8_t tur[6] = { 0x00 };
++		/*
++		 * bramble: after ABL every TEST UNIT READY on LUN 0 answers NOT READY
++		 * (key 2, asc 0). Wake the device as ufshcd_set_dev_pwr_mode does:
++		 * START STOP UNIT, power condition ACTIVE, to the UFS Device
++		 * well-known LU. No data is touched.
++		 */
++		static const uint8_t ssu_active[6] = { 0x1b, 0, 0, 0, 1 << 4, 0 };
++		su.lun = UFS_DEVICE_WLUN;
++		int serr = ufs_scsi(ssu_active, sizeof(ssu_active), 0, false);
++		if (serr) {	/* a unit attention is reported once, then it clears */
++			serr = ufs_scsi(ssu_active, sizeof(ssu_active), 0, false);
++		}
++		su.lun = 0;
++		printf("SWEET UFS: START STOP UNIT (active) to the device W-LU: %d\n", serr);
+ 		/*
+ 		 * The first command after the bootloader may report a unit attention.
+ 		 * bramble's UFS failed three in a row: allow ten, 20 ms apart.
+@@ -636,6 +652,10 @@ sweet_ufs_init(void)
+ 		for (int i = 0; i < 10 && (error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
+ 			delay(20000);
+ 		}
++		if (error) {	/* bring-up: see whether READ works regardless */
++			printf("SWEET UFS: TEST UNIT READY still failing, reading the GPT anyway\n");
++			error = 0;
++		}
+ 	}
+ 	if (!error) {
+ 		error = ufs_find_partition(want);
