@@ -1,0 +1,31 @@
+--- a/iokit/Kernel/arm/A5XELTEGPU.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPU.cpp
+@@ -309,10 +309,15 @@
+     gA5G3DReservationActive = 0;
+     /* Linux Panfrost: clearing an IRQ refreshes sampled JS_STATE. */
+     a5g3d_write32(gpu, 0x1004, slotMask);
+-    if ((a5g3d_read32(gpu, 0x1010) & slotMask) ||
+-        a5g3d_read32(gpu, slotBase + 0x60) ||
+-        a5g3d_read32(gpu, slotBase + 0x24) ||
+-        (a5g3d_read32(gpu, 0x2428) & 1)) {
++    const uint32_t preJS = a5g3d_read32(gpu, 0x1010);
++    const uint32_t prePending = a5g3d_read32(gpu, slotBase + 0x60);
++    const uint32_t preStatus = a5g3d_read32(gpu, slotBase + 0x24);
++    const uint32_t preAS = a5g3d_read32(gpu, 0x2428);
++    if ((preJS & slotMask) || prePending || preStatus || (preAS & 1)) {
++        IOLog("A5XELTE G3D: queue preflight slot=%u js=%08x pending=%08x status=%08x as=%08x irq=%08x mmu=%08x gpu=%08x\n",
++            slot, preJS, prePending, preStatus, preAS,
++            a5g3d_read32(gpu, 0x1000), a5g3d_read32(gpu, 0x2000),
++            a5g3d_read32(gpu, 0x20));
+         service->setProperty("A5G3DFenceResult", "slot-or-as-busy");
+         gA5G3DQueueState = 2;
+         return kA5G3DQueueFault;
+@@ -368,6 +373,8 @@
+      * backing stays pinned and cannot be recycled by a later request.
+      */
+     if (!slotIdle) {
++        IOLog("A5XELTE G3D: fence=%llu slot=%u still active status=%08x pending=%08x irq=%08x mmu=%08x gpu=%08x\n",
++            fence, slot, slotStatus, pending, jobIRQ, mmuIRQ, gpuIRQ);
+         service->setProperty("A5G3DFenceResult", "slot-not-idle-pinned");
+         gA5G3DQueueState = 2;
+         return kA5G3DQueueFault;
