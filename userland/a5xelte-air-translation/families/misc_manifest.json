@@ -1,0 +1,4065 @@
+{
+  "host_compile_only": true,
+  "device_runtime_verified": false,
+  "quartzcore_uuid": "9e40b2eb-260c-3af1-ae45-a1a551a8c1b9",
+  "source_evidence": {
+    "formats": "QC MetalContext::MTLPixelFormat_codes @0x1d5b46d78: index80=BGRA,index10=L008,index115=RGhA (RGBA16Float)",
+    "packing0": "QC @0x188381668 noL->packing0; table@0x188565090 header0x0130, attrs00f8/10e9/18ea/20db",
+    "native_ssbo": "Mesa26.2.4 nir_lower_ssbo.c + gallium/drivers/panfrost/pan_nir_lower_sysvals.c + pan_cmdstream.c:panfrost_upload_ssbo_sysval"
+  },
+  "metallib_sha256": "11c74cc42ce5137b73d44d427f75764f886656d4ddb374422d56b609ed2762d9",
+  "runtime_abi": {
+    "ubo": "bindingN -> hardwareUBO N+1; stageUBO0 reserved",
+    "ssbo": "actual global GPU loads; UBO0 byte96+16*N {GPUVA:u64,size:u32,reserved:u32}",
+    "texture": "binding order -> distinct hardware texture/sampler index",
+    "texture_sysvals": "UBO0 byte352+32*N {levels,width,height,reserved,minLOD,maxLOD,bias,reserved}",
+    "viewport_scale": "UBO0 byte512 float3",
+    "viewport_offset": "UBO0 byte528 float3",
+    "raw_vertex_offset": "UBO0 byte544 u32",
+    "base_vertex": "UBO0 byte548 u32",
+    "base_instance": "UBO0 byte552 u32"
+  },
+  "profiles": [
+    {
+      "family": "buffer_image_blit",
+      "variant": "bgra8",
+      "rows": [
+        141
+      ],
+      "vertex": "buffer_image_blit_vert_lph",
+      "fragment": "buffer_image_blit_frag_lph",
+      "color_format": "BGRA8Unorm",
+      "resources": {
+        "slots": [
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 2
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 64
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 8
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 9
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ]
+        ],
+        "threadgroup": [],
+        "needs_pointer_translation": false,
+        "needs_handle_translation": false,
+        "push": [
+          {
+            "stage": "Vertex",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 0
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 4
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              0,
+              8
+            ],
+            "argument_table_size": 0
+          },
+          {
+            "stage": "Fragment",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 64
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 68
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 0
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 72
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 1
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 76
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              64,
+              16
+            ],
+            "argument_table_size": 0
+          }
+        ],
+        "reaches_command_buffers": false,
+        "texture_writing_stages": [],
+        "numbered_samplers": [
+          [
+            "Vertex",
+            []
+          ],
+          [
+            "Fragment",
+            []
+          ]
+        ]
+      },
+      "layout": {
+        "sets": [
+          {
+            "set": 0,
+            "bindings": [
+              {
+                "binding": 0,
+                "ty": 7,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 1,
+                "ty": 6,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 2,
+                "ty": 6,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 3,
+                "ty": 7,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              }
+            ],
+            "flags": 0
+          }
+        ],
+        "push_constants": [
+          {
+            "stages": 1,
+            "offset": 0,
+            "size": 8
+          },
+          {
+            "stages": 16,
+            "offset": 64,
+            "size": 16
+          }
+        ],
+        "push_descriptor_eligible": false
+      },
+      "graphics": {
+        "topology": 3,
+        "color_attachments": [
+          {
+            "format": 44,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 44,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 100,
+            "write_mask": 15,
+            "blend": null
+          }
+        ],
+        "depth_format": null,
+        "stencil_format": null,
+        "rasterization_samples": 1,
+        "alpha_to_coverage": false,
+        "alpha_to_one": false,
+        "rasterizer_discard": false,
+        "dynamic_states": [
+          0,
+          1,
+          3,
+          4,
+          6,
+          7,
+          8
+        ],
+        "input_attachments": [],
+        "rasterization_order_attachment_access": false,
+        "max_vertex_amplification_count": 1,
+        "declares_layer": false,
+        "tessellation": null,
+        "fragment_imageblock": null,
+        "sample_shading": false,
+        "vertex_writes_memory": false,
+        "writes_viewport_index": false,
+        "storage_attachments": [],
+        "shadow_stencil": null,
+        "early_fragment_tests": false,
+        "mesh_records": null,
+        "emulated_tessellation": null,
+        "writes_point_size": false,
+        "flat_fragment_inputs": true,
+        "clip_distances": 0,
+        "writes_depth": false,
+        "reads_barycentric_coord": false,
+        "reads_position_depth": false,
+        "fragment_writes_memory": false,
+        "color_outputs": 3,
+        "sample_mask": null,
+        "shader_tests": null,
+        "color_write_rules": [
+          [
+            0,
+            8738
+          ],
+          [
+            1,
+            8738
+          ]
+        ],
+        "snapshot_reads": false,
+        "color_group": null
+      },
+      "vertex_input": {
+        "bindings": [],
+        "attributes": [],
+        "pulled": [],
+        "variant_pulled": []
+      },
+      "specialization": [
+        {
+          "constants": [
+            {
+              "id": 0,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Vertex",
+                  "class": "Buffer",
+                  "index": 2
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        },
+        {
+          "constants": [
+            {
+              "id": 1,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Fragment",
+                  "class": "Buffer",
+                  "index": 1
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        }
+      ],
+      "spirv": {
+        "vert": {
+          "bytes": 7100,
+          "sha256": "688a17924a01fa5bf75258eaeb9a5311b99cd5a5685d2b24924fbbdc8c5433da"
+        },
+        "frag": {
+          "bytes": 9292,
+          "sha256": "e90a8bdfe467a359fb9748f3675c50accea9f6f31d2bffff257aded61af8f1a9"
+        }
+      },
+      "render_target": 0,
+      "output_color_format": "BGRA8Unorm",
+      "execution": "single_SFBD_target_replay",
+      "full_air_output_targets": [
+        0,
+        1
+      ],
+      "native_output_packing": "native_unorm",
+      "backend_status": 0,
+      "midgard": {
+        "vert": {
+          "bytes": 2000,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 18,
+          "ubos": 3,
+          "samplers": 0,
+          "sha256": "2b414b0bcd68de68589e4b995e93f1c4c872296bdfef7441f59ca7989d228d39"
+        },
+        "frag": {
+          "bytes": 1776,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 0,
+          "ubos": 4,
+          "samplers": 0,
+          "sha256": "e19a86d8a543c1eda6681ab229332c0a838f0786ccafed2d34fe7a8866368678"
+        }
+      },
+      "status": "compiled"
+    },
+    {
+      "family": "buffer_image_blit",
+      "variant": "bgra8",
+      "rows": [
+        141
+      ],
+      "vertex": "buffer_image_blit_vert_lph",
+      "fragment": "buffer_image_blit_frag_lph",
+      "color_format": "BGRA8Unorm",
+      "resources": {
+        "slots": [
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 2
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 64
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 8
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 9
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ]
+        ],
+        "threadgroup": [],
+        "needs_pointer_translation": false,
+        "needs_handle_translation": false,
+        "push": [
+          {
+            "stage": "Vertex",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 0
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 4
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              0,
+              8
+            ],
+            "argument_table_size": 0
+          },
+          {
+            "stage": "Fragment",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 64
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 68
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 0
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 72
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 1
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 76
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              64,
+              16
+            ],
+            "argument_table_size": 0
+          }
+        ],
+        "reaches_command_buffers": false,
+        "texture_writing_stages": [],
+        "numbered_samplers": [
+          [
+            "Vertex",
+            []
+          ],
+          [
+            "Fragment",
+            []
+          ]
+        ]
+      },
+      "layout": {
+        "sets": [
+          {
+            "set": 0,
+            "bindings": [
+              {
+                "binding": 0,
+                "ty": 7,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 1,
+                "ty": 6,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 2,
+                "ty": 6,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 3,
+                "ty": 7,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              }
+            ],
+            "flags": 0
+          }
+        ],
+        "push_constants": [
+          {
+            "stages": 1,
+            "offset": 0,
+            "size": 8
+          },
+          {
+            "stages": 16,
+            "offset": 64,
+            "size": 16
+          }
+        ],
+        "push_descriptor_eligible": false
+      },
+      "graphics": {
+        "topology": 3,
+        "color_attachments": [
+          {
+            "format": 44,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 44,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 100,
+            "write_mask": 15,
+            "blend": null
+          }
+        ],
+        "depth_format": null,
+        "stencil_format": null,
+        "rasterization_samples": 1,
+        "alpha_to_coverage": false,
+        "alpha_to_one": false,
+        "rasterizer_discard": false,
+        "dynamic_states": [
+          0,
+          1,
+          3,
+          4,
+          6,
+          7,
+          8
+        ],
+        "input_attachments": [],
+        "rasterization_order_attachment_access": false,
+        "max_vertex_amplification_count": 1,
+        "declares_layer": false,
+        "tessellation": null,
+        "fragment_imageblock": null,
+        "sample_shading": false,
+        "vertex_writes_memory": false,
+        "writes_viewport_index": false,
+        "storage_attachments": [],
+        "shadow_stencil": null,
+        "early_fragment_tests": false,
+        "mesh_records": null,
+        "emulated_tessellation": null,
+        "writes_point_size": false,
+        "flat_fragment_inputs": true,
+        "clip_distances": 0,
+        "writes_depth": false,
+        "reads_barycentric_coord": false,
+        "reads_position_depth": false,
+        "fragment_writes_memory": false,
+        "color_outputs": 3,
+        "sample_mask": null,
+        "shader_tests": null,
+        "color_write_rules": [
+          [
+            0,
+            8738
+          ],
+          [
+            1,
+            8738
+          ]
+        ],
+        "snapshot_reads": false,
+        "color_group": null
+      },
+      "vertex_input": {
+        "bindings": [],
+        "attributes": [],
+        "pulled": [],
+        "variant_pulled": []
+      },
+      "specialization": [
+        {
+          "constants": [
+            {
+              "id": 0,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Vertex",
+                  "class": "Buffer",
+                  "index": 2
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        },
+        {
+          "constants": [
+            {
+              "id": 1,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Fragment",
+                  "class": "Buffer",
+                  "index": 1
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        }
+      ],
+      "spirv": {
+        "vert": {
+          "bytes": 7100,
+          "sha256": "688a17924a01fa5bf75258eaeb9a5311b99cd5a5685d2b24924fbbdc8c5433da"
+        },
+        "frag": {
+          "bytes": 9292,
+          "sha256": "e90a8bdfe467a359fb9748f3675c50accea9f6f31d2bffff257aded61af8f1a9"
+        }
+      },
+      "render_target": 1,
+      "output_color_format": "BGRA8Unorm",
+      "execution": "single_SFBD_target_replay",
+      "full_air_output_targets": [
+        0,
+        1
+      ],
+      "native_output_packing": "native_unorm",
+      "backend_status": 0,
+      "midgard": {
+        "vert": {
+          "bytes": 2000,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 18,
+          "ubos": 3,
+          "samplers": 0,
+          "sha256": "2b414b0bcd68de68589e4b995e93f1c4c872296bdfef7441f59ca7989d228d39"
+        },
+        "frag": {
+          "bytes": 1776,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 0,
+          "ubos": 4,
+          "samplers": 0,
+          "sha256": "5adb0de3359e40682b859d82c8d5bf9d41b34e8ffe5ad7eefb284da247ada8b1"
+        }
+      },
+      "status": "compiled"
+    },
+    {
+      "family": "buffer_image_blit",
+      "variant": "r8",
+      "rows": [
+        264
+      ],
+      "vertex": "buffer_image_blit_vert_lph",
+      "fragment": "buffer_image_blit_frag_lph",
+      "color_format": "R8Unorm",
+      "resources": {
+        "slots": [
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 2
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 64
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 8
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 9
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ]
+        ],
+        "threadgroup": [],
+        "needs_pointer_translation": false,
+        "needs_handle_translation": false,
+        "push": [
+          {
+            "stage": "Vertex",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 0
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 4
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              0,
+              8
+            ],
+            "argument_table_size": 0
+          },
+          {
+            "stage": "Fragment",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 64
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 68
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 0
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 72
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 1
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 76
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              64,
+              16
+            ],
+            "argument_table_size": 0
+          }
+        ],
+        "reaches_command_buffers": false,
+        "texture_writing_stages": [],
+        "numbered_samplers": [
+          [
+            "Vertex",
+            []
+          ],
+          [
+            "Fragment",
+            []
+          ]
+        ]
+      },
+      "layout": {
+        "sets": [
+          {
+            "set": 0,
+            "bindings": [
+              {
+                "binding": 0,
+                "ty": 7,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 1,
+                "ty": 6,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 2,
+                "ty": 6,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 3,
+                "ty": 7,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              }
+            ],
+            "flags": 0
+          }
+        ],
+        "push_constants": [
+          {
+            "stages": 1,
+            "offset": 0,
+            "size": 8
+          },
+          {
+            "stages": 16,
+            "offset": 64,
+            "size": 16
+          }
+        ],
+        "push_descriptor_eligible": false
+      },
+      "graphics": {
+        "topology": 3,
+        "color_attachments": [
+          {
+            "format": 9,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 16,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 100,
+            "write_mask": 15,
+            "blend": null
+          }
+        ],
+        "depth_format": null,
+        "stencil_format": null,
+        "rasterization_samples": 1,
+        "alpha_to_coverage": false,
+        "alpha_to_one": false,
+        "rasterizer_discard": false,
+        "dynamic_states": [
+          0,
+          1,
+          3,
+          4,
+          6,
+          7,
+          8
+        ],
+        "input_attachments": [],
+        "rasterization_order_attachment_access": false,
+        "max_vertex_amplification_count": 1,
+        "declares_layer": false,
+        "tessellation": null,
+        "fragment_imageblock": null,
+        "sample_shading": false,
+        "vertex_writes_memory": false,
+        "writes_viewport_index": false,
+        "storage_attachments": [],
+        "shadow_stencil": null,
+        "early_fragment_tests": false,
+        "mesh_records": null,
+        "emulated_tessellation": null,
+        "writes_point_size": false,
+        "flat_fragment_inputs": true,
+        "clip_distances": 0,
+        "writes_depth": false,
+        "reads_barycentric_coord": false,
+        "reads_position_depth": false,
+        "fragment_writes_memory": false,
+        "color_outputs": 3,
+        "sample_mask": null,
+        "shader_tests": null,
+        "color_write_rules": [
+          [
+            0,
+            2
+          ],
+          [
+            1,
+            34
+          ]
+        ],
+        "snapshot_reads": false,
+        "color_group": null
+      },
+      "vertex_input": {
+        "bindings": [],
+        "attributes": [],
+        "pulled": [],
+        "variant_pulled": []
+      },
+      "specialization": [
+        {
+          "constants": [
+            {
+              "id": 0,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Vertex",
+                  "class": "Buffer",
+                  "index": 2
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        },
+        {
+          "constants": [
+            {
+              "id": 1,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Fragment",
+                  "class": "Buffer",
+                  "index": 1
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        }
+      ],
+      "spirv": {
+        "vert": {
+          "bytes": 7100,
+          "sha256": "688a17924a01fa5bf75258eaeb9a5311b99cd5a5685d2b24924fbbdc8c5433da"
+        },
+        "frag": {
+          "bytes": 9292,
+          "sha256": "e90a8bdfe467a359fb9748f3675c50accea9f6f31d2bffff257aded61af8f1a9"
+        }
+      },
+      "render_target": 0,
+      "output_color_format": "R8Unorm",
+      "execution": "single_SFBD_target_replay",
+      "full_air_output_targets": [
+        0,
+        1
+      ],
+      "native_output_packing": "native_unorm",
+      "backend_status": 0,
+      "midgard": {
+        "vert": {
+          "bytes": 2000,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 18,
+          "ubos": 3,
+          "samplers": 0,
+          "sha256": "2b414b0bcd68de68589e4b995e93f1c4c872296bdfef7441f59ca7989d228d39"
+        },
+        "frag": {
+          "bytes": 1776,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 0,
+          "ubos": 4,
+          "samplers": 0,
+          "sha256": "e19a86d8a543c1eda6681ab229332c0a838f0786ccafed2d34fe7a8866368678"
+        }
+      },
+      "status": "compiled"
+    },
+    {
+      "family": "buffer_image_blit",
+      "variant": "r8",
+      "rows": [
+        264
+      ],
+      "vertex": "buffer_image_blit_vert_lph",
+      "fragment": "buffer_image_blit_frag_lph",
+      "color_format": "R8Unorm",
+      "resources": {
+        "slots": [
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 2
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 64
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 8
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 9
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ]
+        ],
+        "threadgroup": [],
+        "needs_pointer_translation": false,
+        "needs_handle_translation": false,
+        "push": [
+          {
+            "stage": "Vertex",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 0
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 4
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              0,
+              8
+            ],
+            "argument_table_size": 0
+          },
+          {
+            "stage": "Fragment",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 64
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 68
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 0
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 72
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 1
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 76
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              64,
+              16
+            ],
+            "argument_table_size": 0
+          }
+        ],
+        "reaches_command_buffers": false,
+        "texture_writing_stages": [],
+        "numbered_samplers": [
+          [
+            "Vertex",
+            []
+          ],
+          [
+            "Fragment",
+            []
+          ]
+        ]
+      },
+      "layout": {
+        "sets": [
+          {
+            "set": 0,
+            "bindings": [
+              {
+                "binding": 0,
+                "ty": 7,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 1,
+                "ty": 6,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 2,
+                "ty": 6,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 3,
+                "ty": 7,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              }
+            ],
+            "flags": 0
+          }
+        ],
+        "push_constants": [
+          {
+            "stages": 1,
+            "offset": 0,
+            "size": 8
+          },
+          {
+            "stages": 16,
+            "offset": 64,
+            "size": 16
+          }
+        ],
+        "push_descriptor_eligible": false
+      },
+      "graphics": {
+        "topology": 3,
+        "color_attachments": [
+          {
+            "format": 9,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 16,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 100,
+            "write_mask": 15,
+            "blend": null
+          }
+        ],
+        "depth_format": null,
+        "stencil_format": null,
+        "rasterization_samples": 1,
+        "alpha_to_coverage": false,
+        "alpha_to_one": false,
+        "rasterizer_discard": false,
+        "dynamic_states": [
+          0,
+          1,
+          3,
+          4,
+          6,
+          7,
+          8
+        ],
+        "input_attachments": [],
+        "rasterization_order_attachment_access": false,
+        "max_vertex_amplification_count": 1,
+        "declares_layer": false,
+        "tessellation": null,
+        "fragment_imageblock": null,
+        "sample_shading": false,
+        "vertex_writes_memory": false,
+        "writes_viewport_index": false,
+        "storage_attachments": [],
+        "shadow_stencil": null,
+        "early_fragment_tests": false,
+        "mesh_records": null,
+        "emulated_tessellation": null,
+        "writes_point_size": false,
+        "flat_fragment_inputs": true,
+        "clip_distances": 0,
+        "writes_depth": false,
+        "reads_barycentric_coord": false,
+        "reads_position_depth": false,
+        "fragment_writes_memory": false,
+        "color_outputs": 3,
+        "sample_mask": null,
+        "shader_tests": null,
+        "color_write_rules": [
+          [
+            0,
+            2
+          ],
+          [
+            1,
+            34
+          ]
+        ],
+        "snapshot_reads": false,
+        "color_group": null
+      },
+      "vertex_input": {
+        "bindings": [],
+        "attributes": [],
+        "pulled": [],
+        "variant_pulled": []
+      },
+      "specialization": [
+        {
+          "constants": [
+            {
+              "id": 0,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Vertex",
+                  "class": "Buffer",
+                  "index": 2
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        },
+        {
+          "constants": [
+            {
+              "id": 1,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Fragment",
+                  "class": "Buffer",
+                  "index": 1
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        }
+      ],
+      "spirv": {
+        "vert": {
+          "bytes": 7100,
+          "sha256": "688a17924a01fa5bf75258eaeb9a5311b99cd5a5685d2b24924fbbdc8c5433da"
+        },
+        "frag": {
+          "bytes": 9292,
+          "sha256": "e90a8bdfe467a359fb9748f3675c50accea9f6f31d2bffff257aded61af8f1a9"
+        }
+      },
+      "render_target": 1,
+      "output_color_format": "RG8Unorm",
+      "execution": "single_SFBD_target_replay",
+      "full_air_output_targets": [
+        0,
+        1
+      ],
+      "native_output_packing": "native_unorm",
+      "backend_status": 0,
+      "midgard": {
+        "vert": {
+          "bytes": 2000,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 18,
+          "ubos": 3,
+          "samplers": 0,
+          "sha256": "2b414b0bcd68de68589e4b995e93f1c4c872296bdfef7441f59ca7989d228d39"
+        },
+        "frag": {
+          "bytes": 1776,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 0,
+          "ubos": 4,
+          "samplers": 0,
+          "sha256": "5adb0de3359e40682b859d82c8d5bf9d41b34e8ffe5ad7eefb284da247ada8b1"
+        }
+      },
+      "status": "compiled"
+    },
+    {
+      "family": "buffer_image_blit",
+      "variant": "rgba16f",
+      "rows": [
+        280
+      ],
+      "vertex": "buffer_image_blit_vert_lph",
+      "fragment": "buffer_image_blit_frag_lph",
+      "color_format": "RGBA16Float",
+      "resources": {
+        "slots": [
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 2
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 64
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 8
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 9
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ]
+        ],
+        "threadgroup": [],
+        "needs_pointer_translation": false,
+        "needs_handle_translation": false,
+        "push": [
+          {
+            "stage": "Vertex",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 0
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 4
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              0,
+              8
+            ],
+            "argument_table_size": 0
+          },
+          {
+            "stage": "Fragment",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 64
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 68
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 0
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 72
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 1
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 76
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              64,
+              16
+            ],
+            "argument_table_size": 0
+          }
+        ],
+        "reaches_command_buffers": false,
+        "texture_writing_stages": [],
+        "numbered_samplers": [
+          [
+            "Vertex",
+            []
+          ],
+          [
+            "Fragment",
+            []
+          ]
+        ]
+      },
+      "layout": {
+        "sets": [
+          {
+            "set": 0,
+            "bindings": [
+              {
+                "binding": 0,
+                "ty": 7,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 1,
+                "ty": 6,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 2,
+                "ty": 6,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 3,
+                "ty": 7,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              }
+            ],
+            "flags": 0
+          }
+        ],
+        "push_constants": [
+          {
+            "stages": 1,
+            "offset": 0,
+            "size": 8
+          },
+          {
+            "stages": 16,
+            "offset": 64,
+            "size": 16
+          }
+        ],
+        "push_descriptor_eligible": false
+      },
+      "graphics": {
+        "topology": 3,
+        "color_attachments": [
+          {
+            "format": 97,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 97,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 100,
+            "write_mask": 15,
+            "blend": null
+          }
+        ],
+        "depth_format": null,
+        "stencil_format": null,
+        "rasterization_samples": 1,
+        "alpha_to_coverage": false,
+        "alpha_to_one": false,
+        "rasterizer_discard": false,
+        "dynamic_states": [
+          0,
+          1,
+          3,
+          4,
+          6,
+          7,
+          8
+        ],
+        "input_attachments": [],
+        "rasterization_order_attachment_access": false,
+        "max_vertex_amplification_count": 1,
+        "declares_layer": false,
+        "tessellation": null,
+        "fragment_imageblock": null,
+        "sample_shading": false,
+        "vertex_writes_memory": false,
+        "writes_viewport_index": false,
+        "storage_attachments": [],
+        "shadow_stencil": null,
+        "early_fragment_tests": false,
+        "mesh_records": null,
+        "emulated_tessellation": null,
+        "writes_point_size": false,
+        "flat_fragment_inputs": true,
+        "clip_distances": 0,
+        "writes_depth": false,
+        "reads_barycentric_coord": false,
+        "reads_position_depth": false,
+        "fragment_writes_memory": false,
+        "color_outputs": 3,
+        "sample_mask": null,
+        "shader_tests": null,
+        "color_write_rules": [
+          [
+            0,
+            13107
+          ],
+          [
+            1,
+            13107
+          ]
+        ],
+        "snapshot_reads": false,
+        "color_group": null
+      },
+      "vertex_input": {
+        "bindings": [],
+        "attributes": [],
+        "pulled": [],
+        "variant_pulled": []
+      },
+      "specialization": [
+        {
+          "constants": [
+            {
+              "id": 0,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Vertex",
+                  "class": "Buffer",
+                  "index": 2
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        },
+        {
+          "constants": [
+            {
+              "id": 1,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Fragment",
+                  "class": "Buffer",
+                  "index": 1
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        }
+      ],
+      "spirv": {
+        "vert": {
+          "bytes": 7100,
+          "sha256": "688a17924a01fa5bf75258eaeb9a5311b99cd5a5685d2b24924fbbdc8c5433da"
+        },
+        "frag": {
+          "bytes": 9292,
+          "sha256": "e90a8bdfe467a359fb9748f3675c50accea9f6f31d2bffff257aded61af8f1a9"
+        }
+      },
+      "render_target": 0,
+      "output_color_format": "RGBA16Float",
+      "execution": "single_SFBD_target_replay",
+      "full_air_output_targets": [
+        0,
+        1
+      ],
+      "native_output_packing": "RGBA16_RAW64_RG_BA",
+      "backend_status": 0,
+      "midgard": {
+        "vert": {
+          "bytes": 2000,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 18,
+          "ubos": 3,
+          "samplers": 0,
+          "sha256": "2b414b0bcd68de68589e4b995e93f1c4c872296bdfef7441f59ca7989d228d39"
+        },
+        "frag": {
+          "bytes": 1872,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 0,
+          "ubos": 4,
+          "samplers": 0,
+          "sha256": "eef75d71e91bffdcf093caf0428f8157e2bd5396091e0e93375d61392e3dcc8c"
+        }
+      },
+      "status": "compiled"
+    },
+    {
+      "family": "buffer_image_blit",
+      "variant": "rgba16f",
+      "rows": [
+        280
+      ],
+      "vertex": "buffer_image_blit_vert_lph",
+      "fragment": "buffer_image_blit_frag_lph",
+      "color_format": "RGBA16Float",
+      "resources": {
+        "slots": [
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 2
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 64
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 8
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 9
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ]
+        ],
+        "threadgroup": [],
+        "needs_pointer_translation": false,
+        "needs_handle_translation": false,
+        "push": [
+          {
+            "stage": "Vertex",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 0
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 4
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              0,
+              8
+            ],
+            "argument_table_size": 0
+          },
+          {
+            "stage": "Fragment",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 64
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 68
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 0
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 72
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 1
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 76
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              64,
+              16
+            ],
+            "argument_table_size": 0
+          }
+        ],
+        "reaches_command_buffers": false,
+        "texture_writing_stages": [],
+        "numbered_samplers": [
+          [
+            "Vertex",
+            []
+          ],
+          [
+            "Fragment",
+            []
+          ]
+        ]
+      },
+      "layout": {
+        "sets": [
+          {
+            "set": 0,
+            "bindings": [
+              {
+                "binding": 0,
+                "ty": 7,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 1,
+                "ty": 6,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 2,
+                "ty": 6,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 3,
+                "ty": 7,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 9
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              }
+            ],
+            "flags": 0
+          }
+        ],
+        "push_constants": [
+          {
+            "stages": 1,
+            "offset": 0,
+            "size": 8
+          },
+          {
+            "stages": 16,
+            "offset": 64,
+            "size": 16
+          }
+        ],
+        "push_descriptor_eligible": false
+      },
+      "graphics": {
+        "topology": 3,
+        "color_attachments": [
+          {
+            "format": 97,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 97,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 100,
+            "write_mask": 15,
+            "blend": null
+          }
+        ],
+        "depth_format": null,
+        "stencil_format": null,
+        "rasterization_samples": 1,
+        "alpha_to_coverage": false,
+        "alpha_to_one": false,
+        "rasterizer_discard": false,
+        "dynamic_states": [
+          0,
+          1,
+          3,
+          4,
+          6,
+          7,
+          8
+        ],
+        "input_attachments": [],
+        "rasterization_order_attachment_access": false,
+        "max_vertex_amplification_count": 1,
+        "declares_layer": false,
+        "tessellation": null,
+        "fragment_imageblock": null,
+        "sample_shading": false,
+        "vertex_writes_memory": false,
+        "writes_viewport_index": false,
+        "storage_attachments": [],
+        "shadow_stencil": null,
+        "early_fragment_tests": false,
+        "mesh_records": null,
+        "emulated_tessellation": null,
+        "writes_point_size": false,
+        "flat_fragment_inputs": true,
+        "clip_distances": 0,
+        "writes_depth": false,
+        "reads_barycentric_coord": false,
+        "reads_position_depth": false,
+        "fragment_writes_memory": false,
+        "color_outputs": 3,
+        "sample_mask": null,
+        "shader_tests": null,
+        "color_write_rules": [
+          [
+            0,
+            13107
+          ],
+          [
+            1,
+            13107
+          ]
+        ],
+        "snapshot_reads": false,
+        "color_group": null
+      },
+      "vertex_input": {
+        "bindings": [],
+        "attributes": [],
+        "pulled": [],
+        "variant_pulled": []
+      },
+      "specialization": [
+        {
+          "constants": [
+            {
+              "id": 0,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Vertex",
+                  "class": "Buffer",
+                  "index": 2
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        },
+        {
+          "constants": [
+            {
+              "id": 1,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Fragment",
+                  "class": "Buffer",
+                  "index": 1
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        }
+      ],
+      "spirv": {
+        "vert": {
+          "bytes": 7100,
+          "sha256": "688a17924a01fa5bf75258eaeb9a5311b99cd5a5685d2b24924fbbdc8c5433da"
+        },
+        "frag": {
+          "bytes": 9292,
+          "sha256": "e90a8bdfe467a359fb9748f3675c50accea9f6f31d2bffff257aded61af8f1a9"
+        }
+      },
+      "render_target": 1,
+      "output_color_format": "RGBA16Float",
+      "execution": "single_SFBD_target_replay",
+      "full_air_output_targets": [
+        0,
+        1
+      ],
+      "native_output_packing": "RGBA16_RAW64_RG_BA",
+      "backend_status": 0,
+      "midgard": {
+        "vert": {
+          "bytes": 2000,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 18,
+          "ubos": 3,
+          "samplers": 0,
+          "sha256": "2b414b0bcd68de68589e4b995e93f1c4c872296bdfef7441f59ca7989d228d39"
+        },
+        "frag": {
+          "bytes": 1872,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 6,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 0,
+          "ubos": 4,
+          "samplers": 0,
+          "sha256": "e50495aba07b90ebb2787e8d069fa851cfcfa8659c55a04803d77b7bcaca6456"
+        }
+      },
+      "status": "compiled"
+    },
+    {
+      "family": "home_affordance",
+      "variant": "bgra8",
+      "rows": [
+        204
+      ],
+      "vertex": "std_vert1_lph",
+      "fragment": "home_affordance_base_lph",
+      "color_format": "BGRA8Unorm",
+      "resources": {
+        "slots": [
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 2
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 64
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 3
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 16
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 12
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Texture",
+              "index": 3
+            },
+            {
+              "Texture": {
+                "texture_type": "Type2D",
+                "sampled_type": "Float",
+                "depth_compare": false,
+                "access": {
+                  "sample": true,
+                  "read": false,
+                  "write": false
+                }
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Fragment",
+              "class": "Texture",
+              "index": 4
+            },
+            {
+              "Texture": {
+                "texture_type": "Type2D",
+                "sampled_type": "Float",
+                "depth_compare": false,
+                "access": {
+                  "sample": true,
+                  "read": false,
+                  "write": false
+                }
+              }
+            }
+          ]
+        ],
+        "threadgroup": [],
+        "needs_pointer_translation": false,
+        "needs_handle_translation": false,
+        "push": [
+          {
+            "stage": "Vertex",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 0
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 3
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 4
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              0,
+              8
+            ],
+            "argument_table_size": 0
+          },
+          {
+            "stage": "Fragment",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 64
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 0
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 68
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              64,
+              8
+            ],
+            "argument_table_size": 0
+          }
+        ],
+        "reaches_command_buffers": false,
+        "texture_writing_stages": [],
+        "numbered_samplers": [
+          [
+            "Vertex",
+            []
+          ],
+          [
+            "Fragment",
+            [
+              {
+                "Constexpr": [
+                  34901797601020489,
+                  0
+                ]
+              }
+            ]
+          ]
+        ]
+      },
+      "layout": {
+        "sets": [
+          {
+            "set": 0,
+            "bindings": [
+              {
+                "binding": 0,
+                "ty": 6,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 1,
+                "ty": 6,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 3
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 2,
+                "ty": 6,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "Buffer": {
+                    "stage": "Fragment",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 3,
+                "ty": 1,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "CombinedTextureSampler": {
+                    "texture": {
+                      "stage": "Fragment",
+                      "class": "Texture",
+                      "index": 3
+                    },
+                    "sampler": {
+                      "sampler": {
+                        "Constexpr": [
+                          34901797601020489,
+                          0
+                        ]
+                      },
+                      "compare": false,
+                      "integer": false,
+                      "cube_gradient": false,
+                      "raw": false
+                    }
+                  }
+                },
+                "immutable_sampler": {
+                  "mag_filter": 1,
+                  "min_filter": 1,
+                  "mipmap_mode": 0,
+                  "address_mode_u": 2,
+                  "address_mode_v": 2,
+                  "address_mode_w": 2,
+                  "mip_lod_bias": 0.0,
+                  "max_anisotropy": null,
+                  "compare": null,
+                  "min_lod": 0.0,
+                  "max_lod": 0.25,
+                  "border_color": 0,
+                  "reduction": 0,
+                  "border_components": null
+                },
+                "flags": 0
+              },
+              {
+                "binding": 4,
+                "ty": 1,
+                "count": 1,
+                "stages": 16,
+                "source": {
+                  "CombinedTextureSampler": {
+                    "texture": {
+                      "stage": "Fragment",
+                      "class": "Texture",
+                      "index": 4
+                    },
+                    "sampler": {
+                      "sampler": {
+                        "Constexpr": [
+                          34901797601020489,
+                          0
+                        ]
+                      },
+                      "compare": false,
+                      "integer": false,
+                      "cube_gradient": false,
+                      "raw": false
+                    }
+                  }
+                },
+                "immutable_sampler": {
+                  "mag_filter": 1,
+                  "min_filter": 1,
+                  "mipmap_mode": 0,
+                  "address_mode_u": 2,
+                  "address_mode_v": 2,
+                  "address_mode_w": 2,
+                  "mip_lod_bias": 0.0,
+                  "max_anisotropy": null,
+                  "compare": null,
+                  "min_lod": 0.0,
+                  "max_lod": 0.25,
+                  "border_color": 0,
+                  "reduction": 0,
+                  "border_components": null
+                },
+                "flags": 0
+              }
+            ],
+            "flags": 0
+          }
+        ],
+        "push_constants": [
+          {
+            "stages": 1,
+            "offset": 0,
+            "size": 8
+          },
+          {
+            "stages": 16,
+            "offset": 64,
+            "size": 8
+          }
+        ],
+        "push_descriptor_eligible": false
+      },
+      "graphics": {
+        "topology": 3,
+        "color_attachments": [
+          {
+            "format": 44,
+            "write_mask": 15,
+            "blend": null
+          }
+        ],
+        "depth_format": null,
+        "stencil_format": null,
+        "rasterization_samples": 1,
+        "alpha_to_coverage": false,
+        "alpha_to_one": false,
+        "rasterizer_discard": false,
+        "dynamic_states": [
+          0,
+          1,
+          3,
+          4,
+          6,
+          7,
+          8
+        ],
+        "input_attachments": [],
+        "rasterization_order_attachment_access": false,
+        "max_vertex_amplification_count": 1,
+        "declares_layer": false,
+        "tessellation": null,
+        "fragment_imageblock": null,
+        "sample_shading": false,
+        "vertex_writes_memory": false,
+        "writes_viewport_index": false,
+        "storage_attachments": [],
+        "shadow_stencil": null,
+        "early_fragment_tests": false,
+        "mesh_records": null,
+        "emulated_tessellation": null,
+        "writes_point_size": false,
+        "flat_fragment_inputs": false,
+        "clip_distances": 0,
+        "writes_depth": false,
+        "reads_barycentric_coord": false,
+        "reads_position_depth": false,
+        "fragment_writes_memory": false,
+        "color_outputs": 1,
+        "sample_mask": null,
+        "shader_tests": null,
+        "color_write_rules": [
+          [
+            0,
+            8738
+          ]
+        ],
+        "snapshot_reads": false,
+        "color_group": null
+      },
+      "vertex_input": {
+        "bindings": [
+          {
+            "binding": 0,
+            "buffer_index": 1,
+            "input_rate": 0,
+            "divisor": 1,
+            "stride": {
+              "Static": 48
+            }
+          }
+        ],
+        "attributes": [
+          {
+            "location": 0,
+            "binding": 0,
+            "format": 109,
+            "offset": 0
+          },
+          {
+            "location": 1,
+            "binding": 0,
+            "format": 103,
+            "offset": 16
+          },
+          {
+            "location": 2,
+            "binding": 0,
+            "format": 97,
+            "offset": 32
+          }
+        ],
+        "pulled": [],
+        "variant_pulled": []
+      },
+      "specialization": [
+        {
+          "constants": [
+            {
+              "id": 0,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Vertex",
+                  "class": "Buffer",
+                  "index": 2
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            },
+            {
+              "id": 1,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Vertex",
+                  "class": "Buffer",
+                  "index": 3
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        },
+        {
+          "constants": [
+            {
+              "id": 2,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Fragment",
+                  "class": "Buffer",
+                  "index": 1
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        }
+      ],
+      "spirv": {
+        "vert": {
+          "bytes": 5172,
+          "sha256": "41f98435757952538a6162ffa6f1ae010d3224d64630f8d9105aa5b151fc5da3"
+        },
+        "frag": {
+          "bytes": 9736,
+          "sha256": "42f7758b584b103ab3c9205ae83efa4ac8ebea0a67a65513922212fbbb94f942"
+        }
+      },
+      "render_target": 0,
+      "output_color_format": "BGRA8Unorm",
+      "execution": "single_RT",
+      "full_air_output_targets": [
+        0
+      ],
+      "native_output_packing": "native_unorm",
+      "backend_status": 0,
+      "midgard": {
+        "vert": {
+          "bytes": 2192,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 8,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 3,
+          "ubos": 3,
+          "samplers": 0,
+          "sha256": "70b405db45ba8f8b3a0e43dcaed550eaeed1478c11897afc0788a9f3aec1afe3"
+        },
+        "frag": {
+          "bytes": 3424,
+          "first_tag": 5,
+          "textures": 2,
+          "work_regs": 8,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 0,
+          "ubos": 4,
+          "samplers": 2,
+          "sha256": "f532a5e1198142c9feb30637b4784dad3c9362d0bb41387eabb634652b0856df"
+        }
+      },
+      "status": "compiled"
+    },
+    {
+      "family": "attachment_clear",
+      "variant": "bgra8",
+      "rows": [
+        166
+      ],
+      "vertex": "path_blit_vert_lph",
+      "fragment": "attachment_clear_frag_lph",
+      "color_format": "BGRA8Unorm",
+      "resources": {
+        "slots": [
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 2
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 64
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ]
+        ],
+        "threadgroup": [],
+        "needs_pointer_translation": false,
+        "needs_handle_translation": false,
+        "push": [
+          {
+            "stage": "Vertex",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 0
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 4
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              0,
+              8
+            ],
+            "argument_table_size": 0
+          },
+          {
+            "stage": "Fragment",
+            "fields": [
+              {
+                "field": {
+                  "ColorWriteRule": 0
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 64
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 1
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 68
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              64,
+              8
+            ],
+            "argument_table_size": 0
+          }
+        ],
+        "reaches_command_buffers": false,
+        "texture_writing_stages": [],
+        "numbered_samplers": [
+          [
+            "Vertex",
+            []
+          ],
+          [
+            "Fragment",
+            []
+          ]
+        ]
+      },
+      "layout": {
+        "sets": [
+          {
+            "set": 0,
+            "bindings": [
+              {
+                "binding": 0,
+                "ty": 7,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 1,
+                "ty": 6,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              }
+            ],
+            "flags": 0
+          }
+        ],
+        "push_constants": [
+          {
+            "stages": 1,
+            "offset": 0,
+            "size": 8
+          },
+          {
+            "stages": 16,
+            "offset": 64,
+            "size": 8
+          }
+        ],
+        "push_descriptor_eligible": false
+      },
+      "graphics": {
+        "topology": 3,
+        "color_attachments": [
+          {
+            "format": 44,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 44,
+            "write_mask": 15,
+            "blend": null
+          }
+        ],
+        "depth_format": null,
+        "stencil_format": null,
+        "rasterization_samples": 1,
+        "alpha_to_coverage": false,
+        "alpha_to_one": false,
+        "rasterizer_discard": false,
+        "dynamic_states": [
+          0,
+          1,
+          3,
+          4,
+          6,
+          7,
+          8
+        ],
+        "input_attachments": [],
+        "rasterization_order_attachment_access": false,
+        "max_vertex_amplification_count": 1,
+        "declares_layer": false,
+        "tessellation": null,
+        "fragment_imageblock": null,
+        "sample_shading": false,
+        "vertex_writes_memory": false,
+        "writes_viewport_index": false,
+        "storage_attachments": [],
+        "shadow_stencil": null,
+        "early_fragment_tests": false,
+        "mesh_records": null,
+        "emulated_tessellation": null,
+        "writes_point_size": false,
+        "flat_fragment_inputs": false,
+        "clip_distances": 0,
+        "writes_depth": false,
+        "reads_barycentric_coord": false,
+        "reads_position_depth": false,
+        "fragment_writes_memory": false,
+        "color_outputs": 3,
+        "sample_mask": null,
+        "shader_tests": null,
+        "color_write_rules": [
+          [
+            0,
+            8738
+          ],
+          [
+            1,
+            8738
+          ]
+        ],
+        "snapshot_reads": false,
+        "color_group": null
+      },
+      "vertex_input": {
+        "bindings": [],
+        "attributes": [],
+        "pulled": [],
+        "variant_pulled": []
+      },
+      "specialization": [
+        {
+          "constants": [
+            {
+              "id": 0,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Vertex",
+                  "class": "Buffer",
+                  "index": 2
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        },
+        {
+          "constants": []
+        }
+      ],
+      "spirv": {
+        "vert": {
+          "bytes": 4504,
+          "sha256": "8884b4d5e1d4cb882bc231bd04960f911e102eb46e577be6908013985f6f3fbb"
+        },
+        "frag": {
+          "bytes": 5628,
+          "sha256": "b2272327d404768874364fd8aa15305777b9210392e69a8b60338e267ad7550e"
+        }
+      },
+      "render_target": 0,
+      "output_color_format": "BGRA8Unorm",
+      "execution": "single_SFBD_target_replay",
+      "full_air_output_targets": [
+        0,
+        1
+      ],
+      "native_output_packing": "native_unorm",
+      "backend_status": 0,
+      "midgard": {
+        "vert": {
+          "bytes": 960,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 5,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 18,
+          "ubos": 3,
+          "samplers": 0,
+          "sha256": "b47a05e54ba24baac6825b38e77a77147cb31c7d7fbb720c104fcadded01dc3f"
+        },
+        "frag": {
+          "bytes": 176,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 2,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 0,
+          "ubos": 1,
+          "samplers": 0,
+          "sha256": "11acef1eb736c7ec6f86cbf2878a1e7c5d0eaa29cea1c441ab9f4722b6dfbc0b"
+        }
+      },
+      "status": "compiled"
+    },
+    {
+      "family": "attachment_clear",
+      "variant": "bgra8",
+      "rows": [
+        166
+      ],
+      "vertex": "path_blit_vert_lph",
+      "fragment": "attachment_clear_frag_lph",
+      "color_format": "BGRA8Unorm",
+      "resources": {
+        "slots": [
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 1
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": "Whole",
+                "form": {
+                  "Descriptor": "Storage"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ],
+          [
+            {
+              "stage": "Vertex",
+              "class": "Buffer",
+              "index": 2
+            },
+            {
+              "Buffer": {
+                "access": {
+                  "read": true,
+                  "write": false
+                },
+                "window": {
+                  "Bounded": {
+                    "start": 0,
+                    "len": 64
+                  }
+                },
+                "form": {
+                  "Descriptor": "UniformWords"
+                },
+                "kind": "Buffer"
+              }
+            }
+          ]
+        ],
+        "threadgroup": [],
+        "needs_pointer_translation": false,
+        "needs_handle_translation": false,
+        "push": [
+          {
+            "stage": "Vertex",
+            "fields": [
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 0
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "SlotBindOffset": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 4
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              0,
+              8
+            ],
+            "argument_table_size": 0
+          },
+          {
+            "stage": "Fragment",
+            "fields": [
+              {
+                "field": {
+                  "ColorWriteRule": 0
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 64
+                  }
+                },
+                "size": 4
+              },
+              {
+                "field": {
+                  "ColorWriteRule": 1
+                },
+                "loc": {
+                  "Push": {
+                    "offset": 68
+                  }
+                },
+                "size": 4
+              }
+            ],
+            "push_range": [
+              64,
+              8
+            ],
+            "argument_table_size": 0
+          }
+        ],
+        "reaches_command_buffers": false,
+        "texture_writing_stages": [],
+        "numbered_samplers": [
+          [
+            "Vertex",
+            []
+          ],
+          [
+            "Fragment",
+            []
+          ]
+        ]
+      },
+      "layout": {
+        "sets": [
+          {
+            "set": 0,
+            "bindings": [
+              {
+                "binding": 0,
+                "ty": 7,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 1
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              },
+              {
+                "binding": 1,
+                "ty": 6,
+                "count": 1,
+                "stages": 1,
+                "source": {
+                  "Buffer": {
+                    "stage": "Vertex",
+                    "class": "Buffer",
+                    "index": 2
+                  }
+                },
+                "immutable_sampler": null,
+                "flags": 0
+              }
+            ],
+            "flags": 0
+          }
+        ],
+        "push_constants": [
+          {
+            "stages": 1,
+            "offset": 0,
+            "size": 8
+          },
+          {
+            "stages": 16,
+            "offset": 64,
+            "size": 8
+          }
+        ],
+        "push_descriptor_eligible": false
+      },
+      "graphics": {
+        "topology": 3,
+        "color_attachments": [
+          {
+            "format": 44,
+            "write_mask": 15,
+            "blend": null
+          },
+          {
+            "format": 44,
+            "write_mask": 15,
+            "blend": null
+          }
+        ],
+        "depth_format": null,
+        "stencil_format": null,
+        "rasterization_samples": 1,
+        "alpha_to_coverage": false,
+        "alpha_to_one": false,
+        "rasterizer_discard": false,
+        "dynamic_states": [
+          0,
+          1,
+          3,
+          4,
+          6,
+          7,
+          8
+        ],
+        "input_attachments": [],
+        "rasterization_order_attachment_access": false,
+        "max_vertex_amplification_count": 1,
+        "declares_layer": false,
+        "tessellation": null,
+        "fragment_imageblock": null,
+        "sample_shading": false,
+        "vertex_writes_memory": false,
+        "writes_viewport_index": false,
+        "storage_attachments": [],
+        "shadow_stencil": null,
+        "early_fragment_tests": false,
+        "mesh_records": null,
+        "emulated_tessellation": null,
+        "writes_point_size": false,
+        "flat_fragment_inputs": false,
+        "clip_distances": 0,
+        "writes_depth": false,
+        "reads_barycentric_coord": false,
+        "reads_position_depth": false,
+        "fragment_writes_memory": false,
+        "color_outputs": 3,
+        "sample_mask": null,
+        "shader_tests": null,
+        "color_write_rules": [
+          [
+            0,
+            8738
+          ],
+          [
+            1,
+            8738
+          ]
+        ],
+        "snapshot_reads": false,
+        "color_group": null
+      },
+      "vertex_input": {
+        "bindings": [],
+        "attributes": [],
+        "pulled": [],
+        "variant_pulled": []
+      },
+      "specialization": [
+        {
+          "constants": [
+            {
+              "id": 0,
+              "key": {
+                "RangeAtBindOffset": {
+                  "stage": "Vertex",
+                  "class": "Buffer",
+                  "index": 2
+                }
+              },
+              "size": 4,
+              "default": 0,
+              "unread_bits": 0
+            }
+          ]
+        },
+        {
+          "constants": []
+        }
+      ],
+      "spirv": {
+        "vert": {
+          "bytes": 4504,
+          "sha256": "8884b4d5e1d4cb882bc231bd04960f911e102eb46e577be6908013985f6f3fbb"
+        },
+        "frag": {
+          "bytes": 5628,
+          "sha256": "b2272327d404768874364fd8aa15305777b9210392e69a8b60338e267ad7550e"
+        }
+      },
+      "render_target": 1,
+      "output_color_format": "BGRA8Unorm",
+      "execution": "single_SFBD_target_replay",
+      "full_air_output_targets": [
+        0,
+        1
+      ],
+      "native_output_packing": "native_unorm",
+      "backend_status": 0,
+      "midgard": {
+        "vert": {
+          "bytes": 960,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 5,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 18,
+          "ubos": 3,
+          "samplers": 0,
+          "sha256": "b47a05e54ba24baac6825b38e77a77147cb31c7d7fbb720c104fcadded01dc3f"
+        },
+        "frag": {
+          "bytes": 176,
+          "first_tag": 5,
+          "textures": 0,
+          "work_regs": 2,
+          "tls": 0,
+          "wls": 0,
+          "attributes": 0,
+          "ubos": 1,
+          "samplers": 0,
+          "sha256": "d6092707daceb72ab71cd16532c837f3859793a9f3137fa3ccb251b4ec41cd04"
+        }
+      },
+      "status": "compiled"
+    }
+  ]
+}

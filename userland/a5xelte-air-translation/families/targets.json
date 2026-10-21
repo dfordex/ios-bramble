@@ -1,0 +1,346 @@
+{
+  "schema_version": 1,
+  "source": "iOS16.7.16 QuartzCore warmup table",
+  "quartzcore_uuid": "9e40b2eb-260c-3af1-ae45-a1a551a8c1b9",
+  "selection_model": "no feature sets; no native pipeline library; normal precompiled lookup branch",
+  "evidence": "static table order; async execution order is not guaranteed",
+  "scope": "Static directly named warmup candidates; not a complete iOS shader census or runtime draw-order proof.",
+  "counts": {
+    "pipeline_rows": 21,
+    "unique_pairs": 16,
+    "vertex_functions": 7,
+    "fragment_functions": 16
+  },
+  "groups": {
+    "existing": [
+      {
+        "row": 67,
+        "pipeline": "PBGRABsovXm_Tds4A2Xhf_Isrc",
+        "texture_index": 26,
+        "fast_shader_index": 1,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "downsample_4_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 202,
+        "pipeline": "PBGRAXm_Tds4A2Xhf_Isrc",
+        "texture_index": 26,
+        "fast_shader_index": 1,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "downsample_4_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      }
+    ],
+    "blur": [
+      {
+        "row": 68,
+        "pipeline": "PBGRABsovXm_Tds8A2Xhf_Isrc",
+        "texture_index": 28,
+        "fast_shader_index": 3,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "downsample_8_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 203,
+        "pipeline": "PBGRAXm_Tds8A2Xhf_Isrc",
+        "texture_index": 28,
+        "fast_shader_index": 3,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "downsample_8_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 244,
+        "pipeline": "PBGRAXm_Tn11A2Xhf_Isrc",
+        "texture_index": 33,
+        "fast_shader_index": 8,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "narrow_blur_11_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 245,
+        "pipeline": "PBGRAXm_Tn15A2Xhf_Isrc",
+        "texture_index": 34,
+        "fast_shader_index": 9,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "narrow_blur_15_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 246,
+        "pipeline": "PBGRAXm_Tn19A2Xhf_Isrc",
+        "texture_index": 35,
+        "fast_shader_index": 10,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "narrow_blur_19_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 247,
+        "pipeline": "PBGRAXm_Tn23A2Xhf_Isrc",
+        "texture_index": 36,
+        "fast_shader_index": 11,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "narrow_blur_23_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 248,
+        "pipeline": "PBGRAXm_Tn27A2Xhf_Isrc",
+        "texture_index": 37,
+        "fast_shader_index": 12,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "narrow_blur_27_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 249,
+        "pipeline": "PBGRAXm_Tnb7A2Xhf_Isrc",
+        "texture_index": 32,
+        "fast_shader_index": 7,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "narrow_blur_7_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 250,
+        "pipeline": "PBGRAXm_Tsb3A2Xhf_Isrc",
+        "texture_index": 40,
+        "fast_shader_index": 13,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "single_pass_blur_3_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 287,
+        "pipeline": "PRGhAXm_Tn23A2Xhf_Isrc",
+        "texture_index": 36,
+        "fast_shader_index": 11,
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "narrow_blur_23_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 115,
+        "color_format": "RGBA16Float",
+        "additional_color_attachments": []
+      }
+    ],
+    "path": [
+      {
+        "row": 152,
+        "pipeline": "PBGRABsovXmw_TpblA3Xhf",
+        "texture_index": 79,
+        "fast_shader_index": 40,
+        "vertex": "path_blit_vert_lph",
+        "fragment": "path_blit_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": [
+          {
+            "index": 2,
+            "metal_pixel_format": 55,
+            "color_format": "R32Float"
+          }
+        ]
+      },
+      {
+        "row": 153,
+        "pipeline": "PBGRABsovXmw_Tpc0A3Xhf",
+        "texture_index": 70,
+        "fast_shader_index": 31,
+        "vertex": "path_cubic_vert_0_lph",
+        "fragment": "path_cubic_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": [
+          {
+            "index": 2,
+            "metal_pixel_format": 55,
+            "color_format": "R32Float"
+          }
+        ]
+      },
+      {
+        "row": 263,
+        "pipeline": "PBGRAXmw_TprcA3Xhf",
+        "texture_index": 72,
+        "fast_shader_index": 33,
+        "vertex": "path_rect_vert_lph",
+        "fragment": "path_rect_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": [
+          {
+            "index": 2,
+            "metal_pixel_format": 55,
+            "color_format": "R32Float"
+          }
+        ]
+      },
+      {
+        "row": 283,
+        "pipeline": "PRGhABsovXmw_TstlA3Xhf",
+        "texture_index": 69,
+        "fast_shader_index": 30,
+        "vertex": "stroke_line_vert_lph",
+        "fragment": "stroke_line_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 115,
+        "color_format": "RGBA16Float",
+        "additional_color_attachments": [
+          {
+            "index": 2,
+            "metal_pixel_format": 55,
+            "color_format": "R32Float"
+          }
+        ]
+      }
+    ],
+    "misc": [
+      {
+        "row": 141,
+        "pipeline": "PBGRABsovXmw_TbibA3Xhf",
+        "texture_index": 81,
+        "fast_shader_index": 42,
+        "vertex": "buffer_image_blit_vert_lph",
+        "fragment": "buffer_image_blit_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": [
+          {
+            "index": 2,
+            "metal_pixel_format": 55,
+            "color_format": "R32Float"
+          }
+        ]
+      },
+      {
+        "row": 166,
+        "pipeline": "PBGRAXm_TatcA2S1Xhf",
+        "texture_index": 85,
+        "fast_shader_index": 46,
+        "vertex": "path_blit_vert_lph",
+        "fragment": "attachment_clear_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 204,
+        "pipeline": "PBGRAXm_ThomA2Xhf_Isrc_Isrc",
+        "texture_index": 53,
+        "fast_shader_index": 20,
+        "vertex": "std_vert1_lph",
+        "fragment": "home_affordance_base_lph",
+        "constant_values": null,
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm",
+        "additional_color_attachments": []
+      },
+      {
+        "row": 264,
+        "pipeline": "PL008BsovXmw_TbibA3Xhf",
+        "texture_index": 81,
+        "fast_shader_index": 42,
+        "vertex": "buffer_image_blit_vert_lph",
+        "fragment": "buffer_image_blit_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 10,
+        "color_format": "R8Unorm",
+        "additional_color_attachments": [
+          {
+            "index": 2,
+            "metal_pixel_format": 55,
+            "color_format": "R32Float"
+          }
+        ]
+      },
+      {
+        "row": 280,
+        "pipeline": "PRGhABsovXmw_TbibA3Xhf",
+        "texture_index": 81,
+        "fast_shader_index": 42,
+        "vertex": "buffer_image_blit_vert_lph",
+        "fragment": "buffer_image_blit_frag_lph",
+        "constant_values": null,
+        "metal_pixel_format": 115,
+        "color_format": "RGBA16Float",
+        "additional_color_attachments": [
+          {
+            "index": 2,
+            "metal_pixel_format": 55,
+            "color_format": "R32Float"
+          }
+        ]
+      }
+    ]
+  },
+  "color_format_evidence": {
+    "symbol": "CA::OGL::MetalContext::MTLPixelFormat_codes",
+    "address": "0x1d5b46d78",
+    "stride": 8,
+    "codes": {
+      "L008": {
+        "metal_pixel_format": 10,
+        "color_format": "R8Unorm"
+      },
+      "2C0h": {
+        "metal_pixel_format": 65,
+        "color_format": "RG16Float"
+      },
+      "BGRA": {
+        "metal_pixel_format": 80,
+        "color_format": "BGRA8Unorm"
+      },
+      "RGhA": {
+        "metal_pixel_format": 115,
+        "color_format": "RGBA16Float"
+      }
+    },
+    "w_flag_attachment2": {
+      "metal_pixel_format": 55,
+      "color_format": "R32Float",
+      "setter_address": "0x188381784"
+    }
+  }
+}
