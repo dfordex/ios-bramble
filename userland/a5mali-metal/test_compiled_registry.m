@@ -41,14 +41,15 @@ static MTLRenderPipelineDescriptor *descriptor(const A5MaliCompiledProfile *p,
             d.vertexDescriptor.layouts[a->index].stepRate=a->stepRate;
         }
     }
-    if (p->flags & (A5MaliProfileCoverageAdd|A5MaliProfileStrokeSourceOver)) {
-        BOOL coverage=(p->flags&A5MaliProfileCoverageAdd)!=0;
-        for(NSUInteger i=0;i<8;++i)d.colorAttachments[i].writeMask=MTLColorWriteMaskNone;
-        MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[coverage?2:0];
-        a.writeMask=coverage?MTLColorWriteMaskRed:MTLColorWriteMaskAll;a.blendingEnabled=YES;
-        a.sourceRGBBlendFactor=a.sourceAlphaBlendFactor=MTLBlendFactorOne;
-        a.destinationRGBBlendFactor=coverage?MTLBlendFactorOne:MTLBlendFactorOneMinusSourceAlpha;
-        a.destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
+    assert(p->attachmentContracts&&p->attachmentContractCount);
+    const A5MaliCompiledAttachmentContract *c=p->attachmentContracts;
+    for(NSUInteger i=0;i<8;++i){
+        const A5MaliCompiledAttachmentState *w=&c->attachments[i];
+        MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[i];
+        a.writeMask=w->writeMask;a.blendingEnabled=w->blendEnabled;
+        a.rgbBlendOperation=w->rgbOperation;a.alphaBlendOperation=w->alphaOperation;
+        a.sourceRGBBlendFactor=w->sourceRGB;a.destinationRGBBlendFactor=w->destinationRGB;
+        a.sourceAlphaBlendFactor=w->sourceAlpha;a.destinationAlphaBlendFactor=w->destinationAlpha;
     }
     return d;
 }
@@ -80,6 +81,7 @@ int main(void)
         for (size_t i=0;i<count;++i) {
             const A5MaliCompiledProfile *p=&profiles[i];
             assert(A5MaliCompiledProfileForID(p->profileID)==p);
+            if(p->flags&A5MaliProfileNotExecutable)continue;
             MTLRenderPipelineDescriptor *d=descriptor(p,library);
             assert(d.vertexFunction&&d.fragmentFunction);
             NSError *pipelineError=nil;
@@ -110,17 +112,23 @@ int main(void)
             d=descriptor(p,library);d.colorAttachments[7].pixelFormat=MTLPixelFormatR8Unorm;reject(d);
             if(p->layoutCount){d=descriptor(p,library);d.vertexDescriptor.layouts[1].stride=47;reject(d);}
             d=descriptor(p,library);if(!d.vertexDescriptor)d.vertexDescriptor=[MTLVertexDescriptor vertexDescriptor];d.vertexDescriptor.attributes[5].format=MTLVertexFormatFloat;reject(d);
-            d=descriptor(p,library);d.colorAttachments[0].blendingEnabled=YES;
-            d.colorAttachments[0].destinationRGBBlendFactor=MTLBlendFactorZero;
-            reject(d); /* default blend factors differ from premultiplied source over */
-            if (p->flags&A5MaliProfileSourceOverBlend) {
-                MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[0];
-                a.sourceRGBBlendFactor=MTLBlendFactorOne;a.sourceAlphaBlendFactor=MTLBlendFactorOne;
-                a.destinationRGBBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
-                a.destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
+            for(uint32_t ci=0;ci<p->attachmentContractCount;++ci){
+                d=descriptor(p,library);
+                for(NSUInteger ai=0;ai<8;++ai){
+                    const A5MaliCompiledAttachmentState *w=&p->attachmentContracts[ci].attachments[ai];
+                    MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[ai];
+                    a.writeMask=w->writeMask;a.blendingEnabled=w->blendEnabled;
+                    a.rgbBlendOperation=w->rgbOperation;a.alphaBlendOperation=w->alphaOperation;
+                    a.sourceRGBBlendFactor=w->sourceRGB;a.destinationRGBBlendFactor=w->destinationRGB;
+                    a.sourceAlphaBlendFactor=w->sourceAlpha;a.destinationAlphaBlendFactor=w->destinationAlpha;
+                }
                 assert(A5MaliSelectCompiledProfile(d,NULL)==p);
-                a.destinationRGBBlendFactor=MTLBlendFactorOne;reject(d);
+                d.colorAttachments[1].writeMask^=MTLColorWriteMaskRed;reject(d);
             }
+            d=descriptor(p,library);d.colorAttachments[1].pixelFormat=MTLPixelFormatInvalid;
+            NSError *formatError=nil;assert(!A5MaliSelectCompiledProfile(d,&formatError));
+            assert([formatError.localizedDescription containsString:@"attachment1.pixelFormat"]);
+            d=descriptor(p,library);d.colorAttachments[1].blendingEnabled=!d.colorAttachments[1].blendingEnabled;reject(d);
             d=descriptor(p,library);
             A5MaliMetalLibrary *other=[device newLibraryWithURL:url error:NULL];
             d.fragmentFunction=(id)[other newFunctionWithName:[NSString stringWithUTF8String:p->fragmentName]];
@@ -129,7 +137,25 @@ int main(void)
         const A5MaliCompiledProfile *ds4=A5MaliCompiledProfileForID(99);assert(ds4);
         assert(ds4->passes[0].fragment.byteCount==3472);
         assert(ds4->resources[2].uniformBytes==72);
-        assert(A5MaliCompiledProfileForID(108)->colorFormats[0]==MTLPixelFormatRGBA16Float);
+        const A5MaliCompiledProfile *rawBlur=A5MaliCompiledProfileForID(108);
+        assert(rawBlur->colorFormats[0]==MTLPixelFormatRGBA16Float);
+        assert(!(rawBlur->flags&A5MaliProfileSourceOverBlend));
+        MTLRenderPipelineDescriptor *unsupportedRawBlend=descriptor(rawBlur,library);
+        unsupportedRawBlend.colorAttachments[0].blendingEnabled=YES;
+        unsupportedRawBlend.colorAttachments[0].sourceRGBBlendFactor=MTLBlendFactorOne;
+        unsupportedRawBlend.colorAttachments[0].sourceAlphaBlendFactor=MTLBlendFactorOne;
+        unsupportedRawBlend.colorAttachments[0].destinationRGBBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
+        unsupportedRawBlend.colorAttachments[0].destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
+        reject(unsupportedRawBlend); /* Actual row287 has no Bsov token. */
+        const A5MaliCompiledProfile *rawBlit=A5MaliCompiledProfileForID(204);
+        assert(rawBlit->flags&A5MaliProfileInlineSourceOver);
+        MTLRenderPipelineDescriptor *unsupportedRawCopy=descriptor(rawBlit,library);
+        unsupportedRawCopy.colorAttachments[0].blendingEnabled=NO;
+        reject(unsupportedRawCopy); /* Inline blend code must not be selected for copy. */
+        const A5MaliCompiledProfile *clear=A5MaliCompiledProfileForID(207);assert(clear->passCount==1&&clear->passes[0].logicalTarget==1);
+        const A5MaliCompiledProfile *home=A5MaliCompiledProfileForID(206);assert(home->colorFormats[1]==80&&home->attachmentContracts[0].attachments[1].writeMask==0);
+        for(uint32_t id=200;id<=204;id+=2){const A5MaliCompiledProfile *p=A5MaliCompiledProfileForID(id);assert(p->passCount==1&&p->passes[0].logicalTarget==0&&p->colorFormats[2]==55);}
+        assert(ds4->colorFormats[1]==80&&ds4->attachmentContractCount==2);
         printf("authenticated compiled registry: %zu profiles; wrong state/constants/library rejected; no GPU submitted\n",count);
     }
     return 0;

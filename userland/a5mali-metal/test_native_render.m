@@ -9,6 +9,8 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <stdio.h>
 
 typedef struct {
     unsigned queries,submits,releases;
@@ -28,7 +30,7 @@ static kern_return_t transport(void *opaque,uint32_t selector,const void *input,
     if(selector==A5NativeQuerySelector){
         assert(bytes==sizeof(A5NativeQueryRequest)&&*outBytes==sizeof(A5NativeQueryResult));
         const A5NativeQueryRequest *q=input;
-        assert(q->surfaces[0]==0x100000001 && q->surfaces[1]==0x100000002);
+        assert(q->surfaces[0]==0x100000001 && q->surfaces[1]==0x100000002 && !q->surfaces[2]);
         for(unsigned i=0;i<4;++i)assert(!q->buffers[i]);
         A5NativeQueryResult r={.header={1,sizeof(r),0,0},.jobVA=A5NativeJobVA,
             .jobBytes=A5NativeJobBytes,.flags=41};
@@ -76,6 +78,13 @@ static MTLRenderPipelineDescriptor *descriptor(const A5MaliCompiledProfile *p,A5
         d.vertexDescriptor.layouts[l->index].stride=l->stride;
         d.vertexDescriptor.layouts[l->index].stepFunction=l->stepFunction;
         d.vertexDescriptor.layouts[l->index].stepRate=l->stepRate;}
+    assert(p->attachmentContracts && p->attachmentContractCount);
+    for(unsigned i=0;i<8;++i){const A5MaliCompiledAttachmentState *c=&p->attachmentContracts[0].attachments[i];
+        MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[i];
+        a.writeMask=c->writeMask;a.blendingEnabled=c->blendEnabled;
+        a.rgbBlendOperation=c->rgbOperation;a.alphaBlendOperation=c->alphaOperation;
+        a.sourceRGBBlendFactor=c->sourceRGB;a.destinationRGBBlendFactor=c->destinationRGB;
+        a.sourceAlphaBlendFactor=c->sourceAlpha;a.destinationAlphaBlendFactor=c->destinationAlpha;}
     return d;
 }
 static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCandidate *pipeline,
@@ -87,6 +96,12 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     pass.colorAttachments[0].texture=(id)destination;
     pass.colorAttachments[0].loadAction=MTLLoadActionLoad;
     pass.colorAttachments[0].storeAction=MTLStoreActionStore;
+    /* QuartzCore A2 keeps an actual disabled RT1 attachment. It must not
+     * become a queried/submitted output just because it exists. */
+    pass.colorAttachments[1].texture=(id)[device hostTestTextureWithResource:
+        (A5MaliResource){0x100000003,32,32,128,A5MaliWrite}];
+    pass.colorAttachments[1].loadAction=MTLLoadActionLoad;
+    pass.colorAttachments[1].storeAction=MTLStoreActionStore;
     A5MaliMetalRenderEncoder *r=[buffer renderCommandEncoderWithDescriptor:pass];assert(r);
     /* Valid setter order: viewport precedes pipeline, even on a 32x32 FBO. */
     [r setViewport:(MTLViewport){0,0,1080,1920,0,1}];
@@ -124,8 +139,32 @@ int main(void)
         A5MaliMetalLibrary *library=[device newLibraryWithURL:[NSURL fileURLWithPath:
             [NSString stringWithUTF8String:path]] error:NULL];assert(library);
         NSError *error=nil;
+        assert(t.profile->colorFormats[1]==MTLPixelFormatBGRA8Unorm);
+        assert(t.profile->attachmentContracts[0].attachments[1].writeMask==MTLColorWriteMaskNone);
         A5MaliReadSurfCandidate *pipeline=[device newRenderPipelineStateWithDescriptor:
             descriptor(t.profile,library) error:&error];assert(pipeline&&!error);
+        A5MaliRestrictedDevice *wrongDevice=[[A5MaliRestrictedDevice alloc]
+            initWithTransport:transport context:&t commandCapabilities:63
+            operationCapabilities:127|(1u<<16)|(1u<<17)];
+        FILE *capture=tmpfile();assert(capture);
+        int original=dup(STDERR_FILENO);assert(original>=0);
+        fflush(stderr);assert(dup2(fileno(capture),STDERR_FILENO)>=0);
+        for(unsigned attempt=0;attempt<40;++attempt){
+            assert(![wrongDevice newRenderPipelineStateWithDescriptor:descriptor(t.profile,library) error:&error]);
+            assert([error.localizedDescription containsString:@"same-device"]);
+        }
+        fflush(stderr);assert(dup2(original,STDERR_FILENO)>=0);close(original);
+        assert(!fseek(capture,0,SEEK_END));long logBytes=ftell(capture);assert(logBytes>0&&logBytes<200000);
+        rewind(capture);NSMutableData *log=[NSMutableData dataWithLength:(NSUInteger)logBytes];
+        assert(fread(log.mutableBytes,1,log.length,capture)==log.length);fclose(capture);
+        NSString *diagnostic=[[NSString alloc]initWithData:log encoding:NSUTF8StringEncoding];assert(diagnostic);
+        NSUInteger lines=[[diagnostic componentsSeparatedByString:@"\n"]count]-1;
+        assert(lines>0&&lines<=32); /* process bound survives a repeated reject loop */
+        assert([diagnostic containsString:@"vertex=downsample_blur_vert_lph"]);
+        assert([diagnostic containsString:@"RT1={f:80,w:0,b:0"]);
+        assert([diagnostic containsString:@"VB1=48/1/1"]);
+        assert([diagnostic containsString:@"reason=factory requires authenticated same-device"]);
+        error=nil;
         A5MaliMetalTexture *source=[device hostTestTextureWithResource:
             (A5MaliResource){0x100000001,64,64,256,A5MaliRead}];
         A5MaliMetalTexture *destination=[device hostTestTextureWithResource:

@@ -13,6 +13,8 @@
 #include "../a5xelte-air-translation/families/runtime_clear.h"
 #include <math.h>
 #import <objc/runtime.h>
+#include <stdatomic.h>
+#include <stdio.h>
 /* A build without authenticated compiled profiles exposes only the legacy
  * typed read_surf path and has no dependency on a native descriptor backend. */
 #if __has_include("A5MaliCompiledRegistryData.inc") || defined(A5_MALI_REQUIRE_COMPILED_REGISTRY)
@@ -93,6 +95,49 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 @interface A5MaliRestrictedDevice (PrivateAccess)
 - (A5MaliDevice *)privateDevice;
 @end
+
+@interface A5MaliDevice (FactoryDiagnostics)
+- (A5MaliClient *)client;
+@end
+/* Bound diagnostics per process, including failed warmup loops. Names/reasons
+ * are flattened and truncated; descriptors contain metadata, never buffers. */
+static NSString *pipelineLogText(NSString *value)
+{
+    if(!value)return @"(nil)";
+    NSString *flat=[[value stringByReplacingOccurrencesOfString:@"\n" withString:@" "]
+        stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
+    return flat.length>160?[flat substringToIndex:160]:flat;
+}
+static void logPipelineDecision(A5MaliRestrictedDevice *device,
+    MTLRenderPipelineDescriptor *descriptor,uint32_t profile,BOOL accepted,NSString *reason)
+{
+    static atomic_uint messages;
+    if(atomic_fetch_add_explicit(&messages,1,memory_order_relaxed)>=32)return;
+    A5MaliClient *client=[[device privateDevice] client];
+    NSMutableString *line=[NSMutableString stringWithFormat:
+        @"A5XELTE Metal pipeline: %@ profile=%u vertex=%@ fragment=%@ commands=%x operations=%x reason=%@",
+        accepted?@"accepted":@"rejected",profile,
+        pipelineLogText(descriptor.vertexFunction.name),pipelineLogText(descriptor.fragmentFunction.name),
+        client?client->gpuCommandsSupported:0,client?client->supportedOperations:0,pipelineLogText(reason)];
+    [line appendFormat:@" samples=%lu depth=%lu stencil=%lu raster=%u topology=%lu",
+        (unsigned long)descriptor.rasterSampleCount,(unsigned long)descriptor.depthAttachmentPixelFormat,
+        (unsigned long)descriptor.stencilAttachmentPixelFormat,descriptor.isRasterizationEnabled,
+        (unsigned long)descriptor.inputPrimitiveTopology];
+    for(NSUInteger i=0;i<8;++i){MTLRenderPipelineColorAttachmentDescriptor*a=descriptor.colorAttachments[i];
+        [line appendFormat:@" RT%lu={f:%lu,w:%lu,b:%u,rgb:%lu/%lu/%lu,a:%lu/%lu/%lu}",
+            (unsigned long)i,(unsigned long)a.pixelFormat,(unsigned long)a.writeMask,a.isBlendingEnabled,
+            (unsigned long)a.rgbBlendOperation,(unsigned long)a.sourceRGBBlendFactor,(unsigned long)a.destinationRGBBlendFactor,
+            (unsigned long)a.alphaBlendOperation,(unsigned long)a.sourceAlphaBlendFactor,(unsigned long)a.destinationAlphaBlendFactor];}
+    MTLVertexDescriptor *v=descriptor.vertexDescriptor;
+    [line appendFormat:@" vertexDescriptor=%@",v?@"present":@"nil"];
+    if(v)for(NSUInteger i=0;i<31;++i){MTLVertexAttributeDescriptor*a=v.attributes[i];
+        if(a.format!=MTLVertexFormatInvalid)[line appendFormat:@" A%lu=%lu/%lu/%lu",(unsigned long)i,
+            (unsigned long)a.format,(unsigned long)a.offset,(unsigned long)a.bufferIndex];}
+    if(v)for(NSUInteger i=0;i<31;++i){MTLVertexBufferLayoutDescriptor*l=v.layouts[i];
+        if(l.stride)[line appendFormat:@" VB%lu=%lu/%lu/%lu",(unsigned long)i,
+            (unsigned long)l.stride,(unsigned long)l.stepFunction,(unsigned long)l.stepRate];}
+    fprintf(stderr,"%s\n",line.UTF8String);
+}
 
 @interface A5MaliReadSurfCandidate (PrivateInit)
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device;
@@ -244,40 +289,49 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 - (id)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
                                       error:(NSError * _Nullable * _Nullable)error
 {
-    A5MaliPipelineShape shape =
-        A5MaliInspectReadSurfPipelineDescriptor(descriptor);
-    id vertex = descriptor.vertexFunction;
-    id fragment = descriptor.fragmentFunction;
-    BOOL authenticatedPair =
-        [vertex isKindOfClass:[A5MaliMetalFunction class]] &&
+    A5MaliPipelineShape shape=A5MaliInspectReadSurfPipelineDescriptor(descriptor);
+    id vertex=descriptor.vertexFunction,fragment=descriptor.fragmentFunction;
+    BOOL authenticatedPair=[vertex isKindOfClass:[A5MaliMetalFunction class]] &&
         [fragment isKindOfClass:[A5MaliMetalFunction class]] &&
-        [vertex library] == [fragment library] &&
-        [vertex device] == self && [fragment device] == self;
-    if (shape == A5MaliPipelineShapeReadSurfCandidate &&
-        authenticatedPair && [[self privateDevice] supportsPrivateReadSurf]) {
-        if (error) *error = nil;
-        return [[A5MaliReadSurfCandidate alloc] initWithDevice:self];
+        [vertex library]==[fragment library] && [vertex device]==self && [fragment device]==self;
+    if(shape==A5MaliPipelineShapeReadSurfCandidate && authenticatedPair &&
+        [[self privateDevice] supportsPrivateReadSurf]){
+        if(error)*error=nil;
+        logPipelineDecision(self,descriptor,0,YES,@"legacy read_surf operation4");
+        return [[A5MaliReadSurfCandidate alloc]initWithDevice:self];
     }
+    NSError *rejection=nil;
+    uint32_t profileID=0;
 #if A5_MALI_NATIVE_RENDER
-    const A5MaliCompiledProfile *profile = A5MaliSelectCompiledProfile(descriptor, NULL);
+    const A5MaliCompiledProfile *profile=NULL;
+    if(!authenticatedPair)rejection=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
+        code:kIOReturnUnsupported userInfo:@{NSLocalizedDescriptionKey:
+        @"factory requires authenticated same-device functions from one library"}];
+    else profile=A5MaliSelectCompiledProfile(descriptor,&rejection);
+    if(profile)profileID=profile->profileID;
     BOOL executable=profile && ((profile->profileID>=99 && profile->profileID<=108) ||
         profile->profileID==200 || profile->profileID==202 || profile->profileID==204 ||
         profile->profileID==206 || profile->profileID==207 ||
         (profile->profileID>=300 && profile->profileID<=302));
-    if (executable && [[self privateDevice] supportsNativePrograms]) {
-        if (error) *error = nil;
-        return [[A5MaliCompiledPipeline alloc] initWithDevice:self profile:profile
+    if(executable && [[self privateDevice]supportsNativePrograms]){
+        if(error)*error=nil;
+        logPipelineDecision(self,descriptor,profileID,YES,@"authenticated executable profile");
+        return [[A5MaliCompiledPipeline alloc]initWithDevice:self profile:profile
             sourceOver:descriptor.colorAttachments[0].isBlendingEnabled];
     }
+    if(profile)rejection=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
+        code:kIOReturnUnsupported userInfo:@{NSLocalizedDescriptionKey:executable?
+        @"native query/submit capability is unavailable":@"matched profile has no executable native route"}];
 #endif
-    if (error) {
-        NSString *reason = shape == A5MaliPipelineShapeReadSurfCandidate ?
-            @"read_surf requires functions from the exact QuartzCore metallib and kernel operation 4" :
-            @"render pipeline is outside the validated read_surf descriptor profile";
-        *error = [NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
-            code:kIOReturnUnsupported
-            userInfo:@{NSLocalizedDescriptionKey: reason}];
+    if(!rejection){
+        NSString *reason=shape==A5MaliPipelineShapeReadSurfCandidate?
+            @"read_surf requires functions from the exact QuartzCore metallib and kernel operation 4":
+            @"authenticated native profile registry is unavailable in this build";
+        rejection=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali" code:kIOReturnUnsupported
+            userInfo:@{NSLocalizedDescriptionKey:reason}];
     }
+    logPipelineDecision(self,descriptor,profileID,NO,rejection.localizedDescription);
+    if(error)*error=rejection;
     return nil;
 }
 
@@ -898,12 +952,14 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
     if (!profile || count<3 || count>A5RuntimeMaxVertices ||
         (primitiveType!=MTLPrimitiveTypeTriangle && primitiveType!=MTLPrimitiveTypeTriangleStrip) ||
         (primitiveType==MTLPrimitiveTypeTriangle && count%3)) return NO;
-    A5MaliMetalTexture *source=_textures[@3], *destination=_destination;
+    A5MaliMetalTexture *source=_textures[@3], *destination=_attachments[@0];
     A5MaliSamplerState *sampler=_samplers[@0];
     MTLSamplerDescriptor *sd=sampler.descriptor;
     MTLViewport viewport=_hasViewport?_viewport:
         (MTLViewport){0,0,destination.width,destination.height,0,1};
-    if (!source || source==destination || source.device!=_buffer.device ||
+    for(NSNumber *key in _attachments)
+        if(_attachments[key].pixelFormat!=profile->colorFormats[key.unsignedIntegerValue])return NO;
+    if (!source || !destination || source==destination || source.device!=_buffer.device ||
         (source.privateSurface.iosurface && destination.privateSurface.iosurface &&
          IOSurfaceGetID(source.privateSurface.iosurface)==IOSurfaceGetID(destination.privateSurface.iosurface)) ||
         source.pixelFormat!=MTLPixelFormatBGRA8Unorm ||

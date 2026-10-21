@@ -31,6 +31,10 @@ def compile_runtime(mesa_build, output, target='ios', source=None, includes=()):
             '-target', 'arm64-apple-ios16.0', '-mcpu=cortex-a53',
             '-march=armv8-a+crypto', '-isysroot', sdk] + command[1:]
     output.parent.mkdir(parents=True, exist_ok=True)
+    from build_preload import build as build_preload
+    preload_dir=output.parent.resolve() / 'preload-generated'
+    build_preload(mesa_build.resolve(),preload_dir)
+    command.append('-I'+str(preload_dir))
     subprocess.run(command, cwd=mesa_build, check=True)
 
 

@@ -8,6 +8,7 @@
 #include <math.h>
 #include <string.h>
 #include "genxml/v4_pack.h"
+#include "runtime_preload.h"
 enum {N=0x40000,FB=0x300,VRS=0x500,FRS=0x540,VD=0x600,FD=0x640,
  ATTR=0x700,ATTRBUF=0x800,VV=0x900,FV=0xa00,VBUFS=0xb00,VP=0xc00,
  VS_SYS=0x1000,FS_SYS=0x1400,POLY=0x3000,VS=0x4000,FS=0x6000,
@@ -68,7 +69,7 @@ static int encode(const A5RuntimePathDraw*m,uint8_t*d){
  }
  f32(d,VS_SYS+512,r->viewportWidth*.5);f32(d,VS_SYS+516,r->viewportHeight*.5);f32(d,VS_SYS+520,(r->viewportFar-r->viewportNear)*.5);f32(d,VS_SYS+528,r->viewportX+r->viewportWidth*.5);f32(d,VS_SYS+532,r->viewportY+r->viewportHeight*.5);f32(d,VS_SYS+536,(r->viewportFar+r->viewportNear)*.5);
  pan_section_pack(d+FB,FRAMEBUFFER,LOCAL_STORAGE,c){c.wls_instances=MALI_LOCAL_STORAGE_NO_WORKGROUP_MEM;}
- pan_section_pack(d+FB,FRAMEBUFFER,PARAMETERS,c){c.bound_max_x=out->width-1;c.bound_max_y=out->height-1;c.internal_format=MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW_VALUE;c.color_writeback_format=stroke?MALI_COLOR_FORMAT_2_32B_CHANNELS:MALI_COLOR_FORMAT_1_32B_CHANNEL;c.color_block_format=MALI_BLOCK_FORMAT_LINEAR;c.color_write_enable=true;c.color_preload_enable=true;c.clean_pixel_write_enable=true;c.color_writeback.base=out->gpuVA;c.color_writeback.row_stride=out->rowBytes;c.color_load_address=out->gpuVA;c.color_load_row_stride=out->rowBytes;c.color_load_surface_stride=out->rowBytes*out->height;c.swizzle=0x688;c.tie_break_rule=MALI_TIE_BREAK_RULE_MINUS_180_IN_0_OUT;}
+ pan_section_pack(d+FB,FRAMEBUFFER,PARAMETERS,c){c.bound_max_x=out->width-1;c.bound_max_y=out->height-1;c.internal_format=MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW_VALUE;c.color_writeback_format=stroke?MALI_COLOR_FORMAT_2_32B_CHANNELS:MALI_COLOR_FORMAT_1_32B_CHANNEL;c.color_block_format=MALI_BLOCK_FORMAT_LINEAR;c.color_write_enable=true;c.color_writeback.base=out->gpuVA;c.color_writeback.row_stride=out->rowBytes;c.swizzle=0x688;c.tie_break_rule=MALI_TIE_BREAK_RULE_MINUS_180_IN_0_OUT;}
  unsigned tiles=((out->width+1023)/1024)*((out->height+1023)/1024),header=0x200+(tiles*8/0x200)*0x200,full=0x200+tiles*0x200;if(POLY+full>VS)return A5RuntimeBounds;
  pan_section_pack(d+FB,FRAMEBUFFER,TILER,c){c.polygon_list=va+POLY;c.polygon_list_body=va+POLY+header;c.polygon_list_size=full;c.hierarchy_mask=0x1c7;c.heap_start=va+HEAP;c.heap_end=va+HEAP_END;}u32(d,POLY+header,0xa0000000);
  unsigned nvar=stroke?5:cubic?4:3;
@@ -91,6 +92,6 @@ static int encode(const A5RuntimePathDraw*m,uint8_t*d){
  pan_pack((struct mali_viewport_packed*)(d+VP),VIEWPORT,c){c.scissor_minimum_x=r->scissorX;c.scissor_minimum_y=r->scissorY;c.scissor_maximum_x=r->scissorX+r->scissorWidth-1;c.scissor_maximum_y=r->scissorY+r->scissorHeight-1;}
  pan_pack((struct mali_job_header_packed*)(d+0x200),JOB_HEADER,c){c.type=MALI_JOB_TYPE_FRAGMENT;c.index=3;c.enable_texture_mapper=true;}
  pan_pack((struct mali_fragment_job_payload_packed*)(d+0x220),FRAGMENT_JOB_PAYLOAD,c){c.bound_min_x=r->scissorX/16;c.bound_min_y=r->scissorY/16;c.bound_max_x=(r->scissorX+r->scissorWidth-1)/16;c.bound_max_y=(r->scissorY+r->scissorHeight-1)/16;c.framebuffer=va+FB;}
- return A5RuntimeOK;
+ return a5_runtime_preload(d,va,out);
 }
 int A5MaliEncodeRuntimePathPass(const A5RuntimePathDraw*m,void*out,size_t n){if(!out||n!=N)return A5RuntimeInvalid;memset(out,0,n);int rc=m?encode(m,out):A5RuntimeInvalid;if(rc)memset(out,0,n);return rc;}

@@ -32,7 +32,8 @@ clang -fobjc-arc -fblocks -DA5_MALI_HOST_TEST -DA5_MALI_REQUIRE_COMPILED_REGISTR
 "$out_dir/$test_name"
 done
 sdk=$(xcrun --sdk iphoneos --show-sdk-path)
-xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -isysroot "$sdk" \
+xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 \
+    -mcpu=cortex-a53 -march=armv8-a+crypto -isysroot "$sdk" \
     -DA5_MALI_REQUIRE_COMPILED_REGISTRY=1 -I"$registry_dir" \
     -fobjc-arc -fblocks -Wall -Wextra -Werror -c \
     "$src_dir/A5MaliMetalAPI.m" -o "$out_dir/A5MaliMetalAPI.o"

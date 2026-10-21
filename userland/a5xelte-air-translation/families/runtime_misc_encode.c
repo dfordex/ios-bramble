@@ -9,13 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include "genxml/v4_pack.h"
+#include "runtime_preload.h"
 
 enum { SIZE=0x40000, W=32,H=32, FB=0x300,VS_RSD=0x500,FS_RSD=0x540,
  TEX0=0x600,TEX1=0x640,TEX_TABLE=0x680,SAMPLERS=0x6a0,
  VS_UBOS=0x700,FS_UBOS=0x740,ATTRS=0x800,ATTR_BUFS=0x900,
  VS_VARY=0xa00,VS_VARY_BUFS=0xa80,FS_VARY=0xc00,FS_VARY_BUFS=0xc80,
- VIEWPORT=0xe00,VS_SYS=0x1000,FS_SYS=0x1400,MVP=0x1800,TEXMAT=0x1900,
- FRAG_DATA=0x1a00,SSBO_VERT=0x2000,ORDINARY=0x3000,POS=0x30000,PSIZ=0x31000,
+ VIEWPORT=0xe00,VS_SYS=0x1000,FS_SYS=0x1400,
+ SSBO_VERT=0x2000,ORDINARY=0x3000,POS=0x30000,PSIZ=0x31000,
  VARY_DATA=0x32000,VS_CODE=0x6000,FS_CODE=0x8000,POLY=0xa000,POLY_BODY=0xa200,
  HEAP=0x10000,HEAP_SIZE=0x10000,SOURCE=0x20000,LUT=0x22000,
  DEST=0x24000,GUARDS=0x28000 };
@@ -52,12 +53,11 @@ static void framebuffer(uint8_t*d,uint64_t VA,unsigned format,const A5RuntimeIma
   c.color_writeback_format=format==2?MALI_COLOR_FORMAT_2_32B_CHANNELS:
      format==1?MALI_COLOR_FORMAT_R8:format==3?MALI_COLOR_FORMAT_R8G8:MALI_COLOR_FORMAT_R8G8B8A8;
   c.color_block_format=MALI_BLOCK_FORMAT_LINEAR;
-  c.color_write_enable=true;c.color_preload_enable=true;
+  c.color_write_enable=true;
   c.tie_break_rule=MALI_TIE_BREAK_RULE_MINUS_180_IN_0_OUT;
   c.bound_max_x=out->width-1;c.bound_max_y=out->height-1;
   c.color_writeback.base=out->gpuVA;c.color_writeback.row_stride=out->rowBytes;
-  c.color_load_address=out->gpuVA;c.color_load_row_stride=out->rowBytes;
-  c.color_load_surface_stride=out->rowBytes*out->height;
+
  }
  pan_section_pack(d+FB,FRAMEBUFFER,TILER,c){
   c.polygon_list=VA+POLY;c.polygon_list_body=VA+POLY_BODY;
@@ -205,7 +205,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   p->passCount<1||p->passCount>2||!p->passes||m->passIndex>=p->passCount||p->resourceCount>16||p->pushFieldCount>16)return A5RuntimeUnsupported;
  const A5MaliCompiledPass*pass=p->passes+m->passIndex;
  int home=p->profileID==206,clear=p->profileID==207;
- if(pass->logicalTarget>=2||(!home&&p->passCount!=2)||(home&&(m->passIndex||pass->logicalTarget)))return A5RuntimeUnsupported;
+ if(pass->logicalTarget>=2||p->passCount!=1||pass->logicalTarget!=(clear?1u:0u))return A5RuntimeUnsupported;
  if(!span(r->descriptorGPUVA,SIZE)||(r->descriptorGPUVA&4095))return A5RuntimeBounds;
  for(unsigned i=0;i<p->passCount;++i){unsigned target=p->passes[i].logicalTarget;if(target>=2)return A5RuntimeUnsupported;
   const A5RuntimeImage*im=&m->colorAttachments[target];
@@ -218,7 +218,9 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  if(r->vertexStart||r->vertexCount<3||r->vertexCount>A5RuntimeMaxVertices||
    (r->primitive!=A5RuntimeTriangle&&r->primitive!=A5RuntimeTriangleStrip)||
    (r->primitive==A5RuntimeTriangle&&r->vertexCount%3)||r->blend>A5RuntimeBlendPremultipliedSourceOver||
-   (r->blend&&(out->metalPixelFormat==115||!(p->flags&A5MaliProfileSourceOverBlend))))return A5RuntimeUnsupported;
+   (r->blend&&(!(p->flags&A5MaliProfileSourceOverBlend)||
+     (out->metalPixelFormat==115&&!(p->flags&A5MaliProfileInlineSourceOver))))||
+   ((p->flags&A5MaliProfileInlineSourceOver)&&r->blend!=A5RuntimeBlendPremultipliedSourceOver))return A5RuntimeUnsupported;
  if(!isfinite(r->viewportX)||!isfinite(r->viewportY)||!isfinite(r->viewportWidth)||!isfinite(r->viewportHeight)||
    !isfinite(r->viewportNear)||!isfinite(r->viewportFar)||r->viewportWidth<=0||r->viewportHeight<=0||
    r->viewportX<0||r->viewportY<0||r->viewportWidth>4096-r->viewportX||r->viewportHeight>4096-r->viewportY||
@@ -231,8 +233,15 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
    fs->tlsBytes||fs->wlsBytes||!vs->workRegisters||vs->workRegisters>16||!fs->workRegisters||fs->workRegisters>16)return A5RuntimeUnsupported;
  memcpy(d+VS_CODE,vs->bytes,vs->byteCount);memcpy(d+FS_CODE,fs->bytes,fs->byteCount);
  unsigned fmt=out->metalPixelFormat==115?2:out->metalPixelFormat==10?1:out->metalPixelFormat==30?3:0;
- framebuffer(d,r->descriptorGPUVA,fmt,out);renderer(d,r->descriptorGPUVA,home,clear,vs->workRegisters,fs->workRegisters,r->blend);
- int rc=resources(d,m,home,clear);if(rc)return rc;jobs(d,r->descriptorGPUVA,r);return A5RuntimeOK;
+ framebuffer(d,r->descriptorGPUVA,fmt,out);renderer(d,r->descriptorGPUVA,home,clear,vs->workRegisters,fs->workRegisters,
+  p->flags&A5MaliProfileInlineSourceOver?0:r->blend);
+ if(p->flags&A5MaliProfileInlineSourceOver){
+  /* Inline blend shader reads the preloaded tilebuffer. Fixed-function RSD
+   * remains copy, never applies the equation a second time. */
+  struct MALI_RENDERER_STATE rs;MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
+  rs.multisample_misc.load_destination=true;MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
+ }
+ int rc=resources(d,m,home,clear);if(rc)return rc;jobs(d,r->descriptorGPUVA,r);return a5_runtime_preload(d,r->descriptorGPUVA,&m->colorAttachments[pass->logicalTarget]);
 }
 int A5MaliEncodeRuntimeMiscPass(const A5RuntimeMiscDraw*m,void*out,size_t n){
  if(!out||n!=SIZE)return A5RuntimeInvalid;memset(out,0,n);

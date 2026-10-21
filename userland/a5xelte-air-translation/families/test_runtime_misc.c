@@ -10,6 +10,7 @@
 #include <string.h>
 #include "genxml/v4_pack.h"
 #include "A5MaliCompiledRegistryData.inc"
+#include "test_runtime_preload.h"
 static uint8_t out[A5RuntimeJobBytes],legacy[A5RuntimeJobBytes];
 static unsigned bytes(unsigned f){return f==115?8:f==10?1:f==30?2:4;}
 static int zero(void){for(unsigned i=0;i<sizeof(out);++i)if(out[i])return 0;return 1;}
@@ -24,6 +25,7 @@ int main(int argc,char**argv){
    FILE*f=fopen(path,"rb");assert(f);assert(fread(legacy,1,sizeof(legacy),f)==sizeof(legacy)&&fgetc(f)==EOF);fclose(f);
    A5RuntimeMiscDraw m={0};m.draw.profile=p;m.draw.descriptorGPUVA=0x12000000;m.passIndex=pass;
    m.draw.viewportWidth=m.draw.viewportHeight=32;m.draw.viewportFar=1;m.draw.vertexCount=4;
+   m.draw.blend=p->flags&A5MaliProfileInlineSourceOver?A5RuntimeBlendPremultipliedSourceOver:0;
    m.draw.primitive=A5RuntimeTriangleStrip;m.draw.scissorWidth=m.draw.scissorHeight=32;
    for(unsigned i=0;i<p->passCount;++i){unsigned t=p->passes[i].logicalTarget;
     m.colorAttachments[t]=(A5RuntimeImage){0x21000000+(uint64_t)t*0x1000000,0x800000,32,32,32*bytes(p->colorFormats[t]),p->colorFormats[t]};
@@ -37,7 +39,9 @@ int main(int argc,char**argv){
    m.fragmentTextures[4]=(A5RuntimeImage){0x25000000,4096,2,1,16,80};
    int rc=A5MaliEncodeRuntimeMiscPass(&m,out,sizeof(out));if(rc){fprintf(stderr,"%s rc%d\n",name,rc);return 1;}
    assert(!memcmp(out+0x6000,legacy+0x6000,p->passes[pass].vertex.byteCount));
-   assert(!memcmp(out+0x8000,legacy+0x8000,p->passes[pass].fragment.byteCount));
+   if(p->flags&A5MaliProfileInlineSourceOver)assert(!memcmp(out+0x8000,p->passes[pass].fragment.bytes,p->passes[pass].fragment.byteCount));
+   else assert(!memcmp(out+0x8000,legacy+0x8000,p->passes[pass].fragment.byteCount));
+   check_preload(out,m.draw.descriptorGPUVA,&m.colorAttachments[p->passes[pass].logicalTarget]);
    pan_unpack((struct mali_renderer_state_packed*)(out+0x500),RENDERER_STATE,vs);
    pan_unpack((struct mali_renderer_state_packed*)(legacy+0x500),RENDERER_STATE,oldvs);
    pan_unpack((struct mali_renderer_state_packed*)(out+0x540),RENDERER_STATE,fs);
@@ -66,14 +70,15 @@ int main(int argc,char**argv){
     m.draw.blend=A5RuntimeBlendPremultipliedSourceOver;
     assert(A5MaliEncodeRuntimeMiscPass(&m,out,sizeof(out))==A5RuntimeOK);
     pan_unpack((struct mali_renderer_state_packed*)(out+0x540),RENDERER_STATE,blend);
-    assert(blend.multisample_misc.load_destination&&blend.blend_equation.rgb.b==MALI_BLEND_OPERAND_B_DEST&&blend.blend_equation.rgb.invert_c);
+    assert(blend.multisample_misc.load_destination);
+    assert(p->flags&A5MaliProfileInlineSourceOver?blend.blend_equation.rgb.b==MALI_BLEND_OPERAND_B_SRC&&!blend.blend_equation.rgb.invert_c:blend.blend_equation.rgb.b==MALI_BLEND_OPERAND_B_DEST&&blend.blend_equation.rgb.invert_c);
     m.draw.blend=A5RuntimeBlendCopy;
    }
    if(home){m.fragmentTextures[4].gpuVA=0;assert(A5MaliEncodeRuntimeMiscPass(&m,out,sizeof(out))==A5RuntimeUnsupported&&zero());}
-   else{m.colorAttachments[1]=m.colorAttachments[0];assert(A5MaliEncodeRuntimeMiscPass(&m,out,sizeof(out))!=A5RuntimeOK&&zero());}
+   else{m.colorAttachments[p->passes[pass].logicalTarget].gpuVA=m.draw.descriptorGPUVA;assert(A5MaliEncodeRuntimeMiscPass(&m,out,sizeof(out))!=A5RuntimeOK&&zero());}
    ++cases;
   }
  }
- assert(cases==9);printf("PASS %u actual misc passes: unchanged shader/varying ABI, real buffer snapshots/SSBO VA, dynamic viewport, two textures, large-SSBO GPU upload requirement and alias rejection (no GPU claim)\n",cases);
+ assert(cases==5);printf("PASS %u actual misc passes: authenticated actual shader/varying ABI, real buffer snapshots/SSBO VA, dynamic viewport, two textures, large-SSBO GPU upload requirement and alias rejection (no GPU claim)\n",cases);
  return 0;
 }

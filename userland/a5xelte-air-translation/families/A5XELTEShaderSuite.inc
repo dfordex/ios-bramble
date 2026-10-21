@@ -3,6 +3,7 @@
  * The private include is generated outside Git. Tests precede runtime clients;
  * a terminal fence and cache invalidation precede every CPU observation.
  */
+#include "A5XELTENativeABI.h"
 struct A5SuiteOutput {
     const char *name;
     uint32_t offset, bytes, elementBytes, tolerance;
@@ -72,10 +73,9 @@ static bool a5suite_unpack(const A5SuiteCase &test, uint8_t *data)
     for (uint32_t i = 0; i < test.immutableCount; ++i)
         if (!a5suite_range(test.immutable[i].offset, test.immutable[i].bytes))
             return false;
-    uint64_t next = 0;
-    memcpy(&next, data + 0x18, 8);
     return data[0x10] == 0x0b && data[0x110] == 0x0f &&
-        data[0x210] == 0x13 && next == kA5G3DTestVA + 0x100 &&
+        data[0x210] == 0x13 &&
+        A5NativeCheckJobChain(data,kA5SuiteBytes,kA5G3DTestVA,0,0x100,0x200,0)>=0 &&
         a5suite_hash(data, kA5SuiteBytes) == test.payloadHash;
 }
 
@@ -99,7 +99,7 @@ static bool a5suite_compare(const A5SuiteCase &test, const uint8_t *data)
     bool all = true;
     for (uint32_t i = 0; i < test.outputCount; ++i) {
         const A5SuiteOutput &out = test.outputs[i];
-        uint32_t matched = 0, firstBad = ~0u, firstActual = 0, firstExpected = 0;
+        uint32_t matched = 0, checked = 0, checkedMatched = 0, firstBad = ~0u, firstActual = 0, firstExpected = 0;
         const uint32_t fullMask = out.elementBytes == 4 ? ~0u :
             ((1u << (8 * out.elementBytes)) - 1);
         for (uint32_t off = 0; off < out.bytes; off += out.elementBytes) {
@@ -109,13 +109,14 @@ static bool a5suite_compare(const A5SuiteCase &test, const uint8_t *data)
             uint32_t difference = a > e ? a - e : e - a;
             bool good = mask == fullMask ? difference <= out.tolerance : a == e;
             matched += good;
+            if (mask) { ++checked; checkedMatched += good; }
             if (!good && firstBad == ~0u) { firstBad = off; firstActual = a; firstExpected = e; }
         }
         bool pass = matched == out.bytes / out.elementBytes;
         all &= pass;
-        IOLog("A5XELTE G3D SUITE: case=%s output=%s elements=%u/%u width=%u tol=%u first_bad=%u actual=%08x expected=%08x pass=%u\n",
+        IOLog("A5XELTE G3D SUITE: case=%s output=%s elements=%u/%u checked=%u/%u width=%u tol=%u first_bad=%u actual=%08x expected=%08x pass=%u\n",
             test.name, out.name, matched, out.bytes / out.elementBytes,
-            out.elementBytes, out.tolerance, firstBad, firstActual, firstExpected, pass);
+            checkedMatched, checked, out.elementBytes, out.tolerance, firstBad, firstActual, firstExpected, pass);
     }
     return all;
 }
@@ -149,6 +150,7 @@ static void a5g3d_shader_suite(IOService *service, vm_offset_t gpu,
             IOLog("A5XELTE G3D SUITE: malformed case=%s; skipped\n", test.name);
             continue;
         }
+        const bool preload=A5NativeJobPointer(data,0x18)==kA5G3DTestVA+A5NativePreloadOffset;
         uint64_t hashes[16] = {};
         for (uint32_t i = 0; i < test.immutableCount; ++i)
             hashes[i] = a5suite_hash(data + test.immutable[i].offset, test.immutable[i].bytes);
@@ -167,7 +169,8 @@ static void a5g3d_shader_suite(IOService *service, vm_offset_t gpu,
         A5G3DQueueStatus vs = a5g3d_queue_submit(service, gpu, storage, bytes, vertex, &vd);
         bool chain = vs == kA5G3DQueueCompleted &&
             storage->performOperation(kIOMemoryIncoherentIOFlush, kA5G3DDataOffset, kA5SuiteBytes) == kIOReturnSuccess;
-        if (chain) { __sync_synchronize(); chain = a5suite_word(data, 4) == 1 && a5suite_word(data + 0x100, 4) == 1; }
+        if (chain) { __sync_synchronize(); chain = a5suite_word(data, 4) == 1 && a5suite_word(data + 0x100, 4) == 1 &&
+            (!preload || a5suite_word(data+A5NativePreloadOffset,4)==1); }
         A5G3DQueueStatus fs = kA5G3DQueueInvalid;
         if (chain) {
             A5G3DQueueRequest fragment = {}; fragment.slot = 0; fragment.jobOffset = 0x200; fragment.shaderMask = shader;

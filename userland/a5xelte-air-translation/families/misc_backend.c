@@ -10,11 +10,15 @@
 #include "compiler/glsl_types.h"
 #include "compiler/spirv/nir_spirv.h"
 #include "compiler/nir/nir_builder.h"
+#include "compiler/nir/nir_lower_blend.h"
 #include "panfrost/compiler/pan_compiler.h"
 #include "misc_resource_lowering.h"
 #include "misc_native_rt.h"
 #ifndef A5_NATIVE_RGBA16
 #define A5_NATIVE_RGBA16 0
+#endif
+#ifndef A5_INLINE_RGBA16_BLEND
+#define A5_INLINE_RGBA16_BLEND 0
 #endif
 #ifndef A5_SELECTED_RT
 #define A5_SELECTED_RT 0
@@ -245,6 +249,20 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage)
    NIR_PASS(_,nir,nir_opt_dce);
    if(resources.invalid||ctx.invalid){fprintf(stderr,"unsupported resource ABI\n");return 2;}
    nir_validate_shader(nir,"family real resource lowering");
+   if(stage==MESA_SHADER_FRAGMENT && A5_INLINE_RGBA16_BLEND) {
+      if(!A5_NATIVE_RGBA16 || A5_SELECTED_RT!=0){fprintf(stderr,"unreviewed inline blend target\n");return 2;}
+      nir_lower_blend_options blend={0};
+      blend.rt[0].format=PIPE_FORMAT_R16G16B16A16_FLOAT;
+      blend.rt[0].colormask=15;
+      blend.rt[0].rgb.func=blend.rt[0].alpha.func=PIPE_BLEND_ADD;
+      blend.rt[0].rgb.src_factor=blend.rt[0].alpha.src_factor=PIPE_BLENDFACTOR_ONE;
+      blend.rt[0].rgb.dst_factor=blend.rt[0].alpha.dst_factor=PIPE_BLENDFACTOR_INV_SRC_ALPHA;
+      NIR_PASS(_,nir,nir_lower_blend,&blend);
+      nir_lower_single_sampled_options one_sample={0};
+      NIR_PASS(_,nir,nir_lower_single_sampled,&one_sample);
+      nir->info.fs.uses_sample_shading=false;
+      nir_validate_shader(nir,"actual QC RAW204 inline source-over");
+   }
    if(stage==MESA_SHADER_FRAGMENT && A5_NATIVE_RGBA16)
       a5_lower_native_rgba16(nir);
    pan_postprocess_nir(nir,&inputs,&info);

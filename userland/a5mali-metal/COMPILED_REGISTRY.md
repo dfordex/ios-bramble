@@ -14,6 +14,7 @@ native byte arrays and immutable binding contracts outside the Git tree:
 
 ```sh
 python3 tools/a5mali-compiled-registry.py \
+  --quartzcore-image PRIVATE/QuartzCore \
   --blur-manifest PRIVATE/blur/manifest.json \
   --blur-runtime-manifest PRIVATE/blur-dynamic/manifest.json \
   --ds4-vertex PRIVATE/downsample4.vert.midgard \
@@ -21,20 +22,29 @@ python3 tools/a5mali-compiled-registry.py \
   --misc-manifest PRIVATE/misc/full-mrt/manifest.json \
   --path-manifest PRIVATE/path/manifest.json \
   --path-runtime-manifest PRIVATE/path-runtime/manifest.json \
+  --raw204-runtime-manifest PRIVATE/raw204-blend/manifest.json \
   --output-dir PRIVATE/compiled-registry
 ```
 
 All inputs must be the user's actual local outputs. The generated include
 contains proprietary native programs and must never be committed. The receipt
-records input, generator, include and per-stage digests. Production packaging
+records input, generator, include and per-stage digests. The full attachment audit also requires the exact extracted QuartzCore image.
+Its UUID, relevant instruction words, actual warmup rows and named blend table
+are checked before contracts are emitted. Reflection output locations are not
+used to infer attachment write masks. Production packaging
 checks the complete include digest against this receipt, covering metadata as
 well as shader bytes, and records it in the signed bundle. Requiring a registry
 without its generated include fails compilation.
 
 `A5MaliSelectCompiledProfile` matches genuine same-library/device function
 objects, all eight attachment formats, complete vertex attribute/layout state,
-single sampling and supported blend/depth/raster state. Only exact premultiplied
-source-over is admitted where the BGRA/R8 fixed blend renderer supports it.
+single sampling and supported blend/depth/raster state. Each profile carries
+one or more complete eight-attachment contracts reconstructed from actual QC
+rows. Every format, write mask, blend-enable flag and blend equation/factor
+is checked, including disabled and unconfigured attachments. DS4/DS8 have two
+actual warmup variants, source-over and copy; other blur programs only admit
+the actual copy rows. Rejections identify the first differing field and index.
+Exact premultiplied source-over is admitted where the BGRA/R8 fixed blend renderer supports it.
 Blur23 RAW64 RGBA16Float permits copying only. The stroke variant uses genuine
 inline source-over code and native half packing, rather than RAW fixed blending. This lookup returns a contract;
 it does not by itself make a pipeline executable.
@@ -44,7 +54,9 @@ it does not by itself make a pipeline executable.
 |99|Actual downsample4 BGRA program|Native capability required|
 |100–107|Actual eight blur BGRA programs|Native capability required|
 |108|Actual blur23 RAW64 RGBA16Float program|Native capability required; no blending|
-|200,202,204,206,207|Complete misc pipeline metadata with actual native passes200–208|Native capability; independent logical targets submitted in order|
+|200,202,204|Actual A3 formats retained; only RT0 active|One native pass;204 uses genuine inline half source-over|
+|206|Actual A2 home formats retained; only RT0 active|One native pass|
+|207|Actual A2/S1 clear formats retained; only RT1 active|One native pass208 targeting logical RT1|
 |300,301|Original rect/cubic attachment contract; genuine R32Float addition only on logical RT2|Native capability; one actual target and exact Red/Add state|
 |302|Original stroke attachment contract; genuine inline RGBA16Float source-over only on logical RT0|Native capability; RT1/RT2 writes disabled|
 |400–403|Actual original path MRT/ordered-fetch metadata|Explicitly nonexecutable|
@@ -62,6 +74,15 @@ also producing color. A snapshot texture or independent pass does not preserve
 that dependency. Global/SSBO writes plus `memoryBarrierBuffer` alone would not
 establish ordering between overlapping fragment invocations; a source-backed
 ordering mechanism and overlap oracle are still required.
+
+Full A2 blur/home descriptors retain a second same-format attachment with
+writeMaskNone. Misc A3 retains its actual inactive RT1 and R32Float RT2;
+R8 uses the actual RG8Unorm RT1 format. Clear retains BGRA RT0 but disables it
+and writes BGRA RT1. Format0 slots beyond A2/A3 retain Metal's default All mask.
+A later disable of cubic RT0 leaves its earlier source-over factors intact;
+these values are recorded instead of reset or ignored. Only passes for enabled
+logical targets are submitted: the22 registry passes comprise18 executable
+passes and4 host-only original metadata entries.
 
 The native renderer admits99–108, the five logical misc profiles and300–302.
 Uniform bindings preserve
@@ -106,3 +127,17 @@ prove these added destination reads or blending.
 `families/test_runtime_path.c` checks actual native code copies, dynamic viewport,
 single logical-target metadata, preload/load-destination state, and rejects wrong
 blend or aliased buffers/targets. It is a host descriptor test, not GPU execution.
+
+## RAW204 actual source-over
+
+`families/build_raw204_blend.py` authenticates the actual original vertex and
+fragment SPIR-V against the prior translation receipt and runs real spirv-val.
+It recompiles the original fragment through released `nir_lower_blend` with
+premultiplied One / OneMinusSourceAlpha, the strict single-sample lowering and
+native RGBA16 framebuffer packing. Its vertex code must remain byte-identical.
+`--raw204-runtime-manifest` supplies this separate compiled fragment; without
+it profile204 is explicitly nonexecutable. With it the profile carries the
+InlineSourceOver flag and only the actual QC source-over attachment contract.
+The old copy-only RAW fragment is never used for that operation. This new native
+shader still requires its own nonzero-destination device oracle and the real
+preload route; compilation/factory acceptance alone does not prove pixels.

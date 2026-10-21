@@ -47,6 +47,8 @@ kern_return_t A5MaliSubmitNative(A5MaliClient *c,const A5NativeSubmitRequest *q,
     (q->vertexOffset>=q->jobBytes-256 || q->tilerOffset>=q->jobBytes-256 ||
      ((q->vertexOffset|q->tilerOffset)&15u))))
   return kIOReturnBadArgument;
+ if(A5NativeCheckJobChain(jobs,q->jobBytes,A5NativeJobVA,q->vertexOffset,
+    q->tilerOffset,q->fragmentOffset,q->profileID==0)<0)return kIOReturnBadArgument;
  size_t count=sizeof(*q)+q->jobBytes;
  uint8_t *input=malloc(count); if (!input) return kIOReturnNoMemory;
  memcpy(input,q,sizeof(*q)); memcpy(input+sizeof(*q),jobs,q->jobBytes);

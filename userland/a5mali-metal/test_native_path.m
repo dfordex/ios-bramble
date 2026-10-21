@@ -62,12 +62,7 @@ static MTLRenderPipelineDescriptor*descriptor(const A5MaliCompiledProfile*p,A5Ma
  MTLRenderPipelineDescriptor*d=[MTLRenderPipelineDescriptor new];
  d.vertexFunction=(id)[l newFunctionWithName:[NSString stringWithUTF8String:p->vertexName]];
  d.fragmentFunction=(id)[l newFunctionWithName:[NSString stringWithUTF8String:p->fragmentName]];
- BOOL coverage=p->flags&A5MaliProfileCoverageAdd;unsigned target=coverage?2:0;
- for(unsigned i=0;i<8;++i){d.colorAttachments[i].pixelFormat=p->colorFormats[i];d.colorAttachments[i].writeMask=MTLColorWriteMaskNone;}
- MTLRenderPipelineColorAttachmentDescriptor*a=d.colorAttachments[target];a.blendingEnabled=YES;
- a.writeMask=coverage?MTLColorWriteMaskRed:MTLColorWriteMaskAll;
- a.sourceRGBBlendFactor=MTLBlendFactorOne;a.destinationRGBBlendFactor=coverage?MTLBlendFactorOne:MTLBlendFactorOneMinusSourceAlpha;
- a.sourceAlphaBlendFactor=MTLBlendFactorOne;a.destinationAlphaBlendFactor=coverage?MTLBlendFactorOne:MTLBlendFactorOneMinusSourceAlpha;
+ for(unsigned i=0;i<8;++i)d.colorAttachments[i].pixelFormat=p->colorFormats[i];
  d.vertexDescriptor=[MTLVertexDescriptor vertexDescriptor];
  for(unsigned i=0;i<p->attributeCount;++i){const A5MaliCompiledVertexAttribute*x=p->attributes+i;
   d.vertexDescriptor.attributes[x->index].format=x->format;d.vertexDescriptor.attributes[x->index].offset=x->offset;
@@ -75,12 +70,35 @@ static MTLRenderPipelineDescriptor*descriptor(const A5MaliCompiledProfile*p,A5Ma
  for(unsigned i=0;i<p->layoutCount;++i){const A5MaliCompiledVertexLayout*x=p->layouts+i;
   d.vertexDescriptor.layouts[x->index].stride=x->stride;d.vertexDescriptor.layouts[x->index].stepFunction=x->stepFunction;
   d.vertexDescriptor.layouts[x->index].stepRate=x->stepRate;}
+    assert(p->attachmentContracts && p->attachmentContractCount);
+    for(unsigned i=0;i<8;++i){const A5MaliCompiledAttachmentState *c=&p->attachmentContracts[0].attachments[i];
+        MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[i];
+        a.writeMask=c->writeMask;a.blendingEnabled=c->blendEnabled;
+        a.rgbBlendOperation=c->rgbOperation;a.alphaBlendOperation=c->alphaOperation;
+        a.sourceRGBBlendFactor=c->sourceRGB;a.destinationRGBBlendFactor=c->destinationRGB;
+        a.sourceAlphaBlendFactor=c->sourceAlpha;a.destinationAlphaBlendFactor=c->destinationAlpha;}
  return d;
 }
 static void run(unsigned idNumber)
 {
  State s={0};s.profile=A5MaliCompiledProfileForID(idNumber);assert(s.profile);
  assert(s.profile->passCount==1&&s.profile->passes[0].logicalTarget==(idNumber==302?0u:2u));
+ assert(s.profile->colorFormats[0]==(idNumber==302?115u:80u));
+ assert(s.profile->colorFormats[1]==s.profile->colorFormats[0]&&s.profile->colorFormats[2]==55);
+ const A5MaliCompiledAttachmentState*c=s.profile->attachmentContracts[0].attachments;
+ if(idNumber==302){
+  assert(c[0].writeMask==MTLColorWriteMaskAll&&c[0].blendEnabled);
+  assert(c[0].sourceRGB==MTLBlendFactorOne&&c[0].destinationRGB==MTLBlendFactorOneMinusSourceAlpha);
+  assert(c[1].writeMask==MTLColorWriteMaskNone&&c[2].writeMask==MTLColorWriteMaskNone);
+ }else{
+  assert(c[0].writeMask==MTLColorWriteMaskNone&&!c[0].blendEnabled);
+  /* Only cubic has Bsov: disabled RT0 retains its factors. Rect has no
+   * blend token and retains destination factor Zero. */
+  assert(c[0].sourceRGB==MTLBlendFactorOne&&c[0].destinationRGB==
+   (idNumber==301?MTLBlendFactorOneMinusSourceAlpha:MTLBlendFactorZero));
+  assert(c[1].writeMask==MTLColorWriteMaskNone&&c[2].writeMask==MTLColorWriteMaskRed&&c[2].blendEnabled);
+  assert(c[2].sourceRGB==MTLBlendFactorOne&&c[2].destinationRGB==MTLBlendFactorOne);
+ }
  for(unsigned i=0;i<sizeof(s.data);++i)s.data[i]=(uint8_t)(33+i*13);
  @autoreleasepool{
   A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:wire context:&s commandCapabilities:63 operationCapabilities:0x7ffff];

@@ -280,61 +280,63 @@ static NSError *libraryError(NSString *reason)
 - (A5MaliRestrictedDevice *)device { return _library.device; }
 @end
 
-static BOOL compiledDescriptorMatches(const A5MaliCompiledProfile *p,
+static NSString *compiledDescriptorMismatch(const A5MaliCompiledProfile *p,
                                       MTLRenderPipelineDescriptor *d)
 {
-    if (d.rasterSampleCount != 1 || d.maxVertexAmplificationCount != 1 ||
-        d.supportIndirectCommandBuffers || !d.isRasterizationEnabled ||
-        d.isAlphaToCoverageEnabled || d.isAlphaToOneEnabled ||
-        d.depthAttachmentPixelFormat || d.stencilAttachmentPixelFormat ||
-        (d.inputPrimitiveTopology != MTLPrimitiveTopologyClassUnspecified &&
-         d.inputPrimitiveTopology != MTLPrimitiveTopologyClassTriangle)) return NO;
+    if (d.rasterSampleCount != 1) return @"rasterSampleCount must be1";
+    if (d.maxVertexAmplificationCount != 1) return @"maxVertexAmplificationCount must be1";
+    if (d.supportIndirectCommandBuffers) return @"indirect command buffers unsupported";
+    if (!d.isRasterizationEnabled || d.isAlphaToCoverageEnabled || d.isAlphaToOneEnabled)
+        return @"rasterization/alpha-to-coverage/alpha-to-one state unsupported";
+    if (d.depthAttachmentPixelFormat || d.stencilAttachmentPixelFormat)
+        return @"depth/stencil attachments unsupported";
+    if (d.inputPrimitiveTopology != MTLPrimitiveTopologyClassUnspecified &&
+        d.inputPrimitiveTopology != MTLPrimitiveTopologyClassTriangle)
+        return @"primitive topology must be triangle";
     for (NSUInteger i = 0; i < 8; ++i) {
-        MTLRenderPipelineColorAttachmentDescriptor *a = d.colorAttachments[i];
-        if (a.pixelFormat != p->colorFormats[i]) return NO;
-        BOOL coverage = (p->flags & A5MaliProfileCoverageAdd) != 0;
-        BOOL stroke = (p->flags & A5MaliProfileStrokeSourceOver) != 0;
-        if (coverage || stroke) {
-            /* Audited QC Spec: coverage overrides RT0/1 off and RT2 Red/Add.
-             * Stroke S=0 enables only RT0; original full formats are retained. */
-            MTLColorWriteMask mask = coverage ? (i == 2 ? MTLColorWriteMaskRed : MTLColorWriteMaskNone)
-                                             : (i == 0 ? MTLColorWriteMaskAll : MTLColorWriteMaskNone);
-            if (a.writeMask != mask || a.isBlendingEnabled != (coverage ? i == 2 : i == 0)) return NO;
-            if (!a.isBlendingEnabled) continue;
-            if (a.rgbBlendOperation != MTLBlendOperationAdd ||
-                a.sourceRGBBlendFactor != MTLBlendFactorOne ||
-                a.destinationRGBBlendFactor != (coverage ? MTLBlendFactorOne : MTLBlendFactorOneMinusSourceAlpha)) return NO;
-            if (stroke && (a.alphaBlendOperation != MTLBlendOperationAdd ||
-                a.sourceAlphaBlendFactor != MTLBlendFactorOne ||
-                a.destinationAlphaBlendFactor != MTLBlendFactorOneMinusSourceAlpha)) return NO;
-        } else {
-            if (p->colorFormats[i] && a.writeMask != MTLColorWriteMaskAll) return NO;
-            if (a.isBlendingEnabled &&
-                (!(p->flags & A5MaliProfileSourceOverBlend) || !p->colorFormats[i] ||
-                 a.rgbBlendOperation != MTLBlendOperationAdd ||
-                 a.alphaBlendOperation != MTLBlendOperationAdd ||
-                 a.sourceRGBBlendFactor != MTLBlendFactorOne ||
-                 a.sourceAlphaBlendFactor != MTLBlendFactorOne ||
-                 a.destinationRGBBlendFactor != MTLBlendFactorOneMinusSourceAlpha ||
-                 a.destinationAlphaBlendFactor != MTLBlendFactorOneMinusSourceAlpha)) return NO;
-        }
+        NSUInteger actual=d.colorAttachments[i].pixelFormat;
+        if (actual != p->colorFormats[i]) return [NSString stringWithFormat:
+            @"attachment%lu.pixelFormat actual=%lu expected=%u",(unsigned long)i,(unsigned long)actual,p->colorFormats[i]];
     }
+    if (!p->attachmentContracts || !p->attachmentContractCount)
+        return @"missing authenticated QuartzCore attachment contract";
+    BOOL matched=NO;NSString *stateReason=nil;
+    for (uint32_t c=0;c<p->attachmentContractCount;++c) {
+        BOOL equal=YES;
+        for (NSUInteger i=0;i<8;++i) {
+            MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[i];
+            const A5MaliCompiledAttachmentState *want=&p->attachmentContracts[c].attachments[i];
+            const NSUInteger actual[8]={a.writeMask,a.isBlendingEnabled,a.rgbBlendOperation,a.alphaBlendOperation,
+                a.sourceRGBBlendFactor,a.destinationRGBBlendFactor,a.sourceAlphaBlendFactor,a.destinationAlphaBlendFactor};
+            const uint32_t expected[8]={want->writeMask,want->blendEnabled,want->rgbOperation,want->alphaOperation,
+                want->sourceRGB,want->destinationRGB,want->sourceAlpha,want->destinationAlpha};
+            const char *names[8]={"writeMask","blendEnabled","rgbOperation","alphaOperation","sourceRGB","destinationRGB","sourceAlpha","destinationAlpha"};
+            for(NSUInteger f=0;f<8;++f)if(actual[f]!=expected[f]) {
+                if(!stateReason)stateReason=[NSString stringWithFormat:@"attachment%lu.%s actual=%lu expected=%u (QC contract%u)",
+                    (unsigned long)i,names[f],(unsigned long)actual[f],expected[f],c];
+                equal=NO;break;
+            }
+            if(!equal)break;
+        }
+        if(equal){matched=YES;break;}
+    }
+    if(!matched)return stateReason?:@"attachment state differs from every actual QC row";
     MTLVertexDescriptor *v = d.vertexDescriptor;
     for (NSUInteger i = 0; i < 31; ++i) {
         const A5MaliCompiledVertexAttribute *want = NULL;
         for (uint32_t j = 0; j < p->attributeCount; ++j)
             if (p->attributes[j].index == i) want = &p->attributes[j];
         MTLVertexAttributeDescriptor *a = v.attributes[i];
-        if (a.format != (want ? want->format : MTLVertexFormatInvalid)) return NO;
-        if (want && (a.offset != want->offset || a.bufferIndex != want->bufferIndex)) return NO;
+        if (a.format != (want ? want->format : MTLVertexFormatInvalid)) return @"vertex attribute/layout contract differs";
+        if (want && (a.offset != want->offset || a.bufferIndex != want->bufferIndex)) return @"vertex attribute/layout contract differs";
     }
     for (uint32_t i = 0; i < p->layoutCount; ++i) {
         const A5MaliCompiledVertexLayout *want = &p->layouts[i];
         MTLVertexBufferLayoutDescriptor *a = v.layouts[want->index];
         if (a.stride != want->stride || a.stepFunction != want->stepFunction ||
-            a.stepRate != want->stepRate) return NO;
+            a.stepRate != want->stepRate) return @"vertex attribute/layout contract differs";
     }
-    return YES;
+    return nil;
 }
 
 const A5MaliCompiledProfile *A5MaliSelectCompiledProfile(
@@ -352,12 +354,23 @@ const A5MaliCompiledProfile *A5MaliSelectCompiledProfile(
     }
     size_t count = 0;
     const A5MaliCompiledProfile *profiles = A5MaliCompiledProfiles(&count);
+    NSString *reason=nil;BOOL knownPair=NO;int reasonScore=-1;
     for (size_t i = 0; i < count; ++i) {
         const A5MaliCompiledProfile *p = &profiles[i];
+        if (p->flags&A5MaliProfileNotExecutable) continue;
         if ([[vertex name] isEqualToString:[NSString stringWithUTF8String:p->vertexName]] &&
-            [[fragment name] isEqualToString:[NSString stringWithUTF8String:p->fragmentName]] &&
-            compiledDescriptorMatches(p, descriptor)) return p;
+            [[fragment name] isEqualToString:[NSString stringWithUTF8String:p->fragmentName]]) {
+            knownPair=YES;NSString *mismatch=compiledDescriptorMismatch(p,descriptor);
+            if(!mismatch)return p;
+            int score=0;for(NSUInteger a=0;a<8;++a)
+                score+=(descriptor.colorAttachments[a].pixelFormat==p->colorFormats[a]);
+            /* Same named shader has several genuine attachment profiles.
+             * Report the closest full-format contract, not the first unrelated
+             * format variant, while accepting only exact complete contracts. */
+            if(score>reasonScore){reasonScore=score;reason=[NSString stringWithFormat:@"profile%u: %@",p->profileID,mismatch];}
+        }
     }
-    if (error) *error = libraryError(@"no compiled pair matches the complete attachment and vertex-layout contract");
+    if (error) *error = libraryError(reason?: (knownPair?@"no exact compiled descriptor contract":
+        @"no executable compiled pair for authenticated function names"));
     return NULL;
 }

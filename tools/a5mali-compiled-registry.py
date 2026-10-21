@@ -221,6 +221,78 @@ def apply_blur_runtime(profiles, path, original):
         p['passes'][0]['vertex']=shader(Path(entry['vert_midgard']['path']),entry['vert_midgard'])
         p['flags'] &= ~1
         p['viewport']=[0,0]
+def apply_raw204_runtime(profiles, path, original):
+    j=json.loads(path.read_text());source=json.loads(original.read_text())
+    if j['profile_id']!=204 or j['logical_target']!=0 or j['sample_count']!=1 or j['operation']!='premultiplied_source_over_RGBA16Float' or j['metallib_sha256']!=METALLIB_SHA or j['source_manifest_sha256']!=sha(original.read_bytes()):fail('unreviewed RAW204 runtime contract')
+    old=next(p for p in source['profiles'] if p['family']=='buffer_image_blit' and p['variant']=='rgba16f' and p['render_target']==0)
+    if any(j['original_spirv'][s]!=old['spirv'][s]['sha256'] for s in ('vert','frag')):fail('RAW204 source SPIR-V differs')
+    p=next(p for p in profiles if p['id']==204);vs=shader(Path(j['stages']['vert']['path']),j['stages']['vert'])
+    if vs['sha256']!=p['passes'][0]['vertex']['sha256']:fail('RAW204 vertex changed')
+    p['passes'][0]['fragment']=shader(Path(j['stages']['frag']['path']),j['stages']['frag'])
+    p['flags'] |= 256
+
+def apply_actual_qc_contracts(profiles, image_path):
+    """UUID/opcode-guarded actual attachment creation, not SPIR-V outputs.
+
+    Shader reflection describes emitted values. Metal write masks and inactive
+    formats are separate and are reconstructed from this exact stock QC path.
+    """
+    tool=Path(__file__).with_name('a5mali-quartzcore-coverage.py')
+    spec=importlib.util.spec_from_file_location('registry_qc_contract',tool)
+    m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+    image=m.Image(image_path);rows=m.audit(image)['direct_fast_profiles']
+    import struct
+    # Zero Spec, S(default0) setter, write-mask selected-index test, coverage
+    # override and format conversion are tied to the audited stock instructions.
+    guards={0x18847f3ec:0xa9337fbf,0x18847f3f0:0xf81403bf,
+      0x18838179c:0x7840d308,0x1883817a0:0x371000e8,
+      0x1883817a4:0x12000508,0x1883817b8:0x94093852,
+      0x188381834:0x528003c2,0x188381988:0xaa1903e0,
+      0x1883819a8:0x94092fd6,0x1883819cc:0x94092fcd,
+      0x1883819e4:0x52800102,0x1883819f0:0x52800022,
+      0x188381a00:0x94093610,0x188381a0c:0x94093135,
+      0x188487648:0x7840d008,0x18848764c:0x33000428}
+    for addr,word in guards.items():
+        if image.u32(image.offset(addr,4))!=word:fail('QC attachment instruction changed')
+    # The actual named blend decoder maps sov to1; its native table decodes
+    # RGB/alpha Add, sourceOne,destinationOneMinusSourceAlpha.
+    blend_index=next((i for i in range(55) if image.string(image.pointer(0x1d5b461e8+i*8))=='sov'),None)
+    if blend_index is None:fail('stock source-over decoder absent')
+    blend=struct.unpack_from('<H',image.data,image.offset(0x188564fc2+2*blend_index,2))[0]
+    if ((blend>>5)&7,(blend>>8)&15,(blend>>12)&15)!=(0,1,5):fail('stock source-over factors changed')
+    for p in profiles:
+        candidates=[r for r in rows if r['vertex']==p['vertex'] and r['fragment']==p['fragment'] and r['metal_pixel_format']==p['formats'][0]]
+        if not candidates:fail('no actual QC row for compiled pair')
+        contracts=[];formats=None;proof=[]
+        for row in candidates:
+            token=row['pipeline'];parts=token.split('_');frag=parts[1]
+            count=int(re.search(r'A([123])',frag).group(1));selected=int(re.search(r'S([01])',frag).group(1)) if re.search(r'S([01])',frag) else 0
+            color=p['formats'][0];second=30 if color==10 else color
+            fmt=[color]+([second] if count>=2 else [])+([55 if 'w' in parts[0].split('X')[-1] else second] if count==3 else [])
+            fmt += [0]*(8-len(fmt))
+            if formats is not None and formats!=fmt:fail('actual same-profile formats disagree')
+            formats=fmt
+            # Metal descriptor defaults apply even to unconfigured format0 slots.
+            states=[[15,0,0,0,1,0,1,0] for _ in range(8)]
+            for i in range(count):states[i][0]=15 if i==selected else 0
+            if 'Bsov' in parts[0]:states[selected]=[states[selected][0],1,0,0,1,5,1,5]
+            if row['texture_index'] in (70,72):
+                states[0][0]=states[1][0]=0;states[0][1]=states[1][1]=0
+                states[2][0]=8;states[2][1]=1;states[2][2]=0;states[2][4]=states[2][5]=1
+            elif row['texture_index'] in (79,80):
+                states[2][0]=8;states[2][1]=0
+                states[1 if selected==0 else 0][0]=0;states[1 if selected==0 else 0][1]=0
+            if states not in contracts:contracts.append(states)
+            proof.append({'row':row['row'],'pipeline':token,'selected_attachment':selected})
+        p['formats']=formats;p['attachment_contracts']=contracts;p['qc_rows']=proof
+        active={i for c in contracts for i,a in enumerate(c) if formats[i] and a[0]}
+        if not p['flags']&32:
+            p['passes']=[q for q in p['passes'] if q['target'] in active]
+            if not p['passes'] or {q['target'] for q in p['passes']}!=active:fail('compiled pass coverage differs from actual active attachment')
+            p['flags'] &= ~8
+        if any(c[0][1] for c in contracts):p['flags'] |= 16
+        else:p['flags'] &= ~16
+    return {'uuid':m.EXPECTED_UUID,'image_sha256':sha(Path(image_path).read_bytes()),'source_over_decoder_index':blend_index}
 
 def array(symbol,data):
     return 'static const uint8_t '+symbol+'[] = {\n'+''.join('  '+','.join(f'0x{x:02x}' for x in data[i:i+24])+',\n' for i in range(0,len(data),24))+'};\n'
@@ -244,9 +316,12 @@ def emit(profiles,output):
         lines.append('static const A5MaliCompiledPass '+prefix+'_passes[] = {'+','.join(passes)+'};\n')
         for field,ctype in [('resources','A5MaliCompiledResource'),('push','A5MaliCompiledPushField'),('attributes','A5MaliCompiledVertexAttribute'),('layouts','A5MaliCompiledVertexLayout')]:
             if p[field]:lines.append('static const '+ctype+' '+prefix+'_'+field+'[] = {'+','.join('{'+','.join(map(str,v))+'}' for v in p[field])+'};\n')
+        contracts=prefix+'_attachment_contracts'
+        lines.append('static const A5MaliCompiledAttachmentContract '+contracts+'[] = {'+','.join('{ {'+','.join('{'+','.join(map(str,a))+'}' for a in c)+'} }' for c in p['attachment_contracts'])+'};\n')
         fmt=p['formats']+[0]*(8-len(p['formats']))
         values=[str(p['id']),json.dumps(name(p['name'])),json.dumps(name(p['vertex'])),json.dumps(name(p['fragment'])),'{'+','.join(map(str,fmt))+'}',str(p['flags']),*map(str,p['viewport']),prefix+'_passes',str(len(p['passes']))]
         for field in ('resources','push','attributes','layouts'):values += [prefix+'_'+field if p[field] else 'NULL',str(len(p[field]))]
+        values += [contracts,str(len(p['attachment_contracts']))]
         rows.append('{'+','.join(values)+'}')
     lines.append('static const A5MaliCompiledProfile kA5MaliCompiledProfiles[] = {\n'+',\n'.join(rows)+'\n};\n')
     output.write_text(''.join(lines))
@@ -259,7 +334,9 @@ def main():
     p.add_argument('--blur-runtime-manifest',type=Path)
     p.add_argument('--path-manifest',type=Path)
     p.add_argument('--path-runtime-manifest',type=Path)
+    p.add_argument('--raw204-runtime-manifest',type=Path)
     p.add_argument('--ds4-vertex',type=Path);p.add_argument('--ds4-fragment',type=Path)
+    p.add_argument('--quartzcore-image',type=Path,required=True)
     p.add_argument('--output-dir',type=Path,required=True)
     a=p.parse_args();out=a.output_dir.resolve()
     source=Path(__file__).resolve().parents[1]
@@ -272,10 +349,17 @@ def main():
         if not a.path_manifest:fail('original path manifest required')
         profiles+=runtime_path_profiles(a.path_runtime_manifest.resolve(),a.path_manifest.resolve())
     if a.path_manifest:profiles+=path_profiles(a.path_manifest.resolve())
+    if a.raw204_runtime_manifest:
+        if not a.misc_manifest:fail('RAW204 requires original misc source manifest')
+        apply_raw204_runtime(profiles,a.raw204_runtime_manifest.resolve(),a.misc_manifest.resolve())
+    else:
+        for profile in profiles:
+            if profile['id']==204:profile['flags'] |= 32
+    qc=apply_actual_qc_contracts(profiles,a.quartzcore_image.resolve())
     out.mkdir(parents=True,exist_ok=True);include=out/'A5MaliCompiledRegistryData.inc';emit(profiles,include)
-    receipt={'schema':1,'metallib_sha256':METALLIB_SHA,'include_sha256':sha(include.read_bytes()),
+    receipt={'schema':2,'quartzcore_attachment_audit':qc,'metallib_sha256':METALLIB_SHA,'include_sha256':sha(include.read_bytes()),
              'generator_sha256':sha(Path(__file__).read_bytes()),
-             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest) if path},'profiles':profiles,
+             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest,a.raw204_runtime_manifest) if path},'profiles':profiles,
              'claim':'Authenticated native program and binding registry; pipeline/runtime acceptance is separately gated.'}
     (out/'compiled-registry.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps({'profiles':len(profiles),'native_passes':sum(len(x['passes']) for x in profiles),'include':str(include),'sha256':receipt['include_sha256']}))

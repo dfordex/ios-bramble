@@ -6,6 +6,7 @@
 #include <string.h>
 #include "genxml/v4_pack.h"
 #include "A5MaliCompiledRegistryData.inc"
+#include "test_runtime_preload.h"
 static uint8_t out[A5RuntimeJobBytes],storage[4096];
 static int zero(void){for(unsigned i=0;i<sizeof(out);++i)if(out[i])return 0;return 1;}
 int main(void){unsigned cases=0;uint8_t mvp[64]={0},aux[24]={0};
@@ -18,7 +19,7 @@ int main(void){unsigned cases=0;uint8_t mvp[64]={0},aux[24]={0};
  int rc=A5MaliEncodeRuntimePathPass(&m,out,sizeof(out));if(rc)fprintf(stderr,"profile%u rc%d\n",p->profileID,rc);assert(!rc);
  assert(p->passCount==1&&p->passes[0].logicalTarget==t);
  assert(!memcmp(out+0x4000,p->passes[0].vertex.bytes,p->passes[0].vertex.byteCount));assert(!memcmp(out+0x6000,p->passes[0].fragment.bytes,p->passes[0].fragment.byteCount));
- pan_section_unpack(out+0x300,FRAMEBUFFER,PARAMETERS,fb);assert(fb.color_preload_enable&&fb.color_load_address==0x21000000&&fb.color_writeback.base==0x21000000);
+ pan_section_unpack(out+0x300,FRAMEBUFFER,PARAMETERS,fb);assert(!fb.color_preload_enable&&!fb.color_load_address&&fb.color_writeback.base==0x21000000);check_preload(out,m.draw.descriptorGPUVA,&m.colorAttachments[t]);
  pan_unpack((struct mali_renderer_state_packed*)(out+0x540),RENDERER_STATE,rs);assert(rs.multisample_misc.load_destination&&!rs.properties.force_early_z);
  m.draw.viewportWidth=64;assert(!A5MaliEncodeRuntimePathPass(&m,out,sizeof(out)));float scale;memcpy(&scale,out+0x1000+512,4);assert(scale==32);
  m.draw.blend=0;assert(A5MaliEncodeRuntimePathPass(&m,out,sizeof(out))==A5RuntimeUnsupported&&zero());m.draw.blend=t?2:1;

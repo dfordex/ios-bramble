@@ -7,6 +7,7 @@
 #include <string.h>
 #include <math.h>
 #include "genxml/v4_pack.h"
+#include "runtime_preload.h"
 
 enum { FB=0x300,VRS=0x500,FRS=0x540,TEX=0x600,TT=0x660,SAMP=0x680,
  VUBO=0x700,FUBO=0x740,ATTR=0x800,ABUF=0x840,VV=0x880,VB=0x8c0,
@@ -71,7 +72,8 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
     overlaps(r->source.gpuVA,r->source.bytes,r->destination.gpuVA,r->destination.bytes)||
     overlaps(r->source.gpuVA,r->source.bytes,r->descriptorGPUVA,A5RuntimeJobBytes)||
     overlaps(r->destination.gpuVA,r->destination.bytes,r->descriptorGPUVA,A5RuntimeJobBytes))return A5RuntimeBounds;
- for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return A5RuntimeUnsupported;
+ /* Disabled secondary attachments are validated by pipeline/API contracts;
+  * this native pass writes only its authenticated logicalTarget0. */
  if((p->flags&A5MaliProfileFixedViewport) &&
     (r->viewportX!=0||r->viewportY!=0||r->viewportWidth!=1080||r->viewportHeight!=1920||
      r->viewportNear!=0||r->viewportFar!=1))return A5RuntimeUnsupported;
@@ -149,12 +151,11 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
  pan_section_pack(d+FB,FRAMEBUFFER,PARAMETERS,c){
   c.internal_format=raw?MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW_VALUE:MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8;
   c.color_writeback_format=raw?MALI_COLOR_FORMAT_2_32B_CHANNELS:MALI_COLOR_FORMAT_R8G8B8A8;
-  c.swizzle=raw?0x688:0x60a;c.color_write_enable=true;c.color_preload_enable=true;c.clean_pixel_write_enable=true;
+  c.swizzle=raw?0x688:0x60a;c.color_write_enable=true;
   c.color_block_format=MALI_BLOCK_FORMAT_LINEAR;c.tie_break_rule=MALI_TIE_BREAK_RULE_MINUS_180_IN_0_OUT;
   c.bound_max_x=r->destination.width-1;c.bound_max_y=r->destination.height-1;
   c.color_writeback.base=r->destination.gpuVA;c.color_writeback.row_stride=r->destination.rowBytes;
-  c.color_load_address=r->destination.gpuVA;c.color_load_row_stride=r->destination.rowBytes;
-  c.color_load_surface_stride=r->destination.rowBytes*r->destination.height;
+
  }
  /* The already device-verified T720 flat tile encoding0x1c7 selects1024x1024
   * bins. Unlike a hardcoded32x32 fixture, size both lists from actual FB dimensions
@@ -201,7 +202,7 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
  pan_pack((struct mali_viewport_packed*)(d+VP),VIEWPORT,c){c.scissor_minimum_x=r->scissorX;c.scissor_minimum_y=r->scissorY;c.scissor_maximum_x=r->scissorX+r->scissorWidth-1;c.scissor_maximum_y=r->scissorY+r->scissorHeight-1;}
  pan_pack((struct mali_job_header_packed*)(d+0x200),JOB_HEADER,c){c.type=MALI_JOB_TYPE_FRAGMENT;c.index=3;c.enable_texture_mapper=true;}
  pan_pack((struct mali_fragment_job_payload_packed*)(d+0x220),FRAGMENT_JOB_PAYLOAD,c){c.bound_min_x=r->scissorX/16;c.bound_min_y=r->scissorY/16;c.bound_max_x=(r->scissorX+r->scissorWidth-1)/16;c.bound_max_y=(r->scissorY+r->scissorHeight-1)/16;c.framebuffer=va+FB;}
- return A5RuntimeOK;
+ return a5_runtime_preload(d,va,&r->destination);
 }
 int A5MaliEncodeRuntimeDraw(const A5RuntimeDraw*r,void*out,size_t n){
  if(!out||n!=A5RuntimeJobBytes)return A5RuntimeInvalid;

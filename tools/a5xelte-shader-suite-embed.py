@@ -95,6 +95,23 @@ def region(offset, length):
         raise ValueError('region outside pinned private data window')
 
 
+def valid_job_chain(payload):
+    def word(off): return struct.unpack_from('<I', payload, off)[0]
+    def pointer(off): return struct.unpack_from('<Q', payload, off)[0]
+    def header(off, typ, nxt):
+        return (not word(off) and not word(off+4) and not pointer(off+8)
+                and word(off+16)&1 and ((word(off+16)>>1)&127)==typ
+                and pointer(off+24)==nxt)
+    if not header(0x100,7,0) or not header(0x200,9,0):
+        return False
+    if header(0,5,BASE+0x100):
+        return True
+    return (header(0,5,BASE+0x1800) and header(0x1800,7,BASE+0x100)
+            and word(0x10)>>16==1 and word(0x1810)>>16==2
+            and word(0x110)>>16==3 and word(0x14)==0
+            and word(0x1814)==1 and word(0x114)==(1|(2<<16)))
+
+
 def embed(manifests, output):
     lines = ['/* Generated private Mac shader fixtures; do not commit. */']
     records, names, evidence = [], set(), []
@@ -110,8 +127,8 @@ def embed(manifests, output):
                 raise ValueError(f'{name}: payload is not exactly 256KiB')
             if any(payload[off] != typ for off, typ in ((0x10, 0xb), (0x110, 0xf), (0x210, 0x13))):
                 raise ValueError(f'{name}: wrong vertex/tiler/fragment header')
-            if struct.unpack_from('<Q', payload, 0x18)[0] != BASE + 0x100:
-                raise ValueError(f'{name}: wrong chained job address')
+            if not valid_job_chain(payload):
+                raise ValueError(f'{name}: invalid vertex/preload/tiler/fragment chain')
             encoded = sparse(payload)
             if unpack(encoded) != payload:
                 raise ValueError('sparse codec changed data')

@@ -11,6 +11,7 @@
 #include <math.h>
 #include "genxml/v4_pack.h"
 #include "A5MaliCompiledRegistryData.inc"
+#include "test_runtime_preload.h"
 static uint8_t output[A5RuntimeJobBytes],vertex[256*48+64],uniforms[512];
 static int zero(void){for(unsigned i=0;i<sizeof(output);++i)if(output[i])return 0;return 1;}
 static A5RuntimeDraw request(const A5MaliCompiledProfile*p,unsigned w,unsigned h){
@@ -65,6 +66,7 @@ int main(int argc,char**argv){
   const A5MaliCompiledProfile*p=kA5MaliCompiledProfiles+i;if(p->profileID<99||p->profileID>108)continue;
   A5RuntimeDraw d=p->colorFormats[0]==115?request(p,64,128):request(p,1080,1920);
   int rc=A5MaliEncodeRuntimeDraw(&d,output,sizeof(output));if(rc){fprintf(stderr,"profile%u rc%d\n",p->profileID,rc);return 1;}
+  check_preload(output,d.descriptorGPUVA,&d.destination);
   pan_unpack((struct mali_framebuffer_parameters_packed*)(output+0x320),FRAMEBUFFER_PARAMETERS,fb);
   assert(fb.bound_max_x==d.destination.width-1&&fb.bound_max_y==d.destination.height-1&&fb.color_writeback.base==d.destination.gpuVA);
   pan_unpack((struct mali_attribute_buffer_packed*)(output+0x840),ATTRIBUTE_BUFFER,vb);
@@ -76,7 +78,7 @@ int main(int argc,char**argv){
   assert(t.polygon_list_size==(d.destination.width==1080?0xa00:0x400)&&t.polygon_list_body==d.descriptorGPUVA+0x10200);
   d.vertexCount=256;assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
   d.vertexCount=4;d.blend=A5RuntimeBlendPremultipliedSourceOver;
-  if(d.destination.metalPixelFormat==80){
+  if(d.destination.metalPixelFormat==80&&(p->flags&A5MaliProfileSourceOverBlend)){
    assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
    pan_unpack((struct mali_renderer_state_packed*)(output+0x540),RENDERER_STATE,rs);
    assert(rs.multisample_misc.load_destination);

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Create real-shader blend tests with nonzero target and separate CPU oracle."""
 import argparse,hashlib,json,pathlib,struct,subprocess
+from build_preload import build as build_preload
 
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def main():
@@ -10,7 +11,8 @@ def main():
  a=p.parse_args();out=a.output.resolve();here=pathlib.Path(__file__).resolve().parent
  if here in out.parents:raise ValueError('private outputs required')
  out.mkdir(parents=True,exist_ok=True);builder=out/'build-path-blend-suite'
- inc=[a.mesa_build/'src/panfrost',a.mesa_source/'src/panfrost',a.mesa_source/'src',a.mesa_source/'include',a.mesa_build/'include']
+ preload_dir=out/'preload-generated';build_preload(a.mesa_build.resolve(),preload_dir)
+ inc=[preload_dir,a.mesa_build/'src/panfrost',a.mesa_source/'src/panfrost',a.mesa_source/'src',a.mesa_source/'include',a.mesa_build/'include']
  subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-unused-parameter',*['-I'+str(x) for x in inc],str(here/'build_path_blend_suite.c'),'-o',str(builder)],check=True)
  doc=json.loads(a.runtime_manifest.read_text());result={'schema':1,'cases':[],'claim':'New inline blend variants; host generated only, GPU proof pending.'}
  for r in doc['programs']:

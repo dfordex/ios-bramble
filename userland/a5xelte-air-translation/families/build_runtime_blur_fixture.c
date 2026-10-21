@@ -35,8 +35,14 @@ int main(int argc,char**argv){
  pan_unpack((struct mali_surface_with_stride_packed*)(out+0x620),SURFACE_WITH_STRIDE,s);
  s.pointer=d.descriptorGPUVA+0x3a000;MALI_SURFACE_WITH_STRIDE_pack((struct mali_surface_with_stride_packed*)(out+0x620),&s);
  pan_unpack((struct mali_framebuffer_parameters_packed*)(out+0x320),FRAMEBUFFER_PARAMETERS,fb);
- fb.color_writeback.base=fb.color_load_address=d.descriptorGPUVA+0x3e000;
+ fb.color_writeback.base=d.descriptorGPUVA+0x3e000;
+ /* The SFBD clear values alias load addresses in the generated packer.
+  * No direct hardware preload remains; explicitly zero both interpretations. */
+ fb.color_preload_enable=false;fb.color_load_address=0;fb.color_load_row_stride=0;fb.color_load_surface_stride=0;
+ fb.clear_color_0=fb.clear_color_1=fb.clear_color_2=fb.clear_color_3=0;
  MALI_FRAMEBUFFER_PARAMETERS_pack((struct mali_framebuffer_parameters_packed*)(out+0x320),&fb);
+ pan_unpack((struct mali_surface_with_stride_packed*)(out+0x19a0),SURFACE_WITH_STRIDE,preload);
+ preload.pointer=d.descriptorGPUVA+0x3e000;MALI_SURFACE_WITH_STRIDE_pack((struct mali_surface_with_stride_packed*)(out+0x19a0),&preload);
  memcpy(out+0x3a000,legacy+0xa000,0x4000);memset(out+0x3e000,0xcd,0x1000);memset(out+0x3f000,0xa7,0x1000);
  f=fopen(argv[2],"wb");if(!f)return 2;
  if(fwrite(out,1,sizeof(out),f)!=sizeof(out)||fclose(f))return 2;

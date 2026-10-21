@@ -15,11 +15,13 @@ native T720 queue. Device execution of this new route remains to be measured.
    and generated includes stay outside Git.
 2. Function lookup returns only registered real programs from the pinned library.
    Pipeline selection checks both genuine functions, all eight attachment slots,
-   blend/depth/sample state and the actual vertex layout. Native Apple pipeline
+   blend/depth/sample state and the actual vertex layout. Exact contracts retain
+   configured-but-inactive attachment formats, all eight write masks and blend
+   fields, including the default All masks on unconfigured format-zero slots. Native Apple pipeline
    libraries and unknown constants remain unsupported.
 3. Executable profiles include DS4/blur 99–108, misc 200/202/204/206/207
    and rect/cubic/stroke 300–302. The complete registry has 22 logical profiles,
-   including metadata-only original paths; 22 native passes are executable
+   including metadata-only original paths; 18 native passes are executable
    and four original path metadata passes remain gated. Shared buffer bytes are captured at commit, while setBytes is copied
    at encoding. Large storage buffers use real kernel allocations and bounded
    bulk uploads rather than truncation to the descriptor arena.
@@ -52,13 +54,21 @@ native T720 queue. Device execution of this new route remains to be measured.
   strip and one instance. VertexID/InstanceID misc and path contracts currently
   support one four-vertex quad. Indexed or general instanced geometry is not
   implemented.
-- Misc MRT outputs are real ordered native passes retaining their actual
-  targets. Home uses two actual source textures with the AIR constexpr sampler
-  state. Rect/cubic write only RT2 R32Float with additive destination loads;
+- Misc descriptors retain all original MRT formats, while only enabled shader
+  targets are submitted. A2 blur/home disable RT1; A3 misc S0 disables RT1/RT2;
+  A2S1 attachment-clear writes only RT1. Home uses two actual source textures
+  with the AIR constexpr sampler state. Rect/cubic write only RT2 R32Float with additive destination loads;
   stroke writes only RT0 RGBA16Float with inline premultiplied source-over.
   These masks follow QuartzCore pipeline construction, not just AIR exports.
 - BGRA blur copy/source-over use the released blend equation. RAW64 blur
-  RGBA16Float permits copying; blending its packed export remains rejected.
+  RGBA16Float permits copying. RAW204 blit has its own genuinely lowered
+  inline source-over program; its copy descriptor is rejected. RAW blur108 has
+  no stock source-over variant in the audited table and remains copy-only.
+- Preserving existing destination pixels uses a real textured preload TILER
+  job following released v4 pan_fb_preload.c. Direct SFBD load-address fields
+  are unused. The bounded chain is vertex1, preload2, application tiler3,
+  followed by a separate fragment4. Native and boot-suite paths validate every
+  job header, ordering dependency and terminal completion before observation.
 - GPU clear submits a real fragment job for each supported format; its clear
   packing is compared against the unmodified released Mesa pan_clear.c.
 - Descriptor/code/scratch storage is 256 KiB; four buffer windows support up
@@ -99,7 +109,7 @@ backboardd is stable.
   tests, not hardware execution.
 - iOS arm64 Cortex-A53 builds are distinct from the next device result.
 
-The new dynamic viewport and inline path blend variants require device proof
+The new dynamic viewport, textured preload and inline blend variants require device proof
 separate from 0175. The next image includes GPU oracle cases with nonzero old
 destination values so overwrite cannot accidentally pass as additive/source-over.
 Host transport tests run the real registry and v4 emitters, mocking only IOKit;

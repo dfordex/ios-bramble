@@ -24,7 +24,8 @@ enum { A5MaliPushBindOffset = 1, A5MaliPushColorWriteRule = 2 };
 enum { A5MaliProfileFixedViewport = 1, A5MaliProfileNearestSampler = 2,
        A5MaliProfileNormalizedSampler = 4, A5MaliProfileIndependentTargets = 8,
        A5MaliProfileSourceOverBlend = 16, A5MaliProfileNotExecutable = 32,
-       A5MaliProfileCoverageAdd = 64, A5MaliProfileStrokeSourceOver = 128 };
+       A5MaliProfileCoverageAdd = 64, A5MaliProfileStrokeSourceOver = 128,
+       A5MaliProfileInlineSourceOver = 256 };
 
 typedef struct {
     const uint8_t *bytes;
@@ -56,6 +57,14 @@ typedef struct {
     A5MaliCompiledShader vertex, fragment;
 } A5MaliCompiledPass;
 
+typedef struct {
+    uint32_t writeMask, blendEnabled, rgbOperation, alphaOperation;
+    uint32_t sourceRGB, destinationRGB, sourceAlpha, destinationAlpha;
+} A5MaliCompiledAttachmentState;
+typedef struct {
+    A5MaliCompiledAttachmentState attachments[8];
+} A5MaliCompiledAttachmentContract;
+
 typedef struct A5MaliCompiledProfile {
     uint32_t profileID;
     const char *name, *vertexName, *fragmentName;
@@ -71,6 +80,8 @@ typedef struct A5MaliCompiledProfile {
     uint32_t attributeCount;
     const A5MaliCompiledVertexLayout *layouts;
     uint32_t layoutCount;
+    const A5MaliCompiledAttachmentContract *attachmentContracts;
+    uint32_t attachmentContractCount;
 } A5MaliCompiledProfile;
 
 /* IDs are stable wire identities, not array positions. Absent profiles are

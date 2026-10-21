@@ -6,14 +6,16 @@
 #define main a5_copy_geometry_main
 #include "build_path_suite.c"
 #undef main
+#include "runtime_preload.h"
 int main(int argc,char **argv) {
  if(argc!=7)return 2;
  int rc=a5_copy_geometry_main(argc,argv);if(rc)return rc;
  int stroke=!strcmp(argv[1],"stroke");
  struct MALI_FRAMEBUFFER_PARAMETERS fb;
  MALI_FRAMEBUFFER_PARAMETERS_unpack((const struct mali_framebuffer_parameters_packed*)(d+FB+MALI_FRAMEBUFFER_SECTION_PARAMETERS_OFFSET),&fb);
- fb.color_preload_enable=true;fb.color_load_address=base+OUT;
- fb.color_load_row_stride=stroke?256:128;fb.color_load_surface_stride=fb.color_load_row_stride*32;
+ fb.color_preload_enable=false;fb.clean_pixel_write_enable=false;
+ fb.color_load_address=fb.color_load_row_stride=fb.color_load_surface_stride=0;
+ fb.clear_color_0=fb.clear_color_1=fb.clear_color_2=fb.clear_color_3=0;
  MALI_FRAMEBUFFER_PARAMETERS_pack((struct mali_framebuffer_parameters_packed*)(d+FB+MALI_FRAMEBUFFER_SECTION_PARAMETERS_OFFSET),&fb);
  struct MALI_RENDERER_STATE rs;MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FRS),&rs);
  rs.properties.force_early_z=false;rs.multisample_misc.load_destination=true;
@@ -25,5 +27,7 @@ int main(int argc,char **argv) {
   else f32(OUT+i*4,.25f);
  }
  if(stroke){f32(AUX,.125f);f32(AUX+4,.25f);f32(AUX+8,.375f);f32(AUX+12,.5f);}
+ A5RuntimeImage im={base+OUT,stroke?8192u:4096u,32,32,stroke?256u:128u,stroke?115u:55u};
+ if(a5_runtime_preload(d,base,&im))return 2;
  FILE*f=fopen(argv[6],"wb");if(!f)return 1;int ok=fwrite(d,1,N,f)==N;return fclose(f)||!ok;
 }
