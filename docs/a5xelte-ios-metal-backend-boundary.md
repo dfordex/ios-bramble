@@ -16,19 +16,44 @@ binary in a local temporary directory finds
 `AGXMetalA11` links to IOGPU, IOKit, IOSurface, and Metal. These are Apple
 AGX-specific objects and are not a Midgard job encoder.
 
-Metal exports `MTLCreateSystemDefaultDevice` and `_MTLAddDevice`, and contains
-a bundle discovery path under `/System/Library/Extensions`. Local binary
-inspection indicates that candidate registration checks `MTLDevice` and
-private `MTLDeviceSPI` conformance. This is a candidate insertion path; it
-does not establish that an unsigned third-party bundle will load on the
-phone. QuartzCore imports
+Metal exports `MTLCreateSystemDefaultDevice` and `_MTLAddDevice`. Disassembly
+of the **staged iOS 16.7.16 dyld cache** gives a more precise discovery path:
+
+1. `_MTLRegisterDevices` calls `IOServiceMatching("IOAcceleratorES")` and
+   iterates the matched I/O Registry services. The existing private
+   `A5XELTEGPU` service is not one of them. The 0146 device log also records
+   BackBoard matching `IOProviderClass=IOAcceleratorES` and finding zero
+   services.
+2. `_getMetalPluginClassForService` reads each service's `MetalPluginName`
+   property (a `CFString`) and optional `MetalPluginClassName`. It forms
+   `/System/Library/Extensions/<MetalPluginName>.bundle`, loads the bundle,
+   chooses `classNamed:` or `principalClass`, and checks that the result is a
+   subclass of private `_MTLDevice`. The staged Metal binary and SDK export
+   `_MTLDevice`, but neither provides a public implementation guide for it.
+3. Metal calls the selected class's `initWithAcceleratorPort:` with the
+   matched `io_service_t`. `_MTLAddDevice` then requires conformance to both
+   `MTLDevice` and private `MTLDeviceSPI`, and invokes `initLimits` and
+   `initFeatureQueries`. The staged `MTLDeviceSPI` declares many private
+   methods; a class that only answers `name` or opens the current tile
+   userclient would not satisfy this contract.
+
+The cache addresses inspected were `0x181b144c8` for `_MTLRegisterDevices`,
+`0x181a3c7c8` for `_getMetalPluginClassForService`, and `0x181a1b368` for
+`_MTLAddDevice`; `ipsw dyld disass` against the locally staged arm64 cache
+and the extracted Metal image supplied the disassembly. These are **static
+local binary observations**, not an on-device proof that a new bundle passes
+iOS code-signing, loads, or receives a Metal command. The private
+`MetalPluginName` mechanism is not a public third-party provider API.
+QuartzCore imports
 `MTLCreateSystemDefaultDevice` and `IOSurfaceAcceleratorCreate`, and contains
 references to `AGXAccelerator` and `IOAcceleratorES`. This gives a concrete
 insertion point for a **new Mali Metal implementation**: an extension bundle
 whose principal class implements the Metal device, command queue, resources,
 pipelines and synchronization interfaces, backed by a matching kernel
-userclient. Merely publishing an `IOAcceleratorES` registry name would select
-an interface that the port cannot yet serve.
+userclient. Publishing an `IOAcceleratorES` registry name alone would select
+an interface that the port cannot yet serve. A truthful provider must route
+actual iOS resource and command work to Mali before system composition can
+be claimed.
 
 The inspected `IOSurfaceAcceleratorCreate` implementation looks for
 `AppleM2ScalerCSCDriver` or `AppleSRSDriver`. It is a separate IOSurface
