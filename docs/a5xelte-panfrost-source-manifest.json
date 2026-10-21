@@ -1,0 +1,111 @@
+{
+  "audit_date": "2026-10-21",
+  "port_commit": "81013a5",
+  "xnu_patch_range": "0001-0165",
+  "mesa": {
+    "version": "26.2.4",
+    "archive_url": "https://archive.mesa3d.org/mesa-26.2.4.tar.xz",
+    "sha256": "bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9",
+    "compared_release_files": 591,
+    "modified_release_files": [
+      "src/panfrost/meson.build"
+    ],
+    "extra_local_files_are_not_release_code": true
+  },
+  "linux": {
+    "version": "7.2.12",
+    "release_metadata": "https://www.kernel.org/releases.json",
+    "files": [
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_devfreq.c",
+        "sha256": "487a584113d8642575fe367f1c98e579c05bdb4edfeb54b53f1da10c24caa010",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_devfreq.c?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_device.c",
+        "sha256": "1bc0fbc58b36a217aa97ed3b94a7ec5e5eb15f94d1bdc4b1e37d355bb414f2fd",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_device.c?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_device.h",
+        "sha256": "adeebbaa862b6cc7ca835e4b40396ef4f93f32eb86a9b7809c7fd6d3816a6a2f",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_device.h?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_drv.c",
+        "sha256": "7dc6b7dad5db7970ac9c193f0758212458e9b70253cb81e05c4a7c1c6382f9e3",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_drv.c?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_features.h",
+        "sha256": "428c0803d90e4721f6032921649a464a287374d166b628b1f35e3fd1f23fe4f9",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_features.h?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_gem.c",
+        "sha256": "70ce7766295b14bae0a52a1d2575ea9cf93968a4c2a0fda46bd3f4f09346aa6a",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_gem.c?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_gem.h",
+        "sha256": "14cc6867afbdf3290856eee15f5b3b42197b4b6c3c18515d2c53b9ea4201d1f2",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_gem.h?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_gpu.c",
+        "sha256": "8e6d54ce0e726d4b083589fbf75408e6ebb124c7ea69702ff9ee664e9de34e8f",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_gpu.c?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_gpu.h",
+        "sha256": "2434c816a4bf0cc10dabd8bb43e6e44e86221aeae83eb97af042b85efd226402",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_gpu.h?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_issues.h",
+        "sha256": "6e31a4fbb362099113c2f71e621cef1bf92916d960396ed6f4abc6ea7deebe78",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_issues.h?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_job.c",
+        "sha256": "9a06704288a7ae2b789eb5699bc285ae064db5a2c1902864394c56b7b1fcdde6",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_job.c?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_job.h",
+        "sha256": "6278e9c8021e64a4bd6a2faf40b6ad1f9dc1b46a827c59675bfdf6c242a9a73b",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_job.h?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_mmu.c",
+        "sha256": "57f03c626bdef56726bbe14ea6fd36e1229761688ddfd8da6ec3b5ec2851e1b2",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_mmu.c?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_mmu.h",
+        "sha256": "c0ad04975212db362354daf3b852b6ce682700bbcecd461c5ab69c255f14083f",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_mmu.h?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_perfcnt.c",
+        "sha256": "6d9da609e20d5d0116af2f3ae31555361b2f7cbf389465ac22543195e83a9e85",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_perfcnt.c?h=v7.2.12"
+      },
+      {
+        "path": "drivers/gpu/drm/panfrost/panfrost_regs.h",
+        "sha256": "a11d09f281dd79976b35273627be3ff1857911506e2637510b9a9098bc6ceb18",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/panfrost/panfrost_regs.h?h=v7.2.12"
+      },
+      {
+        "path": "drivers/iommu/io-pgtable-arm.c",
+        "sha256": "41885615ee42cadf527eda2be1066f9dbf8ee60e3d6f1d96f11a639886d4255e",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/iommu/io-pgtable-arm.c?h=v7.2.12"
+      },
+      {
+        "path": "include/uapi/drm/panfrost_drm.h",
+        "sha256": "ae210159e75baf8c0493dba5b0d32c3b3f16371a8937862d4ab154563a4cae83",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/include/uapi/drm/panfrost_drm.h?h=v7.2.12"
+      }
+    ]
+  }
+}
