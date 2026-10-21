@@ -12,9 +12,33 @@
 typedef struct {unsigned format;const uint8_t*code;unsigned bytes,tag,regs;} A5PreloadShader;
 #include "A5MaliPreloadData.inc"
 enum {A5PreloadJob=0x1800,A5PreloadRSD=0x1900,A5PreloadPositions=0x1940,
- A5PreloadTexture=0x1980,A5PreloadTextureTable=0x19c0,A5PreloadSampler=0x19d0,
+ A5PreloadTexture=0x1980,A5PreloadTextureTable=0x19c0,A5PreloadSampler=0x19e0,
  A5PreloadViewport=0x1a00,A5PreloadVarying=0x1a20,A5PreloadVaryingBuffer=0x1a40,
  A5PreloadCode=0x1c00};
+/* These are native descriptor requirements, not just CPU struct alignment.
+ * Keep the entire reserved preload region before the blur vertex program. */
+_Static_assert(A5PreloadJob % MALI_TILER_JOB_ALIGN == 0,"preload job alignment");
+_Static_assert(A5PreloadRSD % MALI_RENDERER_STATE_ALIGN == 0,"preload RSD alignment");
+_Static_assert(A5PreloadPositions % 64 == 0,"preload attribute data alignment");
+_Static_assert(A5PreloadTexture % MALI_TEXTURE_ALIGN == 0,"preload texture alignment");
+_Static_assert((A5PreloadTexture+MALI_TEXTURE_LENGTH) % MALI_SURFACE_WITH_STRIDE_ALIGN == 0,"preload surface alignment");
+_Static_assert(A5PreloadTextureTable % 64 == 0,"preload texture table alignment");
+_Static_assert(A5PreloadSampler % MALI_SAMPLER_ALIGN == 0,"preload sampler alignment");
+_Static_assert(A5PreloadViewport % MALI_VIEWPORT_ALIGN == 0,"preload viewport alignment");
+_Static_assert(A5PreloadVarying % MALI_ATTRIBUTE_ALIGN == 0,"preload varying alignment");
+_Static_assert(A5PreloadVaryingBuffer % MALI_ATTRIBUTE_BUFFER_ALIGN == 0,"preload varying buffer alignment");
+_Static_assert(A5PreloadCode % 64 == 0,"preload native shader alignment");
+_Static_assert(A5PreloadJob+MALI_TILER_JOB_LENGTH <= A5PreloadRSD,"preload job/RSD overlap");
+_Static_assert(A5PreloadRSD+MALI_RENDERER_STATE_LENGTH <= A5PreloadPositions,"preload RSD/positions overlap");
+_Static_assert(A5PreloadPositions+16*sizeof(float) <= A5PreloadTexture,"preload positions/texture overlap");
+_Static_assert(A5PreloadTexture+MALI_TEXTURE_LENGTH+MALI_SURFACE_WITH_STRIDE_LENGTH <= A5PreloadTextureTable,"preload texture/table overlap");
+_Static_assert(A5PreloadTextureTable+sizeof(uint64_t) <= A5PreloadSampler,"preload table/sampler overlap");
+_Static_assert(A5PreloadSampler+MALI_SAMPLER_LENGTH <= A5PreloadViewport,"preload sampler/viewport overlap");
+_Static_assert(A5PreloadViewport+MALI_VIEWPORT_LENGTH <= A5PreloadVarying,"preload viewport/varying overlap");
+_Static_assert(A5PreloadVarying+MALI_ATTRIBUTE_LENGTH <= A5PreloadVaryingBuffer,"preload varying/buffer overlap");
+_Static_assert(A5PreloadVaryingBuffer+MALI_ATTRIBUTE_BUFFER_LENGTH <= A5PreloadCode,"preload buffer/code overlap");
+_Static_assert(A5PreloadCode+0x400 <= 0x2000,"preload code/vertex program overlap");
+
 static int a5_runtime_preload(uint8_t*d,uint64_t va,const A5RuntimeImage*im){
  const A5PreloadShader*s=NULL;unsigned fmt,sw=0x688;
  for(unsigned i=0;i<sizeof(a5_preload_shaders)/sizeof(a5_preload_shaders[0]);++i)
