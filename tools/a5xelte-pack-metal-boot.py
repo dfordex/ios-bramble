@@ -23,6 +23,8 @@ def main():
                     help='install the locally embedded bundle through the mounted HFS VFS')
     ap.add_argument('--test-downsample', action='store_true',
                     help='run the actual translated downsample4 shaders once on private GPU memory')
+    ap.add_argument('--compiler', action='store_true',
+                    help='enable signed on-device compiler helpers embedded by patches0172/0173')
     args = ap.parse_args()
     if args.output_boot.exists():
         ap.error('output exists; choose a new private output path')
@@ -61,6 +63,13 @@ def main():
         required.update(a5metal_install='1', rootrw='1', emmcwrite='1',
                         emmcroot='USERDATA',
                         sweetnull='backboardd,a5mali-metal-probe')
+    if args.compiler:
+        if not args.install_bundle:
+            ap.error('--compiler requires --install-bundle')
+        if b'/usr/libexec/a5shader-compile' not in args.kernel.read_bytes():
+            ap.error('kernel lacks the native compiler installation/authorization')
+        required.update(a5compiler='1',
+                        sweetnull='backboardd,a5mali-metal-probe,a5shader-compile')
     words = [w for w in words if w.split('=', 1)[0] not in required]
     words += [f'{k}={v}' for k, v in required.items()]
     cmdline = ' '.join(words)
