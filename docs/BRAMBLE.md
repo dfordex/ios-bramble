@@ -61,3 +61,23 @@ APSS WDT at entry: **WDT0_EN = 0** (ABL does not arm it), bark 0x7ffff,
 bite 0xfffff. The probe ran 60 s without pets and reset cleanly. Android
 reports `bootreason=watchdog` for any reset it did not initiate (also the
 probe's PSCI reset), so that string means nothing here. XNU needs no pet.
+
+## Milestone 3: XNU (2026-10-21)
+
+Kernel = sweet 0001-0081 + 0090 (board constants) + 0091 (UFS sense
+logging) + 0092 (START STOP UNIT active to the UFS Device W-LU 0xd0 before
+TEST UNIT READY). ADT `mkadt.py --highmem --bramble` (4 GiB at
+0x1_00000000), cmdline `cpus=1 rd=ufsroot0 sweettouch=0 sweetkeys=0
+sweetusb=0`, no ufsrw (read-only), `shim/build-bramble.sh PAYLOAD`.
+
+- Without 0092 every TEST UNIT READY on LUN 0 answered response 0x1,
+  CHECK CONDITION, sense key 2 (NOT READY) asc 0 ascq 0; root unavailable.
+- With 0092: XNU boots through BSD init (AMFI, sandbox, HFS, Skywalk,
+  AppleCLCD 1080x2340 at 0xa0000000 presented as 1125x2436), finds
+  `userdata` in the GPT and reads it: HFS rejects the volume header
+  (Android's encrypted userdata), `cannot mount root` loops. Expected end
+  with Android still installed.
+
+Next: iOS root image into userdata (destructive), /product from the D22AP
+device tree, keys (PM8150L GPIO5 for Vol+), touch (ST FTM5 over GENI SPI
+SE0), USB (check DWC3/GCC addresses on lito before sweetusb=2), cpus=8.
