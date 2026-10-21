@@ -53,5 +53,33 @@ stock-device acceptance response and no displayed frame. It contains one
 SpringBoard/backboardd launch each,13 unchanged installer files with sync0 and
 28 framebuffer metric windows with swaps0. It cannot establish later UI state.
 
-0175 GPU results remain pending the next phone run. Native on-phone compiler
-completion and general iOS GPU rendering are still separate open checks.
+## 0175 — recovered 2026-10-21
+
+SYSTEM flush 7 recovered 55,941 raw bytes / 791 decoded lines. All 21 configured
+cases were evaluated and passed; no cases were skipped. All 46 fences, including
+the two existing control pairs, reached terminal completion with header 1 and
+MMU IRQ 0. Every suite case reports evaluated=1 and immutable=1.
+
+| Test family | Measured result |
+| --- | --- |
+| Nine blur/downsample variants | All pass again, including RGBA16Float and TLS cases |
+| Rect, cubic and stroke | All three masked reference checks pass again |
+| Six buffer-image blit target replays | BGRA8, R8/RG8 and RGBA16Float outputs pass; fences 29–40 complete |
+| Home two-texture case | All 4,096 byte components match within 1; fences 41/42 complete |
+| Two attachment-clear replays | All 4,096 byte components per output match exactly; fences 43–46 complete |
+
+The unchanged DS4 control also passes 1,024/1,024 pixels, with source and guards
+intact. The previous misc fault is absent after the descriptor corrections;
+individual attribution between those two corrections remains unisolated.
+
+The entire saved window contains no kernel panic or recorded CRASH marker.
+It includes one SpringBoard and one backboardd execution, unchanged installation
+of all 13 files with sync=0, and 18 framebuffer measurement windows with swaps=0.
+It ends during service startup, before stock Metal acceptance or a displayed
+frame is recorded. Absence of a crash in this short window does not establish
+stable backboardd operation. Native on-phone compiler completion remains open.
+
+These are real GPU pixel results for bounded private jobs. They do not connect
+stock iOS pipeline creation to these compiled functions, resolve every missing
+fragment function, or establish general compositor rendering. The original
+ordered multi-attachment path-blit pass remains excluded on single-target T720.
