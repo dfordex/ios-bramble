@@ -7,7 +7,7 @@ out_dir=${2:-/private/tmp/a5mali-compiled-registry-test}
 : "${A5_MALI_STOCK_QUARTZCORE_METALLIB:?exact local QuartzCore metallib required}"
 mkdir -p "$out_dir"
 mesa_build=${A5_MALI_MESA_BUILD:-/private/tmp/a5xelte-mesa-full/buildtools}
-for family in blur misc clear; do
+for family in blur misc clear resource; do
  python3 "$src_dir/../a5xelte-air-translation/families/build_runtime_encoder.py" --mesa-build "$mesa_build" --target host --family "$family" --output "$out_dir/runtime_$family.o"
 done
 python3 - "$mesa_build" "$out_dir/runtime_path.o" "$src_dir" <<'PYPATH'
@@ -16,11 +16,11 @@ sys.path.insert(0,str(pathlib.Path(sys.argv[3]).parent/'a5xelte-air-translation/
 from build_runtime_encoder import compile_runtime
 compile_runtime(pathlib.Path(sys.argv[1]),pathlib.Path(sys.argv[2]),'host',pathlib.Path(sys.argv[3]).parent/'a5xelte-air-translation/families/runtime_path_encode.c')
 PYPATH
-set -- "$out_dir/runtime_blur.o" "$out_dir/runtime_misc.o" "$out_dir/runtime_clear.o" "$out_dir/runtime_path.o"
+set -- "$out_dir/runtime_resource.o" "$out_dir/runtime_blur.o" "$out_dir/runtime_misc.o" "$out_dir/runtime_clear.o" "$out_dir/runtime_path.o"
 clang -fobjc-arc -fblocks -DA5_MALI_HOST_TEST -DA5_MALI_REQUIRE_COMPILED_REGISTRY=1 \
     -Wall -Wextra -Werror -I"$registry_dir" \
     "$src_dir/A5MaliBridge.c" "$src_dir/A5MaliNative.c" "$src_dir/A5MaliNativeUpload.c" "$src_dir/A5MaliCommandBuffer.m" \
-    "$src_dir/A5MaliRestrictedDevice.m" "$src_dir/A5MaliMetalAPI.m" \
+    "$src_dir/A5MaliRestrictedDevice.m" "$src_dir/A5MaliMetalAPI.m" "$src_dir/A5MaliMetalTexture.m" "$src_dir/A5MaliNativeTextureOps.m" \
     "$src_dir/A5MaliMetalDeviceResources.m" \
     "$src_dir/A5MaliMetalLibrary.m" "$src_dir/test_compiled_registry.m" "$@" \
     -framework Foundation -framework IOSurface -framework IOKit -framework Metal \
@@ -42,7 +42,7 @@ PYTEST
 clang -fobjc-arc -fblocks -DA5_MALI_HOST_TEST -DA5_MALI_REQUIRE_COMPILED_REGISTRY=1 \
     -Wall -Wextra -Werror -I"$out_dir/corrupt" \
     "$src_dir/A5MaliBridge.c" "$src_dir/A5MaliNative.c" "$src_dir/A5MaliNativeUpload.c" "$src_dir/A5MaliCommandBuffer.m" \
-    "$src_dir/A5MaliRestrictedDevice.m" "$src_dir/A5MaliMetalAPI.m" \
+    "$src_dir/A5MaliRestrictedDevice.m" "$src_dir/A5MaliMetalAPI.m" "$src_dir/A5MaliMetalTexture.m" "$src_dir/A5MaliNativeTextureOps.m" \
     "$src_dir/A5MaliMetalDeviceResources.m" \
     "$src_dir/A5MaliMetalLibrary.m" "$src_dir/test_compiled_registry.m" "$@" \
     -framework Foundation -framework IOSurface -framework IOKit -framework Metal \

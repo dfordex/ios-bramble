@@ -36,7 +36,7 @@ int main(void){@autoreleasepool{
  /* Resource rejects are concurrent to prove the process budgets saturate. */
  dispatch_apply(128,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^(size_t i){(void)i;@autoreleasepool{
   MTLTextureDescriptor*t=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:80 width:64 height:64 mipmapped:NO];
-  t.storageMode=MTLStorageModeMemoryless;t.usage=MTLTextureUsageRenderTarget;
+  t.storageMode=MTLStorageModePrivate;t.sampleCount=4;t.usage=MTLTextureUsageRenderTarget;
   assert(![d newTextureWithDescriptor:t]);
   MTLSamplerDescriptor*s=[MTLSamplerDescriptor new];s.minFilter=MTLSamplerMinMagFilterLinear;
   assert(![d newSamplerStateWithDescriptor:s]);
@@ -70,7 +70,7 @@ int main(void){@autoreleasepool{
  NSMutableData*data=[NSMutableData dataWithLength:(NSUInteger)length];assert(fread(data.mutableBytes,1,data.length,f)==data.length);fclose(f);
  NSString*log=[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding];assert(log);
  assert(occurrences(log,@"Metal texture: rejected")==64&&occurrences(log,@"Metal sampler: rejected")==64);
- assert([log containsString:@"reason=storage-mode"]&&[log containsString:@"storage=3"]);
+ assert([log containsString:@"reason=sample-count"]&&[log containsString:@"samples=4"]);
  assert([log containsString:@"reason=min-filter min=1"]);
  assert([log containsString:@"no-copy-unsupported"]&&[log containsString:@"commandBufferWithUnretainedReferences-unsupported"]);
  assert(occurrences(log,@"first_error=")==5); /* two first errors plus three commit begin records */

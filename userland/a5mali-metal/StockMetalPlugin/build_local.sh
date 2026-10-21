@@ -77,7 +77,9 @@ if [ -n "$mesa_build" ]; then
         --mesa-build "$mesa_build" --family clear --target ios --output "$out_dir/runtime-clear.o"
     python3 "$src_dir/../a5xelte-air-translation/families/build_runtime_encoder.py" \
         --mesa-build "$mesa_build" --family path --target ios --output "$out_dir/runtime-path.o"
-    set -- "$@" "$out_dir/runtime-encoder.o" "$out_dir/runtime-misc.o" "$out_dir/runtime-clear.o" "$out_dir/runtime-path.o"
+    python3 "$src_dir/../a5xelte-air-translation/families/build_runtime_encoder.py" \
+        --mesa-build "$mesa_build" --family resource --target ios --output "$out_dir/runtime-resource.o"
+    set -- "$@" "$out_dir/runtime-encoder.o" "$out_dir/runtime-misc.o" "$out_dir/runtime-clear.o" "$out_dir/runtime-path.o" "$out_dir/runtime-resource.o"
     python3 - "$bundle/Info.plist" "$out_dir/preload-generated" <<'PYPRELOAD'
 import hashlib,json,plistlib,sys
 from pathlib import Path
@@ -91,13 +93,26 @@ data=plistlib.loads(p.read_bytes());data['A5MaliPreloadShaderSHA256']=r['include
 data['A5MaliPreloadShaderFormats']=[s['format'] for s in r['shaders']]
 p.write_bytes(plistlib.dumps(data,fmt=plistlib.FMT_XML,sort_keys=False))
 PYPRELOAD
+    python3 - "$bundle/Info.plist" "$out_dir/resource-ops-generated" <<'PYRESOURCE'
+import hashlib,json,plistlib,sys
+from pathlib import Path
+p,root=map(Path,sys.argv[1:]);r=json.loads((root/'resource-ops.json').read_text())
+if hashlib.sha256((root/'A5MaliResourceOpsData.inc').read_bytes()).hexdigest()!=r['include_sha256']:
+    raise SystemExit('generated resource shader receipt mismatch')
+for shader in r['shaders']:
+    if hashlib.sha256(Path(shader['path']).read_bytes()).hexdigest()!=shader['sha256']:
+        raise SystemExit('generated resource machine code changed')
+data=plistlib.loads(p.read_bytes());data['A5MaliResourceShaderSHA256']=r['include_sha256']
+data['A5MaliResourceShaderCount']=len(r['shaders'])
+p.write_bytes(plistlib.dumps(data,fmt=plistlib.FMT_XML,sort_keys=False))
+PYRESOURCE
 fi
 sdk=$(xcrun --sdk iphoneos --show-sdk-path)
 xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -mcpu=cortex-a53 -march=armv8-a+crypto \
     -isysroot "$sdk" -fobjc-arc -fblocks -Wall -Wextra -Werror \
     "$@" -bundle \
     "$src_dir/A5MaliBridge.c" "$src_dir/A5MaliNative.c" "$src_dir/A5MaliNativeUpload.c" "$src_dir/A5MaliCommandBuffer.m" \
-    "$src_dir/A5MaliRestrictedDevice.m" "$src_dir/A5MaliMetalAPI.m" \
+    "$src_dir/A5MaliRestrictedDevice.m" "$src_dir/A5MaliMetalAPI.m" "$src_dir/A5MaliMetalTexture.m" "$src_dir/A5MaliNativeTextureOps.m" \
     "$src_dir/A5MaliMetalLibrary.m" \
     "$src_dir/A5MaliMetalDeviceResources.m" \
     "$src_dir/A5MaliMetalUnsupportedSPI.m" \

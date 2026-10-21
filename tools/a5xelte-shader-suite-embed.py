@@ -153,8 +153,17 @@ def embed(manifests, output):
                 if out.get('mask'):
                     mask = Path(out['mask']).read_bytes()
                     authenticate(mask, out.get('mask_sha256'))
-                    if len(mask) != len(expected) or tolerance:
+                    if len(mask) != len(expected):
                         raise ValueError('mask length or tolerance differs')
+                    # Tolerant pixel comparisons may skip row padding, but
+                    # must not apply numeric tolerance to a partial bit mask.
+                    # The kernel already compares full masks numerically and
+                    # partial masks exactly; retain that existing contract.
+                    full_mask = (1 << (8 * width)) - 1
+                    if tolerance and any(int.from_bytes(mask[j:j+width], 'little')
+                                         not in (0, full_mask)
+                                         for j in range(0, len(mask), width)):
+                        raise ValueError('tolerance requires full-element or zero masks')
                     mask_symbol = prefix + f'_mask_{i}'
                     lines.append(array(mask_symbol, mask))
                 outputs.append('{'+f'{json.dumps(identifier(out["name"]))},{out["offset"]},{out["bytes"]},{width},{tolerance},{symbol},{mask_symbol}'+'}')

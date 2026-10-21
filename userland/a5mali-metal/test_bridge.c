@@ -274,6 +274,22 @@ int main(void)
     assert(A5MaliImportSurface(&client,123,A5MaliRead,&half)==kIOReturnBadArgument&&bounds.maps==maps);
     bounds.importHeight=2048;bounds.importRow=16400;
     assert(A5MaliImportSurface(&client,123,A5MaliRead,&half)==kIOReturnBadArgument&&bounds.maps==maps);
+    /* Physical texture backing can contain a full mip chain or a 4096-wide
+     * typed 1D level. The 32 MiB map limit is unchanged. */
+    const uint32_t typedFormats[]={0x52313655,0x4c303068,0x42354131,0x32433066};
+    for(unsigned i=0;i<sizeof(typedFormats)/sizeof(typedFormats[0]);++i){
+        bounds.importWidth=4096;bounds.importHeight=1;
+        bounds.importRow=i==3?32768:8192;bounds.importFormat=typedFormats[i];
+        bounds.mapBytes=bounds.importRow;
+        assert(A5MaliImportSurface(&client,123,A5MaliRead,&half)==KERN_SUCCESS);
+        assert(half.width==4096&&half.height==1&&half.rowBytes==bounds.importRow);
+        assert(A5MaliReleaseSurface(&client,&half)==KERN_SUCCESS);
+    }
+    bounds.importWidth=4097;bounds.importRow=32784;bounds.mapBytes=36864;
+    maps=bounds.maps;
+    assert(A5MaliImportSurface(&client,123,A5MaliRead,&half)==kIOReturnBadArgument&&bounds.maps==maps);
+    bounds.importWidth=4096;bounds.importRow=32768;bounds.importFormat=0xdeadbeef;
+    assert(A5MaliImportSurface(&client,123,A5MaliRead,&half)==kIOReturnBadArgument&&bounds.maps==maps);
     A5MaliClose(&client);
     return 0;
 }

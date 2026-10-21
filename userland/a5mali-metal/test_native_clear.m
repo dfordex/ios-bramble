@@ -3,6 +3,7 @@
  * emitter. The kernel transport, not the descriptor encoder, is mocked.
  */
 #import "A5MaliRestrictedDevice.h"
+#import "A5MaliMetalTexture.h"
 #import "A5MaliNative.h"
 #include <assert.h>
 #include <string.h>
@@ -18,6 +19,19 @@
 - (A5MaliSurface *)privateSurface{return [self.backing privateSurface];}
 - (NSUInteger)width{return self.backing.width;}
 - (NSUInteger)height{return self.backing.height;}
+- (MTLTextureType)textureType{return self.backing.textureType;}
+- (NSUInteger)mipmapLevelCount{return self.backing.mipmapLevelCount;}
+- (NSUInteger)arrayLength{return self.backing.arrayLength;}
+- (NSUInteger)sampleCount{return self.backing.sampleCount;}
+- (MTLStorageMode)storageMode{return self.backing.storageMode;}
+- (MTLResourceOptions)resourceOptions{return self.backing.resourceOptions;}
+- (A5MaliTexturePassBacking *)passBacking{return nil;}
+- (A5MaliSurface *)surfaceForLevel:(NSUInteger)level memorylessLease:(A5MaliTexturePassBacking *)lease
+{return [self.backing surfaceForLevel:level memorylessLease:lease];}
+- (BOOL)getLevelLayout:(A5MaliTextureLevelLayout *)layout level:(NSUInteger)level
+{return [self.backing getLevelLayout:layout level:level];}
+- (A5MaliMetalTexture *)newRenderViewForLevel:(NSUInteger)level memorylessLease:(A5MaliTexturePassBacking *)lease error:(NSError **)error
+{if(error)*error=nil;return level==0&&!lease?self:nil;}
 - (MTLPixelFormat)pixelFormat{return self.format;}
 - (MTLTextureUsage)usage{return MTLTextureUsageRenderTarget;}
 - (IOSurfaceRef)iosurface{return NULL;}

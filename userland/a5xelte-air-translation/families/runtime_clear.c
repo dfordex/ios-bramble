@@ -8,11 +8,12 @@
 #include <string.h>
 #include "genxml/v4_pack.h"
 enum { FB=0x300,POLY=0x1000,BODY=0x1200 };
-static unsigned pixel_bytes(unsigned format){return format==80||format==55?4:format==10?1:format==30?2:format==115?8:0;}
-static uint32_t unorm(double x){
- float v=(float)(x<0?0:x>1?1:x)*255.0f;uint32_t n=(uint32_t)v;float rem=v-(float)n;
+static unsigned pixel_bytes(unsigned format){return format==80||format==55?4:format==10?1:format==30||format==43||format==23||format==25?2:format==115||format==105?8:0;}
+static uint32_t unorm_bits(double x,unsigned bits){
+ float v=(float)(x<0?0:x>1?1:x)*(float)((1u<<bits)-1);uint32_t n=(uint32_t)v;float rem=v-(float)n;
  return n+(rem>.5f||(rem==.5f&&(n&1)));
 }
+static uint32_t unorm(double x){return unorm_bits(x,8);}
 static uint32_t float_bits(float f){uint32_t v;memcpy(&v,&f,4);return v;}
 static uint16_t half_bits(double x){_Float16 h=(_Float16)(float)x;uint16_t bits;memcpy(&bits,&h,2);return bits;}
 static int encode(const A5RuntimeClear*r,uint8_t*d){
@@ -21,13 +22,27 @@ static int encode(const A5RuntimeClear*r,uint8_t*d){
  if(!bytes)return A5RuntimeUnsupported;
  if(!r->descriptorGPUVA||(r->descriptorGPUVA&4095)||r->descriptorGPUVA>limit-A5RuntimeJobBytes||
     !i->gpuVA||(i->gpuVA&63)||!i->bytes||i->gpuVA>=limit||i->bytes>limit-i->gpuVA||
-    !i->width||i->width>2048||!i->height||i->height>2048||
+    !i->width||i->width>4096||!i->height||i->height>4096||
     i->rowBytes<i->width*bytes||(i->rowBytes&15)||(uint64_t)i->rowBytes*i->height>i->bytes||
     (i->gpuVA<r->descriptorGPUVA+A5RuntimeJobBytes&&r->descriptorGPUVA<i->gpuVA+i->bytes))return A5RuntimeBounds;
  for(unsigned c=0;c<4;++c)if(!isfinite(r->color[c]))return A5RuntimeUnsupported;
- uint32_t words[4];unsigned raw=i->metalPixelFormat==55||i->metalPixelFormat==115;
+ uint32_t words[4];unsigned raw=i->metalPixelFormat==55||i->metalPixelFormat==115||i->metalPixelFormat==23||i->metalPixelFormat==25||i->metalPixelFormat==105;
  if(i->metalPixelFormat==55){uint32_t w=float_bits((float)r->color[0]);for(unsigned c=0;c<4;++c)words[c]=w;}
- else if(i->metalPixelFormat==115){
+ else if(i->metalPixelFormat==23||i->metalPixelFormat==25){
+  /* For integer clears admit only unambiguous exact integral values, including
+   * default zero; do not silently invent fractional/overflow conversion. */
+  if(i->metalPixelFormat==23&&(r->color[0]<0||r->color[0]>65535||floor(r->color[0])!=r->color[0]))return A5RuntimeUnsupported;
+  uint32_t h=i->metalPixelFormat==25?half_bits(r->color[0]):(uint32_t)r->color[0];
+  for(unsigned c=0;c<4;++c)words[c]=h|(h<<16);
+ }else if(i->metalPixelFormat==105){
+  words[0]=float_bits((float)r->color[0]);words[1]=float_bits((float)r->color[1]);words[2]=words[0];words[3]=words[1];
+ }else if(i->metalPixelFormat==43){
+  /* pan_clear.c R5G5B5A1 internal layout: five integer+five fractional
+   * bits/channel, one integer+one fractional alpha bit, no dithering. */
+  uint32_t w=(unorm_bits(r->color[0],5)<<5)|(unorm_bits(r->color[1],5)<<15)|
+             (unorm_bits(r->color[2],5)<<25)|(unorm_bits(r->color[3],1)<<31);
+  for(unsigned c=0;c<4;++c)words[c]=w;
+ }else if(i->metalPixelFormat==115){
   words[0]=(uint32_t)half_bits(r->color[0])|((uint32_t)half_bits(r->color[1])<<16);
   words[1]=(uint32_t)half_bits(r->color[2])|((uint32_t)half_bits(r->color[3])<<16);
   words[2]=words[0];words[3]=words[1];
@@ -39,11 +54,13 @@ static int encode(const A5RuntimeClear*r,uint8_t*d){
  pan_section_pack(d+FB,FRAMEBUFFER,LOCAL_STORAGE,c){c.wls_instances=MALI_LOCAL_STORAGE_NO_WORKGROUP_MEM;}
  pan_section_pack(d+FB,FRAMEBUFFER,PARAMETERS,c){
   c.bound_max_x=i->width-1;c.bound_max_y=i->height-1;
-  c.internal_format=raw?MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW_VALUE:MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8;
+  c.internal_format=raw?MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW_VALUE:i->metalPixelFormat==43?MALI_COLOR_BUFFER_INTERNAL_FORMAT_R5G5B5A1:MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8;
   c.color_writeback_format=i->metalPixelFormat==55?MALI_COLOR_FORMAT_1_32B_CHANNEL:
-    i->metalPixelFormat==115?MALI_COLOR_FORMAT_2_32B_CHANNELS:
+    i->metalPixelFormat==23||i->metalPixelFormat==25?MALI_COLOR_FORMAT_1_16B_CHANNEL:
+    i->metalPixelFormat==43?MALI_COLOR_FORMAT_R5G5B5A1:
+    i->metalPixelFormat==115||i->metalPixelFormat==105?MALI_COLOR_FORMAT_2_32B_CHANNELS:
     i->metalPixelFormat==10?MALI_COLOR_FORMAT_R8:i->metalPixelFormat==30?MALI_COLOR_FORMAT_R8G8:MALI_COLOR_FORMAT_R8G8B8A8;
-  c.swizzle=i->metalPixelFormat==80?0x60a:0x688;c.color_block_format=MALI_BLOCK_FORMAT_LINEAR;
+  c.swizzle=i->metalPixelFormat==80||i->metalPixelFormat==43?0x60a:0x688;c.color_block_format=MALI_BLOCK_FORMAT_LINEAR;
   c.color_write_enable=true;c.clean_pixel_write_enable=true;c.color_preload_enable=false;
   c.tie_break_rule=MALI_TIE_BREAK_RULE_MINUS_180_IN_0_OUT;
   c.color_writeback.base=i->gpuVA;c.color_writeback.row_stride=i->rowBytes;

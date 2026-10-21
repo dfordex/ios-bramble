@@ -214,7 +214,7 @@ int main(void)
         texture.width=2049;
         assert(![device heapTextureSizeAndAlignWithDescriptor:texture].size);
         texture.width=63; texture.mipmapLevelCount=2;
-        assert(![device heapTextureSizeAndAlignWithDescriptor:texture].size);
+        assert([device heapTextureSizeAndAlignWithDescriptor:texture].size==20480);
         texture.mipmapLevelCount=1;
         texture.pixelFormat=MTLPixelFormatR8Unorm;
         assert([device heapTextureSizeAndAlignWithDescriptor:texture].size==4096);

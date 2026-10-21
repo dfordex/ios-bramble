@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #import "A5MaliMetalDeviceResources.h"
+#import "A5MaliMetalTexture.h"
 #import <objc/runtime.h>
 #include <string.h>
 #include <stdlib.h>
@@ -94,23 +95,10 @@ MTLSizeAndAlign A5MaliPrivateBufferSizeAndAlign(NSUInteger length,
 }
 MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 {
-    NSUInteger pixelBytes=0;
-    switch(d.pixelFormat){case MTLPixelFormatBGRA8Unorm:case MTLPixelFormatR32Float:pixelBytes=4;break;
-    case MTLPixelFormatRGBA16Float:pixelBytes=8;break;case MTLPixelFormatR8Unorm:pixelBytes=1;break;
-    case MTLPixelFormatRG8Unorm:pixelBytes=2;break;default:break;}
-    MTLTextureSwizzleChannels sw=d.swizzle;
-    if (!d || sw.red!=MTLTextureSwizzleRed || sw.green!=MTLTextureSwizzleGreen ||
-        sw.blue!=MTLTextureSwizzleBlue || sw.alpha!=MTLTextureSwizzleAlpha || d.textureType != MTLTextureType2D ||
-        !pixelBytes || !d.width || !d.height ||
-        d.width > 2048 || d.height > 2048 || d.depth != 1 ||
-        d.mipmapLevelCount != 1 || d.arrayLength != 1 || d.sampleCount != 1 ||
-        (d.storageMode != MTLStorageModeShared && d.storageMode != MTLStorageModePrivate) || !d.usage ||
-        (d.usage & ~(MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget)))
-        return (MTLSizeAndAlign){0, 0};
-    NSUInteger row = (d.width * pixelBytes + 15) & ~(NSUInteger)15;
-    NSUInteger bytes = row * d.height;
-    if (bytes > A5MaliSurfaceMaxBytes) return (MTLSizeAndAlign){0, 0};
-    return (MTLSizeAndAlign){(bytes + 4095) & ~(NSUInteger)4095, 4096};
+    A5MaliTextureAllocationLayout layout;
+    if(!A5MaliBuildTextureAllocationLayout(d,&layout,NULL)||d.storageMode==MTLStorageModeMemoryless)
+        return (MTLSizeAndAlign){0,0};
+    return (MTLSizeAndAlign){(layout.totalBytes+4095)&~(NSUInteger)4095,4096};
 }
 
 @interface A5MaliPrivateBuffer () {

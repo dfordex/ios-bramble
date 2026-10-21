@@ -4,6 +4,7 @@
  */
 #import "A5MaliRestrictedDevice.h"
 #import "A5MaliMetalDeviceResources.h"
+#import "A5MaliMetalTexture.h"
 #import <IOSurface/IOSurface.h>
 #include <assert.h>
 #include <string.h>
@@ -61,20 +62,43 @@ static void testFormat(MTLPixelFormat format,uint32_t code,unsigned pixelBytes)
   assert(rejected&&unchanged[0]==0x55);
   assert(![d newTextureWithDescriptor:desc iosurface:backing plane:0]); /* external Private rejected */
   desc.storageMode=MTLStorageModeShared;
-  A5MaliMetalTexture*shared=[d newTextureWithDescriptor:desc];assert(shared&&shared.iosurface&&shared.storageMode==MTLStorageModeShared);
+  A5MaliMetalTexture*shared=[d newTextureWithDescriptor:desc];assert(shared&&!shared.iosurface&&shared.storageMode==MTLStorageModeShared);
   assert(shared.pixelFormat==format&&shared.allocatedSize);
   assert(state.imports==2);
+  A5MaliMetalTexture *external=[d newTextureWithDescriptor:desc iosurface:shared.privateSurface.iosurface plane:0];
+  assert(external&&external.iosurface==shared.privateSurface.iosurface&&external.storageMode==MTLStorageModeShared);
   if(format==MTLPixelFormatBGRA8Unorm){
    desc.storageMode=MTLStorageModePrivate;A5MaliMetalTexture*second=[d newTextureWithDescriptor:desc];assert(second);
    A5MaliMetalBuffer*b=[[d newCommandQueue]commandBuffer];A5MaliMetalBlitEncoder*e=[b blitCommandEncoder];
    [e copyFromTexture:t toTexture:second];[e endEncoding];[b commit];[b waitUntilCompleted];
    assert(b.status==MTLCommandBufferStatusCompleted&&!b.error&&state.batches==1);
   }
-  unsigned imports=state.imports;desc.storageMode=MTLStorageModePrivate;desc.mipmapLevelCount=2;
-  assert(![d newTextureWithDescriptor:desc]);desc.mipmapLevelCount=1;desc.width=2049;
+  desc.storageMode=MTLStorageModePrivate;desc.mipmapLevelCount=2;
+  A5MaliMetalTexture *mipped=[d newTextureWithDescriptor:desc];assert(mipped&&mipped.mipmapLevelCount==2);
+  A5MaliTextureLevelLayout level0,level1;
+  assert([mipped getLevelLayout:&level0 level:0]&&[mipped getLevelLayout:&level1 level:1]);
+  assert(level1.width==31&&level1.height==15&&level1.byteOffset>=level0.byteLength);
+  A5MaliMetalTexture *view=[mipped newRenderViewForLevel:1 memorylessLease:nil error:NULL];
+  assert(view&&view.width==31&&view.height==15&&view.mipmapLevelCount==1&&view.privateSurface==mipped.privateSurface);
+  A5MaliTextureLevelLayout viewLayout;assert([view getLevelLayout:&viewLayout level:0]&&viewLayout.byteOffset==level1.byteOffset);
+  unsigned imports=state.imports;desc.mipmapLevelCount=1;desc.width=2049;
   assert(![d newTextureWithDescriptor:desc]);desc.width=63;desc.sampleCount=4;
   assert(![d newTextureWithDescriptor:desc]);desc.sampleCount=1;desc.storageMode=MTLStorageModeMemoryless;
-  assert(![d newTextureWithDescriptor:desc]);
+  A5MaliMetalTexture *memoryless=[d newTextureWithDescriptor:desc];
+  assert(memoryless&&memoryless.storageMode==MTLStorageModeMemoryless&&!memoryless.privateSurface&&!memoryless.iosurface&&!memoryless.allocatedSize);
+  assert(state.imports==imports&&![d heapTextureSizeAndAlignWithDescriptor:desc].size);
+  A5MaliTexturePassBacking *lease=[memoryless newMemorylessPassBackingForLevel:0 error:NULL];assert(lease&&lease.valid&&state.imports==imports+1);
+  A5MaliMetalTexture *passView=[memoryless newRenderViewForLevel:0 memorylessLease:lease error:NULL];
+  assert(passView&&passView.passBacking==lease&&passView.privateSurface==lease.surface);
+  assert(![memoryless surfaceForLevel:0 memorylessLease:nil]&&![shared surfaceForLevel:0 memorylessLease:lease]);
+  uint8_t untouched=0x6b;BOOL memorylessCPURejected=NO;
+  @try{[passView getBytes:&untouched bytesPerRow:pixelBytes fromRegion:MTLRegionMake2D(0,0,1,1)mipmapLevel:0];}
+  @catch(NSException*exception){memorylessCPURejected=[exception.name isEqualToString:NSInvalidArgumentException];}
+  assert(memorylessCPURejected&&untouched==0x6b);
+  [lease invalidateAfterCompletion];assert(!lease.valid&&!passView.privateSurface);
+  A5MaliTexturePassBacking *nextLease=[memoryless newMemorylessPassBackingForLevel:0 error:NULL];
+  assert(nextLease&&nextLease.valid&&nextLease!=lease&&!lease.valid);[nextLease invalidateAfterCompletion];
+  imports=state.imports;
   desc.storageMode=MTLStorageModePrivate;desc.swizzle=MTLTextureSwizzleChannelsMake(MTLTextureSwizzleBlue,MTLTextureSwizzleGreen,MTLTextureSwizzleRed,MTLTextureSwizzleAlpha);
   assert(![d newTextureWithDescriptor:desc]);assert(state.imports==imports);
  }
@@ -105,10 +129,70 @@ static void testLargeHalf(void)
  assert(state.imports==2&&state.releases==2);
 }
 
+static void testShared1DAndMipBytes(void)
+{
+ const MTLPixelFormat formats[]={23,25,43,55,105};
+ for(unsigned f=0;f<sizeof(formats)/sizeof(formats[0]);++f){State state={0};@autoreleasepool{
+  A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:wire context:&state];
+  MTLTextureDescriptor*desc=[MTLTextureDescriptor new];desc.textureType=MTLTextureType1D;
+  desc.pixelFormat=formats[f];desc.width=f==0?3072:4096;desc.height=1;desc.depth=1;
+  desc.storageMode=MTLStorageModeShared;desc.usage=MTLTextureUsageShaderRead;
+  desc.mipmapLevelCount=1;A5MaliMetalTexture*t=[d newTextureWithDescriptor:desc];assert(t&&t.textureType==MTLTextureType1D);
+  assert(t.width==desc.width&&t.height==1&&!t.iosurface&&t.privateSurface.iosurface);
+  unsigned pixel=(unsigned)A5MaliTexturePixelBytes(formats[f]);size_t size=t.width*pixel;
+  uint8_t*in=malloc(size),*out=malloc(size+32);assert(in&&out);
+  for(size_t i=0;i<size;++i)in[i]=(uint8_t)(i*37+f*23);memset(out,0x7b,size+32);
+  [t replaceRegion:MTLRegionMake1D(0,t.width)mipmapLevel:0 withBytes:in bytesPerRow:0];
+  [t getBytes:out bytesPerRow:0 fromRegion:MTLRegionMake1D(0,t.width)mipmapLevel:0];
+  assert(!memcmp(in,out,size));for(unsigned i=0;i<32;++i)assert(out[size+i]==0x7b);
+  /* Integer/half/packed values are copied bitwise, including uint0xffff and
+   * half NaN payloads; no accidental normalization or color conversion. */
+  if(pixel==2){uint16_t values[]={0xffff,0x7e01,0x8001,0x3c00,0xbc00};
+   [t replaceRegion:MTLRegionMake1D(7,5)mipmapLevel:0 withBytes:values bytesPerRow:0];
+   uint16_t got[5]={0};[t getBytes:got bytesPerRow:0 fromRegion:MTLRegionMake1D(7,5)mipmapLevel:0];assert(!memcmp(values,got,sizeof(values)));}
+  BOOL bad=NO;@try{[t replaceRegion:MTLRegionMake1D(t.width,1)mipmapLevel:0 withBytes:in bytesPerRow:0];}
+  @catch(NSException*e){bad=[e.name isEqualToString:NSInvalidArgumentException];}assert(bad);
+  desc.width=4097;assert(![d newTextureWithDescriptor:desc]);
+  free(in);free(out);
+ }assert(state.releases==state.imports);}
+ State state={0};@autoreleasepool{
+  A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:wire context:&state];
+  MTLTextureDescriptor*desc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:80 width:776 height:24 mipmapped:YES];
+  desc.storageMode=MTLStorageModeShared;desc.usage=MTLTextureUsageShaderRead|MTLTextureUsageRenderTarget;
+  A5MaliMetalTexture*t=[d newTextureWithDescriptor:desc];assert(t&&t.mipmapLevelCount==10&&state.imports==1);
+  IOSurfaceRef backing=t.privateSurface.iosurface;assert(!IOSurfaceLock(backing,0,NULL));
+  memset(IOSurfaceGetBaseAddress(backing),0x6d,IOSurfaceGetAllocSize(backing));assert(!IOSurfaceUnlock(backing,0,NULL));
+  uint32_t expectedWidth=776,expectedHeight=24,previousEnd=0;
+  for(unsigned level=0;level<10;++level){A5MaliTextureLevelLayout l;assert([t getLevelLayout:&l level:level]);
+   assert(l.width==expectedWidth&&l.height==expectedHeight&&!(l.byteOffset&63)&&!(l.rowBytes&15)&&l.byteOffset>=previousEnd);
+   size_t row=l.width*4+12,bytes=row*l.height;uint8_t*in=malloc(bytes),*out=malloc(bytes);assert(in&&out);
+   memset(in,0x20+level,bytes);memset(out,0x73,bytes);
+   [t replaceRegion:MTLRegionMake2D(0,0,l.width,l.height)mipmapLevel:level withBytes:in bytesPerRow:row];
+   [t getBytes:out bytesPerRow:row fromRegion:MTLRegionMake2D(0,0,l.width,l.height)mipmapLevel:level];
+   for(unsigned y=0;y<l.height;++y){assert(!memcmp(in+y*row,out+y*row,l.width*4));
+    for(unsigned x=l.width*4;x<row;++x)assert(out[y*row+x]==0x73);}
+   assert(!IOSurfaceLock(backing,kIOSurfaceLockReadOnly,NULL));const uint8_t*raw=IOSurfaceGetBaseAddress(backing);
+   for(unsigned at=previousEnd;at<l.byteOffset;++at)assert(raw[at]==0x6d);
+   for(unsigned y=0;y<l.height;++y)for(unsigned x=l.width*4;x<l.rowBytes;++x)assert(raw[l.byteOffset+y*l.rowBytes+x]==0x6d);
+   assert(!IOSurfaceUnlock(backing,kIOSurfaceLockReadOnly,NULL));
+   previousEnd=l.byteOffset+l.byteLength;expectedWidth=MAX(1,expectedWidth/2);expectedHeight=MAX(1,expectedHeight/2);
+   free(in);free(out);
+  }
+  A5MaliTextureLevelLayout invalid;assert(![t getLevelLayout:&invalid level:10]);
+  BOOL bad=NO;uint32_t data=1;@try{[t replaceRegion:MTLRegionMake2D(0,0,1,1)mipmapLevel:0 slice:1 withBytes:&data bytesPerRow:4 bytesPerImage:0];}
+  @catch(NSException*e){bad=[e.name isEqualToString:NSInvalidArgumentException];}assert(bad);
+  desc.width=1;desc.height=1;desc.mipmapLevelCount=2;assert(![d newTextureWithDescriptor:desc]);
+  desc.mipmapLevelCount=1;assert([d newTextureWithDescriptor:desc]);
+  desc.pixelFormat=115;desc.width=2048;desc.height=2048;desc.mipmapLevelCount=12;assert(![d newTextureWithDescriptor:desc]);
+ }assert(state.releases==state.imports);
+}
+
 int main(void)
 {
  testFormat(MTLPixelFormatBGRA8Unorm,0x42475241,4);testFormat(MTLPixelFormatR8Unorm,0x4c303038,1);
  testFormat(MTLPixelFormatRG8Unorm,0x32433038,2);testFormat(MTLPixelFormatR32Float,0x4c303066,4);
- testFormat(MTLPixelFormatRGBA16Float,0x52476841,8);testLargeHalf();
- puts("private textures: real five-format IOSurfaces incl fullHDhalf and32MiB boundary, private metadata, GPU blit, CPU rejection and cleanup passed");return 0;
+ testFormat(MTLPixelFormatRGBA16Float,0x52476841,8);
+ testFormat(MTLPixelFormatR16Uint,0x52313655,2);testFormat(MTLPixelFormatR16Float,0x4c303068,2);
+ testFormat(MTLPixelFormatBGR5A1Unorm,0x42354131,2);testFormat(MTLPixelFormatRG32Float,0x32433066,8);testLargeHalf();testShared1DAndMipBytes();
+ puts("private textures: nine real formats, fullHDhalf and32MiB bounds, real mip views, ephemeral memoryless leases, CPU denial and cleanup passed");return 0;
 }

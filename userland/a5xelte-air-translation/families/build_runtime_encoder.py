@@ -35,6 +35,11 @@ def compile_runtime(mesa_build, output, target='ios', source=None, includes=()):
     preload_dir=output.parent.resolve() / 'preload-generated'
     build_preload(mesa_build.resolve(),preload_dir)
     command.append('-I'+str(preload_dir))
+    if source.name == 'runtime_resource_ops.c':
+        from build_resource_ops import build as build_resource_ops
+        resource_dir=output.parent.resolve() / 'resource-ops-generated'
+        build_resource_ops(mesa_build.resolve(),resource_dir)
+        command.append('-I'+str(resource_dir))
     subprocess.run(command, cwd=mesa_build, check=True)
 
 
@@ -43,7 +48,7 @@ def main():
     parser.add_argument('--mesa-build', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--target', choices=('host', 'ios'), default='ios')
-    parser.add_argument('--family', choices=('blur', 'misc', 'clear', 'path'), default='blur')
+    parser.add_argument('--family', choices=('blur', 'misc', 'clear', 'path', 'resource'), default='blur')
     parser.add_argument('--test-registry-dir', type=Path,
                         help='host-only: run structural tests with actual private compiled profiles')
     parser.add_argument('--legacy-fixture-manifest', type=Path,
@@ -59,7 +64,7 @@ def main():
         parser.error('misc structural tests require --legacy-fixture-manifest')
     if args.test_registry_dir and args.target != 'host':
         parser.error('--test-registry-dir requires --target host')
-    source = Path(__file__).with_name({'blur':'runtime_encode.c','misc':'runtime_misc_encode.c','clear':'runtime_clear.c','path':'runtime_path_encode.c'}[args.family]).resolve()
+    source = Path(__file__).with_name({'blur':'runtime_encode.c','misc':'runtime_misc_encode.c','clear':'runtime_clear.c','path':'runtime_path_encode.c','resource':'runtime_resource_ops.c'}[args.family]).resolve()
     compile_runtime(args.mesa_build.resolve(), args.output, args.target, source)
     if args.test_clear_reference:
         build = args.mesa_build.resolve()

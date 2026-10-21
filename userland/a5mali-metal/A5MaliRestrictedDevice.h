@@ -60,13 +60,17 @@ NS_ASSUME_NONNULL_BEGIN
 /* A deliberately narrow public-selector slice. No Metal protocol is claimed. */
 @interface A5MaliRestrictedDevice (LimitedMetalSelectors)
 - (nullable A5MaliMetalQueue *)newCommandQueue;
+/* Validation alone never creates an executable pipeline. */
+- (nullable id)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+                                               error:(NSError * _Nullable * _Nullable)error;
+
+@end
+
+@interface A5MaliRestrictedDevice (TextureResources)
 - (nullable A5MaliMetalTexture *)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor;
 - (nullable A5MaliMetalTexture *)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
                                                    iosurface:(IOSurfaceRef)surface
                                                        plane:(NSUInteger)plane;
-/* Validation alone never creates an executable pipeline. */
-- (nullable id)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
-                                               error:(NSError * _Nullable * _Nullable)error;
 #ifdef A5_MALI_HOST_TEST
 - (A5MaliMetalTexture *)hostTestTextureWithResource:(A5MaliResource)resource;
 #endif
@@ -111,6 +115,7 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 @interface A5MaliMetalTexture : NSObject
 @property (nonatomic, readonly) NSUInteger width;
 @property (nonatomic, readonly) NSUInteger height;
+@property (nonatomic, readonly) NSUInteger depth;
 @property (nonatomic, readonly) MTLPixelFormat pixelFormat;
 @property (nonatomic, readonly) MTLTextureType textureType;
 @property (nonatomic, readonly) MTLTextureSwizzleChannels swizzle;
