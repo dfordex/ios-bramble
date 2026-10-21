@@ -1,0 +1,317 @@
+--- a/iokit/Kernel/arm/A5XELTEGPUAS1.h
++++ b/iokit/Kernel/arm/A5XELTEGPUAS1.h
+@@ -17,6 +17,7 @@
+     kAS1ClearBGRA = 1,
+     kAS1CopyBGRA = 2,
+     kAS1DrawTexturedQuadBGRA = 3, /* nearest sampled, scaled rectangle */
++    kAS1ReadSurfBGRA = 4, /* fixed full-surface QuartzCore read_surf */
+ };
+ enum A5G3DAS1SubmitStatus {
+     kAS1SubmitCompleted,
+@@ -44,11 +45,13 @@
+     uint32_t mmuIRQ;
+     uint32_t gpuIRQ;
+     uint32_t headerStatus;
++    uint32_t linkedHeaderStatus;
+ };
+-/* Typed clear/copy only. The kernel owns descriptors, shader, GPU VAs,
++/* Typed bounded BGRA operations only. The kernel owns descriptors, shader, GPU VAs,
+  * resource mappings and all job/fence lifetime decisions. */
+ A5G3DAS1SubmitStatus a5g3d_as1_submit(A5G3DAS1Context *,
+     const A5G3DAS1Request &, A5G3DAS1Completion *);
++bool a5g3d_as1_read_surf_available();
+ /* On an ambiguous MMU update, keep the context and all surfaces pinned. */
+ void a5g3d_as1_destroy(A5G3DAS1Context *);
+ #endif
+--- a/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
+@@ -11,6 +11,18 @@
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/IOBufferMemoryDescriptor.h>
++
++/* Generated only on the local build host from the user's staged IPSW.
++ * The source repository never contains the translated shader or descriptor.
++ * Without this include, read_surf is neither advertised nor executable. */
++#if __has_include("A5XELTEReadSurfFixture.inc")
++#include "A5XELTEReadSurfFixture.inc"
++#define A5XELTE_READ_SURF_AVAILABLE 1
++static_assert(sizeof(kAS1ReadSurfFixture) == 0x2000,
++    "read_surf descriptor size changed");
++#else
++#define A5XELTE_READ_SURF_AVAILABLE 0
++#endif
+
+ enum {
+     kAS1Page = 4096,
+@@ -39,6 +51,11 @@
+     bool installed;
+     bool poisoned;
+ };
++
++bool a5g3d_as1_read_surf_available()
++{
++    return A5XELTE_READ_SURF_AVAILABLE != 0;
++}
+
+ /* AS1 is a single hardware slot; only one client can hold it. Keep a poisoned
+  * context as the owner until reboot, including all pages the GPU may access.
+@@ -370,8 +387,12 @@
+ static A5G3DAS1SubmitStatus
+ a5g3d_as1_run_job(A5G3DAS1Context *ctx, vm_offset_t gpu,
+     uint32_t slot, uint32_t jobOffset, A5G3DAS1Completion *completion,
+-    uint64_t *fence, bool *started)
+-{
++    uint64_t *fence, bool *started, uint32_t linkedJobOffset)
++{
++    if (linkedJobOffset &&
++        (linkedJobOffset >= kAS1JobBytes - 16 ||
++         (linkedJobOffset & 15u) || linkedJobOffset == jobOffset))
++        return kAS1SubmitInvalid;
+     const uint32_t slotBase = 0x1800 + slot * 0x80;
+     const uint32_t slotMask = (1u << slot) | (1u << (slot + 16));
+     const uint32_t shader = a5g3d_as1_read(gpu, 0x140);
+@@ -432,18 +453,28 @@
+     if (ctx->jobs->performOperation(kIOMemoryIncoherentIOFlush,
+         jobOffset, 16) != kIOReturnSuccess)
+         return kAS1SubmitIOError;
++    if (linkedJobOffset &&
++        ctx->jobs->performOperation(kIOMemoryIncoherentIOFlush,
++            linkedJobOffset, 16) != kIOReturnSuccess)
++        return kAS1SubmitIOError;
+     __sync_synchronize();
+     const uint32_t header = *reinterpret_cast<const uint32_t *>(
+         static_cast<const uint8_t *>(ctx->jobs->getBytesNoCopy()) + jobOffset);
+     if (completion)
+         completion->headerStatus = header;
++    const uint32_t linkedHeader = linkedJobOffset ?
++        *reinterpret_cast<const uint32_t *>(
++            static_cast<const uint8_t *>(ctx->jobs->getBytesNoCopy()) +
++            linkedJobOffset) : 1u;
++    if (completion)
++        completion->linkedHeaderStatus = linkedHeader;
+     if (jobIRQ)
+         a5g3d_as1_write(gpu, 0x1004, jobIRQ);
+     if (mmuIRQ)
+         a5g3d_as1_write(gpu, 0x2004, mmuIRQ);
+     if (!(jobIRQ & (1u << slot)) ||
+         (jobIRQ & (1u << (slot + 16))) || mmuIRQ || (gpuIRQ & 0x81u) ||
+-        (header & 0xffu) != 1u ||
++        (header & 0xffu) != 1u || (linkedHeader & 0xffu) != 1u ||
+         (a5g3d_as1_read(gpu, 0x1010) & slotMask))
+         return kAS1SubmitFault;
+     *started = false;
+@@ -457,7 +488,8 @@
+     if (completion)
+         bzero(completion, sizeof(*completion));
+     const bool samples = request.operation == kAS1CopyBGRA ||
+-        request.operation == kAS1DrawTexturedQuadBGRA;
++        request.operation == kAS1DrawTexturedQuadBGRA ||
++        request.operation == kAS1ReadSurfBGRA;
+     if (!ctx || request.destinationSlot >= kAS1Slots ||
+         (request.operation != kAS1ClearBGRA && !samples) ||
+         (samples &&
+@@ -467,6 +499,9 @@
+          (request.source.width != request.destination.width ||
+           request.source.height != request.destination.height)))
+         return kAS1SubmitInvalid;
++    if (request.operation == kAS1ReadSurfBGRA &&
++        !a5g3d_as1_read_surf_available())
++        return kAS1SubmitInvalid;
+     IOLock *lock = a5g3d_as1_lock();
+     IOLockLock(lock);
+     if (gAS1Owner != ctx || ctx->poisoned || !ctx->installed ||
+@@ -483,6 +518,32 @@
+         encoded = a5_midgard_encode_clear(ctx->jobs->getBytesNoCopy(),
+             kAS1JobBytes, kAS1JobVA, &destination, &destinationRect,
+             request.clearColor);
++    } else if (request.operation == kAS1ReadSurfBGRA) {
++#if A5XELTE_READ_SURF_AVAILABLE
++        const a5_midgard_image source = a5g3d_as1_image(ctx,
++            request.sourceSlot);
++        if (source.width != 1080 || source.height != 1920 ||
++            source.row_bytes != 4320 || destination.width != 1080 ||
++            destination.height != 1920 || destination.row_bytes != 4320 ||
++            request.source.x || request.source.y ||
++            request.source.width != 1080 || request.source.height != 1920 ||
++            request.destination.x || request.destination.y ||
++            request.destination.width != 1080 ||
++            request.destination.height != 1920 || request.clearColor) {
++            IOLockUnlock(lock);
++            return kAS1SubmitInvalid;
++        }
++        uint8_t *job = static_cast<uint8_t *>(ctx->jobs->getBytesNoCopy());
++        memcpy(job, kAS1ReadSurfFixture, kAS1JobBytes);
++        /* Only kernel-selected AS1 slot VAs are relocated. The host fixture
++         * generator validates these exact three 64-bit pointer offsets. */
++        memcpy(job + 0x620, &source.gpu_va, sizeof(source.gpu_va));
++        memcpy(job + 0x350, &destination.gpu_va,
++            sizeof(destination.gpu_va));
++        memcpy(job + 0x380, &destination.gpu_va,
++            sizeof(destination.gpu_va));
++        encoded = A5_MIDGARD_OK;
++#endif
+     } else {
+         a5_midgard_image source = a5g3d_as1_image(ctx, request.sourceSlot);
+         a5_midgard_rect sourceRect = a5g3d_as1_rect(request.source);
+@@ -518,7 +579,9 @@
+     if (samples) {
+         uint64_t tilerFence = 0;
+         status = a5g3d_as1_run_job(ctx, gpu, 1,
+-            A5_MIDGARD_TILER_OFFSET, completion, &tilerFence, &started);
++            request.operation == kAS1ReadSurfBGRA ? 0 :
++            A5_MIDGARD_TILER_OFFSET, completion, &tilerFence, &started,
++            request.operation == kAS1ReadSurfBGRA ? 0x100 : 0);
+         if (completion)
+             completion->tilerFence = tilerFence;
+         if (status == kAS1SubmitCompleted &&
+@@ -529,8 +592,9 @@
+     if (status == kAS1SubmitCompleted) {
+         uint64_t fragmentFence = 0;
+         status = a5g3d_as1_run_job(ctx, gpu, 0,
++            request.operation == kAS1ReadSurfBGRA ? 0x200 :
+             A5_MIDGARD_FRAGMENT_OFFSET, completion, &fragmentFence,
+-            &started);
++            &started, 0);
+         if (completion)
+             completion->fragmentFence = fragmentFence;
+     }
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.h
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.h
+@@ -29,6 +29,7 @@
+     kA5GPUClientClearBGRA = 1,
+     kA5GPUClientCopyBGRA = 2,
+     kA5GPUClientDrawTexturedQuadBGRA = 3,
++    kA5GPUClientReadSurfBGRA = 4,
+     kA5GPUClientTilePixels = 16 * 16,
+ };
+
+@@ -54,7 +55,7 @@
+     A5GPUClientHeader header;
+     uint32_t maxResources;
+     uint32_t supportedOperations; /* bits 0..6: Query-excluded selectors 1..7 */
+-    uint32_t gpuCommandsSupported; /* bits: sample, clear, copy, textured quad */
++    uint32_t gpuCommandsSupported; /* bits: sample, clear, copy, quad, read_surf */
+     uint32_t reserved;
+ };
+
+@@ -119,7 +120,7 @@
+ /* Opaque mapping tokens bind both resources to the opening user client. */
+ struct A5GPUClientSubmitRequest {
+     A5GPUClientHeader header;
+-    uint32_t operation; /* ClearBGRA, CopyBGRA or DrawTexturedQuadBGRA */
++    uint32_t operation; /* typed BGRA operation 1..4; op4 is build-gated */
+     uint32_t clearColor;
+     uint64_t sourceToken; /* zero for clear */
+     uint64_t destinationToken;
+@@ -139,7 +140,7 @@
+  * command starts. On first failure, later items are NotRun; no rollback of
+  * completed earlier commands is implied. No user-supplied job or GPU VA. */
+ struct A5GPUClientBatchCommand {
+-    uint32_t operation; /* ClearBGRA, CopyBGRA, DrawTexturedQuadBGRA */
++    uint32_t operation; /* typed BGRA operation 1..4; op4 is build-gated */
+     uint32_t clearColor;
+     uint64_t sourceToken;
+     uint64_t destinationToken;
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
+@@ -201,7 +201,8 @@
+     result.header.size = sizeof(result);
+     result.maxResources = kA5GPUClientMaxResources;
+     result.supportedOperations = 127; /* selectors 1..7, including batch */
+-    result.gpuCommandsSupported = 15; /* sample, BGRA clear/copy/quad */
++    result.gpuCommandsSupported = 15 |
++        (a5g3d_as1_read_surf_available() ? 16 : 0);
+     memcpy(args->structureOutput, &result, sizeof(result));
+     args->structureOutputSize = sizeof(result);
+     return kIOReturnSuccess;
+@@ -445,7 +446,8 @@
+     const uint32_t dst = static_cast<uint32_t>(request.destinationToken);
+     const uint32_t src = static_cast<uint32_t>(request.sourceToken);
+     const bool samples = request.operation == kA5GPUClientCopyBGRA ||
+-        request.operation == kA5GPUClientDrawTexturedQuadBGRA;
++        request.operation == kA5GPUClientDrawTexturedQuadBGRA ||
++        request.operation == kA5GPUClientReadSurfBGRA;
+     const ResourceSlot &target = fSlots[dst - 1];
+     const bool sourceReady = !samples ||
+         a5gpu_mapped_token_matches(request.sourceToken, src,
+@@ -460,7 +462,8 @@
+     work.operation = request.operation == kA5GPUClientCopyBGRA ?
+         kAS1CopyBGRA : request.operation ==
+         kA5GPUClientDrawTexturedQuadBGRA ?
+-        kAS1DrawTexturedQuadBGRA : kAS1ClearBGRA;
++        kAS1DrawTexturedQuadBGRA : request.operation ==
++        kA5GPUClientReadSurfBGRA ? kAS1ReadSurfBGRA : kAS1ClearBGRA;
+     work.sourceSlot = src ? src - 1 : 0;
+     work.destinationSlot = dst - 1;
+     work.source = {request.sourceRect.x, request.sourceRect.y,
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClientBatch.h
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClientBatch.h
+@@ -16,7 +16,8 @@
+     const uint32_t dst = static_cast<uint32_t>(request.destinationToken);
+     const uint32_t src = static_cast<uint32_t>(request.sourceToken);
+     const bool samples = request.operation == kA5GPUClientCopyBGRA ||
+-        request.operation == kA5GPUClientDrawTexturedQuadBGRA;
++        request.operation == kA5GPUClientDrawTexturedQuadBGRA ||
++        request.operation == kA5GPUClientReadSurfBGRA;
+     return dst && dst <= 4 && (request.destinationToken >> 32) &&
+         (request.operation == kA5GPUClientClearBGRA || samples) &&
+         (request.operation != kA5GPUClientClearBGRA ||
+--- /dev/null
++++ b/iokit/Kernel/arm/gen_local_read_surf_fixture.py
+@@ -0,0 +1,51 @@
++#!/usr/bin/env python3
++"""Generate an ignored XNU include from the user's local read_surf fixture.
++
++The fixture is built from the user's staged IPSW by the host-only Mesa tool.
++No translated shader or descriptor bytes are distributed in the source patch.
++"""
++import hashlib
++import pathlib
++import struct
++import sys
++
++EXPECTED_SHA256 = "26885bced5b3d15fa00e38b8c41e8a0eb458d42852021873f7d420af48dd8e9a"
++EXPECTED_SIZE = 0x2000
++BASE = 0x12000000
++
++
++def u64(data: bytes, offset: int) -> int:
++    return struct.unpack_from("<Q", data, offset)[0]
++
++
++def main() -> int:
++    if len(sys.argv) != 3:
++        print("usage: gen_local_read_surf_fixture.py validated-template.bin XNU-include.inc", file=sys.stderr)
++        return 2
++    source = pathlib.Path(sys.argv[1])
++    target = pathlib.Path(sys.argv[2])
++    data = source.read_bytes()
++    if len(data) != EXPECTED_SIZE or hashlib.sha256(data).hexdigest() != EXPECTED_SHA256:
++        print("read_surf template size or SHA256 mismatch", file=sys.stderr)
++        return 1
++    pointers = {
++        0x350: 0x10800000, 0x380: 0x10800000, 0x620: 0x10000000,
++        0x660: BASE + 0x600,
++    }
++    for offset, expected in pointers.items():
++        if u64(data, offset) != expected:
++            print(f"read_surf pointer mismatch at 0x{offset:x}", file=sys.stderr)
++            return 1
++    words = struct.unpack("<2048I", data)
++    lines = ["/* Generated locally from validated private fixture; never commit. */",
++             "static const uint32_t kAS1ReadSurfFixture[2048] = {"]
++    for i in range(0, len(words), 8):
++        lines.append("    " + ", ".join(f"0x{w:08x}u" for w in words[i:i + 8]) + ",")
++    lines.append("};")
++    target.write_text("\n".join(lines) + "\n")
++    print(f"wrote {target} from SHA256 {EXPECTED_SHA256}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1 @@
++/iokit/Kernel/arm/A5XELTEReadSurfFixture.inc
