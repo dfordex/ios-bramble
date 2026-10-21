@@ -108,3 +108,15 @@ The native compiler now records read_surf cache hits, genuine downsample_4
 compilation and cache verification, GREEN LINE and DONE. Backboardd accepts14
 pipelines with no recorded crash, but native iOS draw completion and rendered
 frame presentation remain unproven. Full review:a5xelte-0178-log-review.md.
+
+
+## 0179 — recovered 2026-10-22
+
+SYSTEMflush36,103333rawbytes/1301lines: all7newGPUcases nowpass andevaluate,
+withimmutablechecksintact. CorrectedblurinputRGBA->BGRA yields4096/4096
+bytecomponentswithin1; expectedpixels, shaderbytes andproductionemitterare
+unchanged. Theother6casesretain0178passingresults. All20loggedfencesfinish
+header1/MMU0, includingonefullpanelsurface2GPUtransfer8294400bytes. This
+transferdoesnotproveiOSnativeUIrendering. Stocklogsnowexposetexture/encoder
+rejectionsbeforecommit: mipchains,Memoryless,BGR5A1formatand1Dtextures.
+Fullanalysis:docs/a5xelte-0179-log-review.md.
