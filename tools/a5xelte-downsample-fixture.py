@@ -10,7 +10,7 @@ from pathlib import Path
 import struct
 
 
-EXPECTED_SHA256 = 'd1f7579ee7ec5bbeca861801bfadaae328692e2d0fc2db3ad0b08f3b9712db41'
+EXPECTED_SHA256 = '568670c008f93bf67b7fb223cdee9c003bf8de28580537eddf15cb510798c280'
 EXPECTED_SIZE = 0x4000
 BASE = 0x02000000
 
@@ -19,7 +19,8 @@ def validate(data):
     if len(data) != EXPECTED_SIZE or hashlib.sha256(data).hexdigest() != EXPECTED_SHA256:
         raise ValueError('downsample4 descriptor size or SHA256 mismatch')
     for offset, expected in {
-        0x18: BASE + 0x100, 0x350: BASE + 0x8000,
+        0x18: BASE + 0x100, 0xb0: BASE + 0x300,
+        0x1b0: BASE + 0x300, 0x350: BASE + 0x8000,
         0x380: BASE + 0x8000, 0x620: BASE + 0x4000,
         0x660: BASE + 0x600, 0x3d8: BASE + 0x9000,
         0x3e0: BASE + 0xa000,

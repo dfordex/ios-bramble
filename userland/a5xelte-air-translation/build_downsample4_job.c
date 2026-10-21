@@ -345,6 +345,9 @@ static void jobs(uint8_t *d, uint64_t va, uint64_t pos,
       cfg.uniform_buffers = va + VS_UBO_DESC;
       cfg.varyings = va + VS_VARYINGS;
       cfg.varying_buffers = va + VS_VARY_BUFS;
+      /* Midgard local-storage descriptors reside in the framebuffer even
+       * when this shader requires zero TLS/WLS bytes. */
+      cfg.thread_storage = va + FB;
    }
    pan_pack((struct mali_job_header_packed *)(d + TILER_JOB), JOB_HEADER, cfg) {
       cfg.type = MALI_JOB_TYPE_TILER;
@@ -450,6 +453,8 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
       tj.type == MALI_JOB_TYPE_TILER && tj.dependency_1 == 1 &&
       fj.type == MALI_JOB_TYPE_FRAGMENT && vd.attributes == va + VS_ATTRS &&
       vd.attribute_buffers == va + VS_ATTR_BUFS && vd.uniform_buffers == va + VS_UBO_DESC &&
+      vd.thread_storage == va + FB && vd.fbd == va + FB &&
+      td.thread_storage == va + FB && td.fbd == va + FB &&
       td.uniform_buffers == va + FS_UBO_DESC && td.position == va + POS_BUF &&
       vs.shader.shader == va + VS_SHADER + 5 && vs.shader.attribute_count == 4 &&
       vs.shader.varying_count == 3 && vs.properties.work_register_count == 8 &&
