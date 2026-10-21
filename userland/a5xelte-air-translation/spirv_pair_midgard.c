@@ -92,26 +92,90 @@ static bool lower_single_texture(nir_builder *b, nir_instr *instr, void *data)
    }
    int idx = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
    if (idx < 0) return false;
-   /* This local fixture has exactly one Texture(0) descriptor. */
+   /* Both authenticated profiles have one texture. read_surf's Metal slot0
+    * and downsample_4's Metal slot3 map to the private texture descriptor0. */
    nir_tex_instr_remove_src(tex, idx);
    tex->texture_index = 0;
+   idx = nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref);
+   if (idx >= 0) {
+      nir_tex_instr_remove_src(tex, idx);
+      tex->sampler_index = 0;
+   }
+   return true;
+}
+
+struct buffer_lowering {
+   mesa_shader_stage stage;
+   bool invalid;
+};
+
+/* The authenticated downsample modules use four scalar UBO bindings only.
+ * UBO0 remains the push/resource metadata block. Binding N maps to UBO N+1:
+ * vertex Metal buffers2/3 -> UBO1/2; fragment buffers1/6 -> UBO3/4.
+ * This is a host binding contract, not a claim that the device binds them. */
+static bool lower_downsample_buffers(nir_builder *b,
+                                    nir_intrinsic_instr *intr, void *data)
+{
+   struct buffer_lowering *ctx = data;
+   bool index = intr->intrinsic == nir_intrinsic_vulkan_resource_index;
+   bool descriptor = intr->intrinsic == nir_intrinsic_load_vulkan_descriptor;
+   if (!index && !descriptor) return false;
+   if (nir_intrinsic_desc_type(intr) != nir_descriptor_type_uniform_buffer ||
+       intr->def.num_components != 2 || intr->def.bit_size != 32) {
+      ctx->invalid = true;
+      return false;
+   }
+   b->cursor = nir_before_instr(&intr->instr);
+   if (descriptor) {
+      nir_def_rewrite_uses(&intr->def, intr->src[0].ssa);
+      return true;
+   }
+   unsigned binding = nir_intrinsic_binding(intr);
+   unsigned first = ctx->stage == MESA_SHADER_VERTEX ? 0 : 2;
+   if (nir_intrinsic_desc_set(intr) || binding < first || binding > first + 1 ||
+       !nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0])) {
+      ctx->invalid = true;
+      return false;
+   }
+   nir_def_rewrite_uses(&intr->def, nir_vec2(b,
+      nir_imm_int(b, binding + 1), nir_imm_int(b, 0)));
    return true;
 }
 
 static bool lower_push_to_ubo(nir_builder *b,
                               nir_intrinsic_instr *intr, void *data)
 {
-   (void)data;
+   const bool downsample = data != NULL;
    if (intr->intrinsic != nir_intrinsic_load_push_constant)
       return false;
    b->cursor = nir_before_instr(&intr->instr);
-   /* Host binding contract: UBO slot 0 contains the 68-byte push block.
-    * The translated ColorWriteRule is at byte offset 64. */
+   /* Stage-local UBO0 holds push data. read_surf uses 68 bytes and its color
+    * rule is at64; downsample uses 76 bytes and its color rule is at72. */
    nir_def *val = nir_load_ubo(b, intr->def.num_components,
                                intr->def.bit_size, nir_imm_int(b, 0),
-                               intr->src[0].ssa, .range = 68,
+                               intr->src[0].ssa, .range = downsample ? 76 : 68,
                                .align_mul = 4);
    nir_def_rewrite_uses(&intr->def, val);
+   return true;
+}
+
+static bool lower_downsample_sampler_lod(nir_builder *b,
+                                        nir_intrinsic_instr *intr, void *data)
+{
+   bool *invalid = data;
+   if (intr->intrinsic != nir_intrinsic_load_sampler_lod_parameters)
+      return false;
+   if (intr->def.num_components != 3 || intr->def.bit_size != 32 ||
+       !nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0])) {
+      *invalid = true;
+      return false;
+   }
+   b->cursor = nir_before_instr(&intr->instr);
+   /* Mesa's contract is <min_lod,max_lod,lod_bias>. Keep actual sampler
+    * values dynamic in UBO0 bytes16..27, separate from dimensions/push data. */
+   nir_def *value = nir_load_ubo(b, 3, 32, nir_imm_int(b, 0),
+      nir_imm_int(b, 16), .range = 28, .align_mul = 4);
+   nir_def_rewrite_uses(&intr->def, value);
    return true;
 }
 
@@ -145,7 +209,7 @@ static bool lower_half_quantize(nir_builder *b, nir_alu_instr *alu, void *data)
 }
 
 static int compile_spirv(const char *input, const char *output,
-                         mesa_shader_stage stage)
+                         mesa_shader_stage stage, bool downsample)
 {
    size_t count = 0;
    uint32_t *words = read_spirv(input, &count);
@@ -154,12 +218,14 @@ static int compile_spirv(const char *input, const char *output,
       free(words);
       return 1;
    }
-   const uint64_t expected = stage == MESA_SHADER_VERTEX
+   const uint64_t expected = downsample ? (stage == MESA_SHADER_VERTEX
+      ? UINT64_C(0x1ffea655a177cfc5)
+      : UINT64_C(0x4f15f8dc8f8c3ad7)) : (stage == MESA_SHADER_VERTEX
       ? UINT64_C(0xd515e04707a0c008)
-      : UINT64_C(0xe391471dbd037a34);
+      : UINT64_C(0xe391471dbd037a34));
    if (fnv1a64(words, count * 4) != expected) {
       fprintf(stderr, "unsupported SPIR-V module: this local lowering is "
-                      "only for the translated QuartzCore read_surf pair\n");
+                      "requires the exact selected QuartzCore pair\n");
       free(words);
       return 2;
    }
@@ -174,7 +240,24 @@ static int compile_spirv(const char *input, const char *output,
       .min_ubo_alignment = 16,
       .min_ssbo_alignment = 16,
    };
-   nir_shader *nir = spirv_to_nir(words, count, NULL, stage, "main",
+   /* Nonzero actual buffer windows prevent compiling an all-zero/empty
+    * resource specialization. Sampler0 is explicitly normalized nearest.
+    * Other sampler states/ranges require a distinct checked profile. */
+   uint32_t values[5] = {0, 64, 16, 72, 2};
+   struct nir_spirv_specialization_entry entries[5] = {0};
+   for (unsigned i = 0; i < 5; ++i) {
+      entries[i].id = i;
+      entries[i].size = 4;
+      entries[i].data = (uint8_t *)&values[i];
+   }
+   struct nir_spirv_specialization_entry fragment_entries[3] = {
+      entries[0], entries[3], entries[4]
+   };
+   struct nir_spirv_specialization spec = {
+      .num_entries = stage == MESA_SHADER_VERTEX ? 2 : 3,
+      .entries = stage == MESA_SHADER_VERTEX ? entries + 1 : fragment_entries
+   };
+   nir_shader *nir = spirv_to_nir(words, count, downsample ? &spec : NULL, stage, "main",
                                   &spirv_opts, nir_opts);
    free(words);
    if (!nir) {
@@ -190,6 +273,18 @@ static int compile_spirv(const char *input, const char *output,
       NIR_PASS(_, nir, nir_lower_wpos_center);
    NIR_PASS(_, nir, nir_shader_instructions_pass, lower_single_texture,
             nir_metadata_control_flow, NULL);
+   if (downsample) {
+      struct buffer_lowering ctx = {.stage = stage};
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_downsample_buffers,
+               nir_metadata_control_flow, &ctx);
+      if (ctx.invalid) {
+         fprintf(stderr, "unsupported downsample descriptor binding\n");
+         ralloc_free(nir);
+         return 2;
+      }
+      NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
+               nir_address_format_32bit_index_offset);
+   }
    NIR_PASS(_, nir, nir_opt_dce);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
             nir_address_format_32bit_offset);
@@ -225,12 +320,23 @@ static int compile_spirv(const char *input, const char *output,
                nir_metadata_control_flow, NULL);
    pan_postprocess_nir(nir, &inputs, &info);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_push_to_ubo,
-            nir_metadata_control_flow, NULL);
+            nir_metadata_control_flow, downsample ? &downsample : NULL);
    if (stage == MESA_SHADER_FRAGMENT)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_fragment_position,
                nir_metadata_control_flow, NULL);
    NIR_PASS(_, nir, nir_shader_alu_pass, lower_half_quantize,
             nir_metadata_control_flow, NULL);
+   if (downsample && stage == MESA_SHADER_FRAGMENT) {
+      bool invalid = false;
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_downsample_sampler_lod,
+               nir_metadata_control_flow, &invalid);
+      if (invalid) {
+         fprintf(stderr, "unsupported downsample sampler LOD binding\n");
+         ralloc_free(nir);
+         return 2;
+      }
+   }
+   NIR_PASS(_, nir, nir_opt_dce);
    fprintf(stderr, "%s: NIR after Panfrost lowering\n", input);
    nir_print_shader(nir, stdout);
    if (stage == MESA_SHADER_VERTEX)
@@ -258,13 +364,13 @@ static int compile_spirv(const char *input, const char *output,
 
 int main(int argc, char **argv)
 {
-   if (argc != 5) {
-      fprintf(stderr, "usage: %s vert.spv frag.spv vert.bin frag.bin\n", argv[0]);
+   if (argc != 5 && (argc != 6 || strcmp(argv[5], "downsample_4"))) {
+      fprintf(stderr, "usage: %s vert.spv frag.spv vert.bin frag.bin [downsample_4]\n", argv[0]);
       return 2;
    }
    glsl_type_singleton_init_or_ref();
-   int rc = compile_spirv(argv[1], argv[3], MESA_SHADER_VERTEX);
-   if (!rc) rc = compile_spirv(argv[2], argv[4], MESA_SHADER_FRAGMENT);
+   int rc = compile_spirv(argv[1], argv[3], MESA_SHADER_VERTEX, argc == 6);
+   if (!rc) rc = compile_spirv(argv[2], argv[4], MESA_SHADER_FRAGMENT, argc == 6);
    glsl_type_singleton_decref();
    return rc;
 }

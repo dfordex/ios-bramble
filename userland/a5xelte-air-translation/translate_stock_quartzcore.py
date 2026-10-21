@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Translate two bounded stock QuartzCore render pairs outside Git.
+"""Translate bounded stock QuartzCore render pairs outside Git.
 
-The tool does not package shaders or claim a Mali executable for the second
-pair. Its JSON checks reject a silent change of resource ABI.
+The tool does not package shaders or claim Mali executables for the additional
+pairs. Its JSON checks reject a silent change of resource ABI.
 """
 import argparse
 import hashlib
@@ -10,6 +10,22 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+
+
+DOWNSAMPLE_4_VERTEX_DESCRIPTOR = {
+    "layouts": {"1": {"stride": 48, "step_function": "PerVertex", "step_rate": 1}},
+    "attributes": {
+        str(index): {"format": fmt, "offset": offset, "buffer_index": 1}
+        for index, (fmt, offset) in enumerate([
+            ("Float4", 0), ("Float2", 16), ("Float2", 24), ("Half4", 32)])
+    },
+}
+
+
+def range_specialization(index: int, stage: str, buffer: int) -> dict:
+    return {"id": index, "key": {"RangeAtBindOffset": {
+        "stage": stage, "class": "Buffer", "index": buffer}},
+        "size": 4, "default": 0, "unread_bits": 0}
 
 
 PAIRS = {
@@ -31,6 +47,29 @@ PAIRS = {
         "push": [("Vertex", 0, 8), ("Fragment", 64, 12)],
         "write_mask": 15,
     },
+    "downsample_4": {
+        "vertex": "downsample_blur_vert_lph",
+        "fragment": "downsample_4_frag_lph",
+        "slots": [("Vertex", "Buffer", 2), ("Vertex", "Buffer", 3),
+                  ("Fragment", "Buffer", 1), ("Fragment", "Buffer", 6),
+                  ("Fragment", "Texture", 3), ("Fragment", "Sampler", 0)],
+        "buffer_windows": [("UniformWords", 64), ("UniformWords", 16),
+                           ("UniformWords", 72), ("UniformWords", 2)],
+        "push": [("Vertex", 0, 8), ("Fragment", 64, 12)],
+        "write_mask": 15,
+        "sampled_texture": True,
+        "vertex_descriptor": DOWNSAMPLE_4_VERTEX_DESCRIPTOR,
+        "specialization": [
+            [range_specialization(1, "Vertex", 2),
+             range_specialization(2, "Vertex", 3)],
+            [{"id": 0, "key": {"SamplerState": {
+                "slot": {"stage": "Fragment", "class": "Sampler", "index": 0},
+                "fields": 2147483655}}, "size": 4, "default": 0,
+                "unread_bits": 4294967288},
+             range_specialization(3, "Fragment", 1),
+             range_specialization(4, "Fragment", 6)],
+        ],
+    },
 }
 
 
@@ -44,7 +83,18 @@ def check_meta(meta: dict, spec: dict) -> dict:
     buffer_windows = []
     for slot, interface in meta["interface"]["slots"]:
         slots.append((slot["stage"], slot["class"], slot["index"]))
+        if slot["class"] == "Sampler":
+            if not spec.get("sampled_texture") or interface != {
+                    "Sampler": {"compare": False, "coordinate_sensitive": True}}:
+                raise ValueError(f"changed sampler interface: {slot}")
+            continue
         access = interface.get("Buffer", interface.get("Texture", {})).get("access", {})
+        if slot["class"] == "Texture" and spec.get("sampled_texture"):
+            if interface != {"Texture": {"texture_type": "Type2D",
+                    "sampled_type": "Float", "depth_compare": False,
+                    "access": {"sample": True, "read": False, "write": False}}}:
+                raise ValueError(f"changed sampled-texture interface: {slot}")
+            continue
         if not access.get("read") or access.get("write"):
             raise ValueError(f"unexpected writable/non-readable slot: {slot}")
         if slot["class"] == "Texture" and access.get("sample"):
@@ -72,9 +122,16 @@ def check_meta(meta: dict, spec: dict) -> dict:
         raise ValueError("changed BGRA8 single-sample attachment ABI")
     if graphics["color_write_rules"] != [[0, 0x2222]]:
         raise ValueError("changed BGRA8 color write rule")
-    return {"resource_slots": slots, "buffer_windows": buffer_windows,
+    result = {"resource_slots": slots, "buffer_windows": buffer_windows,
             "push_ranges": pushes,
             "color_format": "BGRA8Unorm", "color_write_rule": "0x2222"}
+    if "specialization" in spec:
+        specialization = [s["specialization"]["constants"] for s in meta["stages"]]
+        if specialization != spec["specialization"]:
+            raise ValueError("changed bind-time range or sampler specialization ABI")
+        result["required_bind_specialization"] = specialization
+        result["vertex_descriptor"] = spec["vertex_descriptor"]
+    return result
 
 
 def main() -> int:
@@ -89,12 +146,17 @@ def main() -> int:
     out = args.output_prefix.resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     meta_path = out.with_name(out.name + "-meta.json")
-    subprocess.run([
+    command = [
         str(args.translator), str(args.metallib), str(out) + ".spv",
         "--function", spec["vertex"], "--fragment", spec["fragment"],
         "--profile", str(args.profile), "--color-format", "0:BGRA8Unorm",
         "--emit-meta", str(meta_path), "--no-spirv-val",
-    ], check=True)
+    ]
+    if "vertex_descriptor" in spec:
+        descriptor_path = out.with_name(out.name + "-vertex-descriptor.json")
+        descriptor_path.write_text(json.dumps(spec["vertex_descriptor"], indent=2) + "\n")
+        command += ["--vertex-descriptor", str(descriptor_path)]
+    subprocess.run(command, check=True)
     meta = json.loads(meta_path.read_text())
     abi = check_meta(meta, spec)
     for stage in ("vert", "frag"):

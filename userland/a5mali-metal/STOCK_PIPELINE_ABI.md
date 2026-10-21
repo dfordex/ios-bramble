@@ -93,3 +93,93 @@ descriptor objects, specialization values, options, archives and private
 descriptor extensions were rejected with `kIOReturnUnsupported`. The factory
 was also syntax-compiled for arm64 iOS 16 with warnings as errors. These checks
 perform no GPU jobs and do not mutate the phone.
+
+## 0164: accepted device, missing compositor shaders
+
+The 0164 phone log confirms `STOCK DEVICE ACCEPTED` and creation of the bounded
+queue. The previous missing blit selector no longer appears. Backboardd instead
+aborts with namespace 13, code 2, `Metal failed to load fragment function`.
+Runtime `0x1b272a2ac` minus slide `0x2a2a4000` is QuartzCore `0x1884862ac`, in
+`create_fragment_shader(...)`. Its callers are `create_pipeline_state(...)`
+at `0x188380d88` and the asynchronous pipeline-dispatch block. This is a real
+shader coverage gap after device acceptance.
+
+The fragment factory takes one of two routes:
+
+- A direct fast fragment name, suffixed `_lph` or `_lpf`, with no constants.
+- `fixed_frag_lph_cph`, `fixed_frag_lph_cpf` or `fixed_frag_lpf_cpf`, with a
+  nonnil function-constants object populated from the fragment specification.
+
+The former failure uses exit code 2; the latter uses code 7, selected at
+`0x188486044` through `0x188486050`. Thus code 2 also establishes that the failing
+0164 request was **unspecialized**. None of the direct fast names or generic
+fragment names is `read_surf_frag`. Accepting only the authenticated read_surf
+pair cannot satisfy ordinary compositor shader creation, regardless of whether
+constant validation is relaxed. Creating name-only placeholder functions would
+not supply the missing executable translation.
+
+### First fast profile in static warmup order
+
+The audited warmup table has 1079 entries. For the conservative profile (all
+feature sets unsupported; no native precompiled pipeline library; normal lookup
+branch with context `0x1e2` bit 4 clear), 821 entries require
+an unavailable feature set, 14 generic entries cannot create a pipeline without
+that library, and 223 entries have no fast shader and are skipped by warmup.
+The remaining 21 direct fast profiles begin at row 67:
+
+```text
+pipeline: PBGRABsovXm_Tds4A2Xhf_Isrc
+vertex:   downsample_blur_vert_lph
+fragment: downsample_4_frag_lph
+constants object: nil for both functions
+```
+
+This is a static prediction of the first enqueued fast profile. The phone log
+does not record the requested function's name, and asynchronous execution can
+change which request reaches the abort first. It is not a dynamic observation
+of the exact failed name. Subsequent table entries also need executable coverage;
+implementing this pair alone does not establish complete compositor support.
+
+The mapping is bounded by the staged QuartzCore UUID
+`9E40B2EB-260C-3AF1-AE45-A1A551A8C1B9`:
+
+- Warmup names and feature gates: table `0x1d5b3b350`, stride 40.
+- Fragment `Tds4` decodes to texture-function index 26.
+- Config table `0x188564d4c`, stride 7, maps index 26 to fast shader index 1.
+- Fast shader table `0x1d5b45c08`, stride 16, gives `downsample_4_frag` and
+  shader vertex-layout index 4. The `h` flag adds `_lph`.
+- Vertex shader table `0x1d5b48050`, stride 24, maps index 4 to
+  `downsample_blur_vert`. Its direct path also supplies no constants.
+
+The shader vertex-layout index differs from buffer packing. This profile has no
+`L` packing token, so QuartzCore uses packing index 0 in table `0x188565090`:
+
+| Attribute | MTLVertexFormat | Byte offset | Buffer index |
+|---|---|---:|---:|
+| 0 | Float4 (31) | 0 | 1 |
+| 1 | Float2 (29) | 16 | 1 |
+| 2 | Float2 (29) | 24 | 1 |
+| 3 | Half4 (27) | 32 | 1 |
+
+The buffer stride is 48; step function is PerVertex, with default step rate 1.
+QuartzCore applies these fields at `0x1883816b0` through `0x188381714`.
+
+`tools/a5mali-quartzcore-coverage.py` reproduces this read-only table analysis
+from a locally extracted image, rejects other UUIDs and invalid mapped ranges,
+and emits only bounded names/metadata. It does not copy shader or executable
+bytes into its output, create Metal functions, or install anything. The audit
+was run against the staged image and its first pair and partitioned row counts
+were checked. The script models this conservative profile, not arbitrary
+device feature configurations or an override that bypasses precompiled lookup.
+
+### Generic specialization schema
+
+The generic fragment branch writes typed constants using
+`setConstantValue:type:withName:`. Its schema includes `fc_generic`,
+`fc_vertex_layout`, framebuffer fetch/sample flags, attachment count, optional
+LOD/noise/YCbCr/gamma/color/LUT flags, texture/blend/destination function,
+image and destination counts, range/premultiply/HDR/EDR flags, and indexed image
+function, coordinate function, plane count, texture-coordinate count, filter and
+color opcode fields. These values affect shader behavior; they cannot be ignored
+or accepted merely because their names are known. No generic constant-value
+combination has been established as the exact 0164 failing request.

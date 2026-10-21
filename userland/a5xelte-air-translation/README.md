@@ -1,7 +1,7 @@
-# QuartzCore `read_surf` to Mali T720: local graphics shader proof
+# QuartzCore graphics to Mali T720: local shader proofs
 
-This directory compiles **one actual stock iOS 16.7.16 QuartzCore graphics
-pair** to Mali T720 Midgard machine code on a Mac. It is a host experiment,
+This directory compiles **two actual stock iOS 16.7.16 QuartzCore graphics
+pairs** to Mali T720 Midgard machine code on a Mac. It is a host experiment,
 not an iOS Metal device or a hardware run. No Apple metallib, extracted
 bitcode, generated SPIR-V, or firmware image is kept here.
 
@@ -116,7 +116,7 @@ lowering to NIR/Midgard. A direct backend attempt stopped at unsupported
 `vulkan_resource_index`. No Mali binary, T720 draw descriptor, or phone test
 exists for this pair.
 
-Both pairs can be translated without adding the proprietary metallib or
+These pairs can be translated without adding the proprietary metallib or
 generated shader bytes to Git:
 
 ```sh
@@ -168,5 +168,99 @@ not device allocation evidence. For this exact invocation the private output
 was 8192 bytes, SHA-256
 `26885bced5b3d15fa00e38b8c41e8a0eb458d42852021873f7d420af48dd8e9a`.
 No generated binary is tracked in Git.
+
+## First statically predicted QuartzCore warmup pair
+
+The `downsample_4` profile translates `downsample_blur_vert_lph` and
+`downsample_4_frag_lph`, the first fast pipeline predicted from the inspected
+QuartzCore warmup table and conservative device profile, row
+`PBGRABsovXm_Tds4A2Xhf_Isrc`. The phone crash does not log its dynamic function
+name; the table audit is separate static evidence. These entries
+declare no Metal function constants. The row's shader layout 4 is separate
+from vertex packing: the selected packing is table index 0. The inspected
+QuartzCore descriptor uses buffer 1, stride 48, per-vertex stepping, and
+attributes Float4 at byte 0, Float2 at 16, Float2 at 24, and Half4 at 32.
+The wrapper supplies that complete descriptor, including unused attributes,
+rather than deriving a layout from AIR argument types.
+
+```sh
+python3 translate_stock_quartzcore.py downsample_4 \
+  /private/tmp/a5xelte-root-view/System/Library/Frameworks/QuartzCore.framework/default.metallib \
+  /private/tmp/a5-downsample4-checked \
+  --translator /private/tmp/a5-metal2vulkan/target/release/metal2vulkan \
+  --profile /private/tmp/a5-metal2vulkan/crates/metal2vulkan-validation/profiles/vk12-floor.json
+```
+
+The local translation produced 4752-byte vertex and 13332-byte fragment
+SPIR-V modules. The bounded profile checks these actual resource interfaces:
+
+| Stage | Metal binding | Reflected use |
+| --- | --- | --- |
+| Vertex | Buffer 2 | Read-only uniform words, 64 bytes |
+| Vertex | Buffer 3 | Read-only uniform words, 16 bytes |
+| Fragment | Buffer 1 | Read-only uniform words, 72 bytes |
+| Fragment | Buffer 6 | Read-only uniform words, 2 bytes |
+| Fragment | Texture 3 | Sampled float 2D texture |
+| Fragment | Sampler 0 | Non-comparison, coordinate-sensitive sampler |
+
+Vertex push bytes 0–7 contain buffer bind offsets. Fragment bytes 64–75
+contain two buffer offsets and the BGRA color write rule at byte 72.
+The wrapper also checks the translator's **bind-time SPIR-V specialization**:
+vertex IDs 1 and 2 describe Buffer 2/3 ranges, fragment IDs 3 and 4 describe
+Buffer 1/6 ranges, and fragment ID 0 describes Sampler 0 state. These are not
+Metal function constants. Their encoded defaults are zero; a renderer must
+supply the actual bound ranges and sampler state instead of executing those
+defaults as if they described the requested resources.
+
+### Bounded Midgard compilation
+
+The stage compiler accepts this exact module pair only with the explicit
+`downsample_4` argument. It specializes buffer-range IDs to 64, 16, 72 and
+2 bytes, and sampler state ID 0 to normalized nearest sampling. These values
+define a local compile profile; they are not a measurement of the phone's
+actual resource ranges or sampler state. Other states need another checked
+profile or dynamic specialization.
+
+```sh
+python3 build_local.py /private/tmp/a5xelte-mesa-full/buildtools /private/tmp/a5-spirv-downsample-pair
+/private/tmp/a5-spirv-downsample-pair \
+  /private/tmp/a5-downsample4-checked.vert.spv \
+  /private/tmp/a5-downsample4-checked.frag.spv \
+  /private/tmp/a5-downsample4-checked.vert.midgard \
+  /private/tmp/a5-downsample4-checked.frag.midgard downsample_4
+```
+
+Both stages compiled locally: vertex 2048 bytes, fragment 3472 bytes. The
+fragment disassembly contains four texture-sampling instructions and UBO
+loads. The shader-info texture count remains zero despite those instructions;
+the future binder must explicitly bind texture/sampler slot 0.
+
+The lowering replaces Vulkan UBO descriptor indices with this binding contract:
+
+| Stage | Original Metal slot | Midgard binding |
+| --- | --- | --- |
+| Vertex | Buffer 2 / Buffer 3 | UBO 1 / UBO 2 |
+| Fragment | Buffer 1 / Buffer 6 | UBO 3 / UBO 4 |
+| Fragment | Texture 3 / Sampler 0 | Texture 0 / Sampler 0 |
+
+UBO 0 is a separate metadata/push block: texture level count at byte 0,
+width/height at 4/8, actual sampler min/max LOD and bias at 16/20/24, vertex
+bind offsets at 0/4 in the vertex-stage block, and fragment push data at
+64–75 (BGRA write rule at 72). Vertex and fragment UBO 0 are distinct stage
+bindings. Buffers need physically padded, aligned backing for the generated
+uniform loads even where the logical range is only 2 bytes. The local vertex
+proof still uses baseVertex 0 and a fixed 1080×1920 viewport.
+
+Mesa NIR validation and compilation passed. Modified modules and use of one
+pair under the other profile are rejected before emitting outputs. Rebuilding
+the existing `read_surf` pair produces byte-identical 208/1232-byte binaries.
+External `spirv-val` was not available; no independent SPIR-V validator or GPU
+pixel test was run.
+
+The real AIR stages now have a host Midgard compilation path. This supplies
+no draw descriptors, vertex/UBO/sampler binding in the iOS provider,
+source-over blending, or device pixel result. The phone provider still vends
+only its existing `read_surf` pair. No additional function object is returned
+merely because these host binaries exist.
 
 No BOOT, SYSTEM, or USERDATA write was made for this experiment.
