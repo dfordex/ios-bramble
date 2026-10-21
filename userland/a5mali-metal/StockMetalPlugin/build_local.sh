@@ -20,7 +20,9 @@ xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -mcpu=cortex-a53 -march=a
     "$src_dir/A5MaliDiscoveryAudit.m" "$plugin_dir/A5MaliMetalDevice.m" \
     -framework Foundation -framework IOSurface -framework IOKit \
     -framework Metal -o "$bundle/A5MaliMetal"
-codesign --force --sign - "$bundle"
+# XNU's initial Mach-O header validation allocates 4 KiB on A5XELTE.
+# A 16 KiB CodeDirectory would hash beyond that allocation in cs_validate_range.
+codesign --force --sign - --pagesize 4096 "$bundle"
 codesign --verify --strict "$bundle"
 plutil -lint "$bundle/Info.plist"
 file "$bundle/A5MaliMetal"
@@ -30,8 +32,10 @@ xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 \
     -fobjc-arc -fblocks -Wall -Wextra -Werror \
     "$plugin_dir/acceptance_probe.m" -framework Foundation -framework Metal \
     -framework IOKit -o "$out_dir/a5mali-metal-probe"
-codesign --force --sign - --identifier com.orhunnx.a5mali-metal-probe \
+codesign --force --sign - --pagesize 4096 --identifier com.orhunnx.a5mali-metal-probe \
     --entitlements "$plugin_dir/probe-entitlements.plist" \
     "$out_dir/a5mali-metal-probe"
 codesign --verify --strict "$out_dir/a5mali-metal-probe"
+python3 "$plugin_dir/verify_signature_pages.py" \
+    "$bundle/A5MaliMetal" "$out_dir/a5mali-metal-probe"
 cp "$plugin_dir/probe-launchdaemon.plist" "$out_dir/com.orhunnx.a5mali-metal-probe.plist"
