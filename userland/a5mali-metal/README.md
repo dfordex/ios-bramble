@@ -36,7 +36,8 @@ install the dylib or modify an iOS root image.
 `A5MaliRestrictedDevice` proves that the staged `_MTLDevice` superclass can
 be linked and that an exact `A5XELTEGPU` service can be passed into the private
 bridge. Patch 0156 adds a source-only bundle and a build-and-boot-gated
-`IOAcceleratorES` proxy. The bundle is not installed, and the class has no
+`IOAcceleratorES` proxy. Patch 0157 compiles that proxy and the discovery BOOT
+selects `a5metal=1`. The bundle is not installed, and the class has no
 `MTLDevice` or `MTLDeviceSPI` conformance, so stock Metal cannot add it as a
 working device. `A5MaliCommandBuffer` does not claim `MTLCommandBuffer`
 conformance.

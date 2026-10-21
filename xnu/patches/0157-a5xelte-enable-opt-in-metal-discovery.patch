@@ -1,0 +1,42 @@
+--- a/iokit/Kernel/arm/A5XELTEGPU.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPU.cpp
+@@ -24,12 +24,12 @@
+ #include <arm/memory_types.h>
+ #include "A5XELTEGPUQueue.h"
+
+-/* Only a complete, independently validated Metal implementation may turn
+- * this on. The ordinary a5gpu=8 private queue does not meet stock Metal's
+- * resource, pipeline, command and completion contracts.
++/* Compile the discovery proxy; registration still requires a5metal=1.
++ * Discovery does not imply a complete Metal provider or iOS GPU rendering.
++ * The private resource, pipeline and completion contracts remain bounded.
+  */
+-#ifndef A5_MALI_FULL_METAL_PROVIDER_READY
+-#define A5_MALI_FULL_METAL_PROVIDER_READY 0
++#ifndef A5_MALI_STOCK_METAL_DISCOVERY
++#define A5_MALI_STOCK_METAL_DISCOVERY 1
+ #endif
+
+ /* The IOKit exported machine header omits these kernel-private mappings. */
+@@ -818,10 +818,10 @@
+     }
+ }
+
+-#if A5_MALI_FULL_METAL_PROVIDER_READY
++#if A5_MALI_STOCK_METAL_DISCOVERY
+ /* The stock Metal discovery query checks the actual IOKit metaclass. Keep
+  * this proxy separate from A5XELTEGPU so ordinary private GPU service
+- * registration remains invisible to Metal even in a provider-ready build.
++ * registration remains invisible to Metal even in a discovery-enabled build.
+  * No Apple IOGPU or AGX behavior is inherited or implied here.
+  */
+ class IOAcceleratorES : public IOService {
+@@ -926,7 +926,7 @@
+     if (enabled >= 2) {
+         a5g3d_probe_existing_power(this, enabled, fTestMemory, fRuntimeGPU);
+     }
+-#if A5_MALI_FULL_METAL_PROVIDER_READY
++#if A5_MALI_STOCK_METAL_DISCOVERY
+     int stockMetal = 0;
+     if (enabled == 8 && resourceClient == 1 &&
+         PE_parse_boot_argn("a5metal", &stockMetal, sizeof(stockMetal)) &&

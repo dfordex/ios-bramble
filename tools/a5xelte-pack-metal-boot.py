@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Prepare an opt-in discovery BOOT using a known-working Samsung XNU BOOT.
+
+Reuses its loader and ADT; replaces the XNU payload. Does not flash or install
+the separately built Metal bundle. All binary inputs/outputs stay private.
+"""
+import argparse
+from pathlib import Path
+import struct
+import subprocess
+import sys
+import tempfile
+
+import mkpayload
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('reference_boot', type=Path)
+    ap.add_argument('kernel', type=Path, help='fresh linked unstripped arm64 kernel')
+    ap.add_argument('output_boot', type=Path)
+    args = ap.parse_args()
+    if args.output_boot.exists():
+        ap.error('output exists; choose a new private output path')
+    ref = args.reference_boot.read_bytes()
+    if ref[:8] != b'ANDROID!' or len(ref) < 2048:
+        ap.error('not a Samsung Android BOOT')
+    ks, _, rs, _, ss, _, _, page, _, _ = struct.unpack_from('<10I', ref, 8)
+    if page != 2048 or ss:
+        ap.error('unsupported BOOT layout')
+    roff = page + (ks + page - 1) // page * page
+    payload = ref[roff:roff + rs]
+    if len(payload) != rs or payload[:8] != b'SWEETXNU' or len(payload) < 680:
+        ap.error('reference lacks a complete XNU payload')
+    if struct.unpack_from('<I', payload, 8)[0] != 1:
+        ap.error('unsupported XNU payload version')
+    adt_off, adt_size = struct.unpack_from('<2Q', payload, 0x20)
+    if not adt_size or adt_off + adt_size > len(payload):
+        ap.error('reference ADT is truncated')
+    words = payload[0x48:0x2a8].split(b'\0', 1)[0].decode('ascii').split()
+    required = {'a5gpu': '8', 'a5gpuclient': '1', 'a5metal': '1'}
+    words = [w for w in words if w.split('=', 1)[0] not in required]
+    words += [f'{k}={v}' for k, v in required.items()]
+    cmdline = ' '.join(words)
+    if len(cmdline.encode()) >= mkpayload.BOOT_LINE_LENGTH:
+        ap.error('boot arguments would be truncated')
+    kernel = args.kernel.read_bytes()
+    if b'opt-in stock Metal discovery proxy registered' not in kernel:
+        ap.error('kernel does not contain the enabled discovery path')
+    macho = mkpayload.parse_macho(kernel)
+    if macho['cputype'] != 0x100000c or macho['cpusub'] != 0:
+        ap.error('kernel must be plain arm64, not arm64e')
+    with tempfile.TemporaryDirectory(prefix='a5-metal-pack-') as tmp:
+        tmp = Path(tmp)
+        adt = tmp / 'board.adt'
+        adt.write_bytes(payload[adt_off:adt_off + adt_size])
+        loader = tmp / 'Image'
+        loader.write_bytes(ref[page:page + ks])
+        new_payload, info = mkpayload.build(str(args.kernel), str(adt), cmdline)
+        payload_path = tmp / 'xnu.payload'
+        payload_path.write_bytes(new_payload)
+        subprocess.run([sys.executable, str(Path(__file__).with_name('a5xelte-pack-probe.py')),
+                        str(args.reference_boot), str(loader), str(args.output_boot),
+                        '--ramdisk', str(payload_path)], check=True)
+    print(f'kernel entry={info["entry"]}; chained fixups={info["fixups"]}')
+    print(f'boot arguments: {cmdline}')
+    print('Companion: /System/Library/Extensions/A5MaliMetal.bundle (separate installation).')
+    print('Discovery enabled; stock Metal device acceptance/rendering is not established.')
+
+
+if __name__ == '__main__':
+    main()

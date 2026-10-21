@@ -20,8 +20,8 @@ The private `A5XELTEGPU` class is not an `IOAcceleratorES` subclass. The
 restricted `_MTLDevice` subclass in this directory connects to an exact
 `A5XELTEGPU` service only and deliberately declares neither Metal protocol.
 Patch 0156 adds a genuine `IOAcceleratorES`-derived proxy and a source-only
-plugin bundle. The proxy's build-time readiness flag defaults to zero; with
-that flag enabled it also requires explicit `a5gpu=8 a5gpuclient=1 a5metal=1`
+plugin bundle. Patch 0157 enables compilation of the discovery proxy;
+registration still requires explicit `a5gpu=8 a5gpuclient=1 a5metal=1`
 boot arguments. The bundle is built locally and is not installed on the phone.
 Its class does not claim `MTLDevice` or `MTLDeviceSPI`, so the stock Metal
 device-add gate still rejects it. See `DISCOVERY_GATING.md`.
@@ -79,7 +79,7 @@ are implemented and pixel-tested.
 
 ## Release gate
 
-Keep the patch-0156 registration gate disabled while the provider cannot
+Enabling the patch-0157 discovery proxy does not establish that the provider can
 compile the other iOS shaders, allocate their resources, encode their render
 state and commands, and retire/fail command buffers correctly. The local
 restricted class is a link and client-ABI checkpoint, not a functioning iOS
