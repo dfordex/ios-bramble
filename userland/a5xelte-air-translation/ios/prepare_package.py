@@ -43,6 +43,8 @@ def device_macho(path):
         if dep not in ('/usr/lib/libSystem.B.dylib', '/usr/lib/libc++.1.dylib',
                        '/System/Library/Frameworks/Foundation.framework/Foundation',
                        '/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation',
+                       '/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit',
+                       '/System/Library/Frameworks/IOKit.framework/IOKit',
                        '/usr/lib/libobjc.A.dylib'):
             raise ValueError(f"unexpected iOS runtime dependency: {dep}")
 
@@ -70,7 +72,7 @@ def main():
     subprocess.run(['xcrun', '--sdk', 'iphoneos', 'clang', '-target', 'arm64-apple-ios16.0',
         '-mcpu=cortex-a53', '-march=armv8-a+crypto', '-fobjc-arc', '-fblocks',
         '-Wall', '-Wextra', '-Werror', '-Wno-deprecated-declarations',
-        str(src / 'a5shader_compile.m'), '-framework', 'Foundation', '-o', str(runner)], check=True)
+        str(src / 'a5shader_compile.m'), '-framework', 'Foundation', '-framework', 'IOKit', '-o', str(runner)], check=True)
     for path in [runner, *(resources / n for n in ('metal2vulkan','midgard-compile','spirv-val'))]:
         device_macho(path)
         path.chmod(0o755)
@@ -83,6 +85,10 @@ def main():
         *(str(resources / n) for n in ('metal2vulkan','midgard-compile','spirv-val'))],check=True)
     translation = load(src.parent / 'translate_stock_quartzcore.py', 'translation')
     pairs = {p: translation.PAIRS[p] for p in ('read_surf','downsample_4')}
+    known = load(src.parent / 'test_compiler_profiles.py', 'known').EXPECTED
+    for pair in pairs:
+        pairs[pair]['expected_output'] = {s:{'bytes':known[pair][s][0], 'sha256':known[pair][s][2]}
+            for s in ('vert','frag')}
     (resources / 'pairs.json').write_text(json.dumps(pairs, indent=2)+'\n')
     shutil.copyfile(args.profile, resources / 'profile.json')
     shutil.copyfile(src / 'compiler-launchdaemon.plist', out / 'compiler-launchdaemon.plist')

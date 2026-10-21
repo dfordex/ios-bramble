@@ -1,0 +1,51 @@
+--- a/crates/metal2vulkan/src/main.rs
++++ b/crates/metal2vulkan/src/main.rs
+@@ -66,0 +67 @@
++  --no-timeout             explicitly disable the compile deadline
+@@ -95,0 +97 @@
++    no_timeout: bool,
+@@ -265,0 +268,9 @@
++fn compile_deadline(args: &Args) -> Option<Instant> {
++    if args.no_timeout {
++        None
++    } else {
++        // A deadline past what `Instant` can hold is no deadline.
++        Instant::now().checked_add(args.timeout.unwrap_or(Duration::from_secs(20)))
++    }
++}
++
+@@ -275,4 +286 @@
+-    // A deadline past what `Instant` can hold is no deadline.
+-    let budget = Budget::with_deadline(
+-        Instant::now().checked_add(args.timeout.unwrap_or(Duration::from_secs(20))),
+-    );
++    let budget = Budget::with_deadline(compile_deadline(args));
+@@ -681,0 +690,6 @@
++            "--no-timeout" => {
++                parsed.no_timeout = true;
++                parsed.replay.push(arg.clone());
++                i += 1;
++                continue;
++            }
+@@ -760,0 +775,3 @@
++    }
++    if parsed.no_timeout && parsed.timeout.is_some() {
++        fail("--no-timeout and --timeout-ms are mutually exclusive");
+@@ -1062,0 +1080,17 @@
++    fn no_timeout_is_explicit_and_keeps_validation_enabled() {
++        let args = parse_args(&["--no-timeout".into(), "input.air".into()]);
++        assert!(args.no_timeout);
++        assert!(args.spirv_val);
++        assert_eq!(args.replay, ["--no-timeout"]);
++        assert!(compile_deadline(&args).is_none());
++        let default = parse_args(&["input.air".into()]);
++        let remaining = compile_deadline(&default).unwrap().duration_since(Instant::now());
++        assert!(remaining > Duration::from_secs(19));
++        assert!(remaining <= Duration::from_secs(20));
++        let timed = parse_args(&["--timeout-ms".into(), "1000".into(), "input.air".into()]);
++        assert!(!timed.no_timeout);
++        assert_eq!(timed.timeout, Some(Duration::from_secs(1)));
++        assert!(compile_deadline(&timed).is_some());
++    }
++
++    #[test]

@@ -1,0 +1,208 @@
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.h
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.h
+@@ -32,0 +33,2 @@
++    kA5GPUClientCompilerComplete = 16,
++    kA5GPUClientCompilerConnectionType = 1,
+@@ -64,0 +67,8 @@
++/* Type1 compiler-only connection: no GPU resource/command access. The signed
++ * compiler reports success only after both pair caches are fully verified. */
++struct A5GPUClientCompilerCompleteRequest {
++    A5GPUClientHeader header;
++    uint32_t verifiedPairs; /* exactly3: read_surf and downsample_4 */
++    uint32_t reserved;
++};
++
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
+@@ -20,0 +21,3 @@
++#include <sys/proc.h>
++#include <sys/ubc.h>
++#include <sys/vnode.h>
+@@ -22,0 +26 @@
++    sizeof(A5GPUClientCompilerCompleteRequest) == 24 &&
+@@ -69,0 +74 @@
++    bool fCompilerOnly = false;
+@@ -73,0 +79,2 @@
++    IOReturn compilerComplete(IOExternalMethodArguments *args);
++    static bool compilerAuthorized(task_t task);
+@@ -140,0 +148,35 @@
++A5XELTEGPUUserClient::compilerAuthorized(task_t task)
++{
++    int enabled = 0;
++    if (task == TASK_NULL ||
++        !PE_parse_boot_argn("a5compiler", &enabled, sizeof(enabled)) || enabled != 1)
++        return false;
++    proc_t process = static_cast<proc_t>(get_bsdtask_info(task));
++    if (!process || proc_suser(process) != 0)
++        return false;
++    const char *identity = cs_identity_get(process);
++    if (!identity || strcmp(identity, "com.orhunnx.a5shader.a5shader-compile"))
++        return false;
++    vnode_t executable = proc_getexecutablevnode(process);
++    if (!executable)
++        return false;
++    char path[128] = {};
++    int length = sizeof(path);
++    const bool pathOK = vn_getpath(executable, path, &length) == 0 &&
++        !strcmp(path, "/usr/libexec/a5shader-compile");
++    vnode_put(executable);
++    if (!pathOK)
++        return false;
++    const char *required[] = {
++        "platform-application", "com.orhunnx.a5xelte.shader-compiler"
++    };
++    for (unsigned i = 0; i < sizeof(required) / sizeof(required[0]); ++i) {
++        OSObject *value = copyClientEntitlement(task, required[i]);
++        const bool allowed = value == kOSBooleanTrue;
++        if (value) value->release();
++        if (!allowed) return false;
++    }
++    return true;
++}
++
++bool
+@@ -144 +186 @@
+-    if (type != 0 || owningTask == TASK_NULL ||
++    if ((type != 0 && type != kA5GPUClientCompilerConnectionType) || owningTask == TASK_NULL ||
+@@ -151 +193,2 @@
+-    OSObject *entitlement = copyClientEntitlement(owningTask,
++    fCompilerOnly = type == kA5GPUClientCompilerConnectionType;
++    OSObject *entitlement = fCompilerOnly ? nullptr : copyClientEntitlement(owningTask,
+@@ -153 +196,2 @@
+-    bool allowed = entitlement == kOSBooleanTrue;
++    bool allowed = fCompilerOnly ? compilerAuthorized(owningTask) :
++        entitlement == kOSBooleanTrue;
+@@ -161 +205 @@
+-    if (!allowed && PE_parse_boot_argn("a5metal", &stockMetal,
++    if (!fCompilerOnly && !allowed && PE_parse_boot_argn("a5metal", &stockMetal,
+@@ -171 +215,2 @@
+-    IOLog("A5XELTE Metal: resource client authorized\n");
++    IOLog("A5XELTE Metal: %s client authorized\n",
++        fCompilerOnly ? "compiler-completion-only" : "resource");
+@@ -883,0 +929,19 @@
++A5XELTEGPUUserClient::compilerComplete(IOExternalMethodArguments *args)
++{
++    if (!fCompilerOnly || current_task() != fTask || !compilerAuthorized(fTask))
++        return kIOReturnNotPermitted;
++    if (!a5gpu_valid_input(args, sizeof(A5GPUClientCompilerCompleteRequest)) ||
++        args->structureOutputSize != 0 || args->asyncReferenceCount != 0)
++        return kIOReturnBadArgument;
++    A5GPUClientCompilerCompleteRequest request;
++    memcpy(&request, args->structureInput, sizeof(request));
++    if (!a5gpu_valid_header(&request.header, sizeof(request)) ||
++        request.verifiedPairs != 3 || request.reserved)
++        return kIOReturnBadArgument;
++    IOLockLock(fLock);
++    const IOReturn result = fClosed ? kIOReturnNotOpen : a5g3d_compiler_success_line();
++    IOLockUnlock(fLock);
++    return result;
++}
++
++IOReturn
+@@ -889,0 +954,3 @@
++    if (fCompilerOnly)
++        return selector == kA5GPUClientCompilerComplete ? compilerComplete(args) :
++            kIOReturnUnsupported;
+--- a/iokit/Kernel/arm/A5XELTEGPUResources.h
++++ b/iokit/Kernel/arm/A5XELTEGPUResources.h
+@@ -65,0 +66,4 @@
++/* Kernel-owned fixed bottom status line. Called only by the authenticated
++ * compiler-only connection after all native compiler caches verify. */
++IOReturn a5g3d_compiler_success_line();
++
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -108,0 +109,4 @@
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++	static IOReturn compilerSuccessAction(OSObject *, void *, void *, void *, void *);
++	IOReturn drawCompilerSuccessLine(); /* framebuffer lock/workloop held */
++#endif
+@@ -129,0 +134 @@
++	bool          fCompilerComplete; /* signed compiler published both verified pairs */
+@@ -156,0 +162,3 @@
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++	IOReturn compilerSuccess();
++#endif
+@@ -159,0 +168,67 @@
++
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++/* One boot-lifetime reference, published only after framebuffer setup. */
++static AppleCLCD *gA5CompilerFramebuffer = nullptr;
++
++IOReturn
++a5g3d_compiler_success_line()
++{
++	AppleCLCD *fb = gA5CompilerFramebuffer;
++	return fb ? fb->compilerSuccess() : kIOReturnNotReady;
++}
++
++IOReturn
++AppleCLCD::drawCompilerSuccessLine()
++{
++	const uint32_t lines = 8;
++	const uint64_t offset = static_cast<uint64_t>(fHeight - lines) * fRowBytes;
++	const uint64_t length = static_cast<uint64_t>(lines) * fRowBytes;
++	if (fPhys != 0x67000000ULL || fWidth != 1080 || fHeight != 1920 ||
++	    fRowBytes != 4320 || !fPixels || !fSurface || !fSurface->memory ||
++	    fPowerOff || fGPUUncertain || offset > fSurface->memory->getLength() ||
++	    length > fSurface->memory->getLength() - offset)
++		return kIOReturnNotReady;
++	/* Drain/validate the exact physical descriptor range before changing it.
++	 * No user-selected surface, address, geometry, or color enters this path. */
++	IOReturn result = fSurface->memory->performOperation(kIOMemoryIncoherentIOStore,
++	    offset, length);
++	if (result != kIOReturnSuccess)
++		return result;
++	for (uint32_t y = fHeight - lines; y < fHeight; ++y) {
++		volatile uint32_t *row = reinterpret_cast<volatile uint32_t *>(
++		    fPixels + static_cast<uint64_t>(y) * fRowBytes);
++		for (uint32_t x = 0; x < fWidth; ++x)
++			row[x] = 0xff00ff00u;
++	}
++	__sync_synchronize();
++	return fSurface->memory->performOperation(kIOMemoryIncoherentIOStore,
++	    offset, length);
++}
++
++IOReturn
++AppleCLCD::compilerSuccessAction(OSObject *owner, void *, void *, void *, void *)
++{
++	AppleCLCD *fb = OSDynamicCast(AppleCLCD, owner);
++	if (!fb || !fb->fLock)
++		return kIOReturnNotReady;
++	IOLockLock(fb->fLock);
++	const IOReturn result = fb->drawCompilerSuccessLine();
++	if (result == kIOReturnSuccess) {
++		if (!fb->fCompilerComplete)
++			IOLog("A5XELTE shader compiler: verified native caches complete; green status line shown\n");
++		fb->fCompilerComplete = true;
++		fb->setProperty("A5NativeCompilerComplete", true);
++	}
++	IOLockUnlock(fb->fLock);
++	return result;
++}
++
++IOReturn
++AppleCLCD::compilerSuccess()
++{
++	/* Serializes with complete vsync/present actions, including the GPU fence.
++	 * A possibly live DMA or powered-off panel is never touched. */
++	return fWorkLoop ? fWorkLoop->runAction(&AppleCLCD::compilerSuccessAction, this) :
++	    kIOReturnNotReady;
++}
++#endif
+@@ -260,0 +336 @@
++	fCompilerComplete = false;
+@@ -285,0 +362,4 @@
++	retain();
++	if (!__sync_bool_compare_and_swap(&gA5CompilerFramebuffer,
++	    static_cast<AppleCLCD *>(nullptr), this))
++		release();
+@@ -375,0 +456,7 @@
++	/* Keep only the completion stripe over later swaps. The compiler-only
++	 * selector is the sole transition setting this flag; boot/start/error and
++	 * timeout paths never enable it. The rest of the current frame is intact. */
++	IOLockLock(fb->fLock);
++	if (fb->fCompilerComplete)
++		(void)fb->drawCompilerSuccessLine();
++	IOLockUnlock(fb->fLock);

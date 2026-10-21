@@ -18,8 +18,8 @@ tool/runner, device-profile and binding-profile digests. Cached shader content
 is checked again on a hit. Corrupted caches fail visibly; no CPU shader or
 other cached profile is silently substituted.
 
-Each pair has a20-second wall deadline. Child CPU and output-file limits are
-inherited; the parent polls the entire compiler process group's RSS/physical
+At the user's explicit request, compilation has no wall-time or CPU-time
+cutoff. Child output-file limits are inherited; the parent polls the entire compiler process group's RSS/physical
 footprint every20ms with a500MiB ceiling, including the validator. Completed
 worker peak RSS is checked too. Darwin RLIMIT_DATA cannot serve as this
 resident-memory bound: shared-cache virtual data can already exceed it at
@@ -88,7 +88,30 @@ Upstream returns translation success when the validator is absent and prints
 `spirv-val: not found`; this is insufficient for installing a generated shader.
 Do not pass `--no-spirv-val` or accept the absent-validator result.
 
-The caller must also enforce the upstream 20-second and 500-MiB worker limits,
-reject unsupported translations, and pass only validated SPIR-V to the native
+The on-device caller keeps the500MiB process-group memory ceiling,
+rejects unsupported translations, and pass only validated SPIR-V to the native
 Midgard compiler. Cross-compilation and Mach-O checks establish an iOS artifact;
 they do not establish successful execution or correct rendering on the phone.
+
+## User-requested timing and visible completion update
+
+After0172 reached real on-phone SPIR-V validation but hit the parent20-second
+wall cutoff, the user explicitly removed the time limit. The runner has no
+wall or child-CPU cutoff and supplies the patched upstream CLI's explicit
+`--no-timeout`; that selects `Budget::with_deadline(None)` without changing
+translation or validation. Progress logs report elapsed time and resident
+bytes. Memory, log size and cache bounds remain.
+
+The completion indicator is a fixed green8-pixel bottom line. The native
+runner requests it only after both pairs compile, all four outputs match
+the validated reference sizes/SHA256s, and both immediate cache reads pass.
+A dedicated type1 IOKit connection can only submit this completion report;
+it cannot submit GPU jobs or map resources. The line is a CPU-drawn status
+indicator, not evidence of a new compositor frame.
+
+To reproduce this explicitly patched CLI, run `build_air_no_timeout.py
+PINNED_SOURCE PRIVATE_OUTPUT --cargo /path/to/cargo` with the same Rust homes
+as above. It builds a detached private worktree, applies only the stored
+CLI-deadline patch, and records the patch digest. The original upstream source
+and default20-second CLI policy remain intact; only the on-device service's
+explicit flag selects no deadline.
