@@ -81,3 +81,17 @@ sweetusb=0`, no ufsrw (read-only), `shim/build-bramble.sh PAYLOAD`.
 Next: iOS root image into userdata (destructive), /product from the D22AP
 device tree, keys (PM8150L GPIO5 for Vol+), touch (ST FTM5 over GENI SPI
 SE0), USB (check DWC3/GCC addresses on lito before sweetusb=2), cpus=8.
+
+## Before the first iOS boot (2026-10-21)
+
+- 0093: volume-up = PM8150L GPIO5 (PPID 0x4c4, RT 0xc410); SPMI core/obs/cnfg
+  addresses are the same as sweet's (live FDT).
+- `/product` comes from `research/ipsw-x/d22ap.adt`: DeviceTree.d22ap.im4p of
+  the 16.7.16 IPSW is LZFSE ("bvx2", 186084 bytes raw); macOS
+  libcompression decodes it (COMPRESSION_LZFSE 0x801).
+- iOS cmdline (sweet's, but 1 CPU and no touch/USB: sweet_touch votes PM6150L
+  L11 through RPMh, which is a different rail on bramble):
+  `debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress
+  rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1
+  wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1
+  sweetfb_noconsole=1 sweetfb_hz=30 sweettouch=0 sweetusb=0`
