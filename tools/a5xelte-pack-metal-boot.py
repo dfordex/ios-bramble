@@ -50,6 +50,10 @@ def main():
             ap.error('kernel lacks the corrected downsample4 page-table flush')
         if b'A5XELTE G3D DS4 diag: row=' not in args.kernel.read_bytes():
             ap.error('kernel lacks the downsample4 geometry/pixel diagnostics')
+        for marker in (b'A5XELTE G3D: T720 shader config old=',
+                       b'A5XELTE G3D: full-panel tile bounds=0..67,0..119;'):
+            if marker not in args.kernel.read_bytes():
+                ap.error('kernel lacks the released T720 initialization/panel-bounds corrections')
         required['a5downsampletest'] = '1'
     if args.install_bundle:
         if b'A5XELTE Metal install:' not in args.kernel.read_bytes():

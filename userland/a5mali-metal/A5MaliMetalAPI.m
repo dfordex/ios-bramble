@@ -10,6 +10,14 @@ static NSError *metalError(kern_return_t code)
                                code:code userInfo:nil];
 }
 
+static BOOL validBGRARow(NSUInteger width, NSUInteger height, NSUInteger rowBytes)
+{
+    /* The v4 linear texture/writeback paths accept 16-byte rows. Bound each
+     * factor before multiplication and keep the same limits as the kernel. */
+    return width > 0 && width <= 2048 && height > 0 && height <= 2048 &&
+        rowBytes >= width * 4 && rowBytes <= 8192 && (rowBytes & 15) == 0;
+}
+
 A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
     MTLRenderPipelineDescriptor *descriptor)
 {
@@ -137,7 +145,7 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
         (descriptor.usage & ~(MTLTextureUsageShaderRead |
             MTLTextureUsageRenderTarget)) || !descriptor.usage)
         return nil;
-    const NSUInteger rowBytes = descriptor.width * 4;
+    const NSUInteger rowBytes = (descriptor.width * 4 + 15) & ~(NSUInteger)15;
     NSDictionary *properties = @{
         (__bridge id)kIOSurfaceWidth: @(descriptor.width),
         (__bridge id)kIOSurfaceHeight: @(descriptor.height),
@@ -194,7 +202,11 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
         descriptor.storageMode != MTLStorageModeShared ||
         descriptor.width != IOSurfaceGetWidth(surface) ||
         descriptor.height != IOSurfaceGetHeight(surface) ||
-        IOSurfaceGetBytesPerRow(surface) != descriptor.width * 4 ||
+        IOSurfaceGetBytesPerElement(surface) != 4 ||
+        !validBGRARow(descriptor.width, descriptor.height,
+            IOSurfaceGetBytesPerRow(surface)) ||
+        IOSurfaceGetBytesPerRow(surface) * descriptor.height >
+            IOSurfaceGetAllocSize(surface) ||
         IOSurfaceGetPixelFormat(surface) != 0x42475241 ||
         (descriptor.usage & ~(MTLTextureUsageShaderRead |
             MTLTextureUsageRenderTarget)) || !descriptor.usage)
@@ -581,8 +593,10 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
         _source.width != _destination.width ||
         _source.height != _destination.height ||
         _source.width != 1080 || _source.height != 1920 ||
-        _source.privateSurface.rowBytes != 4320 ||
-        _destination.privateSurface.rowBytes != 4320 ||
+        !validBGRARow(_source.width, _source.height,
+            _source.privateSurface.rowBytes) ||
+        !validBGRARow(_destination.width, _destination.height,
+            _destination.privateSurface.rowBytes) ||
         !(_destination.usage & MTLTextureUsageRenderTarget) ||
         (_hasViewport && (_viewport.width != _destination.width ||
             _viewport.height != _destination.height)) ||

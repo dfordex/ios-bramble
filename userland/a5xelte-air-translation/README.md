@@ -64,7 +64,7 @@ metadata gap, not evidence that the shader needs no texture.
 ## Bounded T720 render descriptor fixture
 
 `build_read_surf_job.c` uses Mesa's generated v4 pack/unpack definitions to
-create and check one **host-only** 8 KiB GPU descriptor page for the two exact
+create and check one **host-only** 12 KiB GPU descriptor allocation for the two exact
 Midgard shader fingerprints above. It accepts only 1080×1920 BGRA8 input and
 output, a single texture at LOD 0, four vertex IDs drawn as a triangle strip,
 and distinct non-overlapping mapped 40-bit GPU addresses. This draw topology
@@ -81,6 +81,7 @@ is a fixture choice; stock QuartzCore call-site draw state is not proven.
 | `0x900`, `0xe00` | Exact fragment (1232 B) and vertex (208 B) code |
 | `0xf00`, `0xf40` | GPU-written position and point-size outputs |
 | `0x1000`–`0x1a00` | Polygon header and body, allocated as one 0xa00-byte span |
+| `0x2000`–`0x3000` | Separate, mapped 4 KiB geometry heap |
 
 The polygon body pointer is `0x1200`, **inside** that span. The full 0xa00-byte
 span comes from the 1080×1920 fixture's four 1024×1024 bins and is checked
@@ -254,8 +255,14 @@ proof still uses baseVertex 0 and a fixed 1080×1920 viewport.
 Mesa NIR validation and compilation passed. Modified modules and use of one
 pair under the other profile are rejected before emitting outputs. Rebuilding
 the existing `read_surf` pair produces byte-identical 208/1232-byte binaries.
-External `spirv-val` was not available; no independent SPIR-V validator or GPU
-pixel test was run.
+The initial experiment lacked external `spirv-val` and explicitly disabled it.
+The corrected wrapper now **requires** a real validator and enables the
+translator's profile-specific validation before any shader output is written.
+Supply `--spirv-val /path/to/spirv-val`, set `METAL2VULKAN_SPIRV_VAL`, or put
+SPIRV-Tools on PATH. Missing validation fails the translation. For this Vulkan
+1.2 profile the validator enables `--uniform-buffer-standard-layout`, matching
+the profile's actual `uniformBufferStandardLayout` feature; without that
+feature a tightly packed `uint[]` uniform block correctly fails validation.
 
 The real AIR stages now have a host Midgard compilation path. This supplies
 no draw descriptors, vertex/UBO/sampler binding in the iOS provider,
@@ -264,3 +271,68 @@ only its existing `read_surf` pair. No additional function object is returned
 merely because these host binaries exist.
 
 No BOOT, SYSTEM, or USERDATA write was made for this experiment.
+
+## Release compiler ordering and regression gate
+
+The corrected compiler follows Mesa 26.2.4 `pan_compiler.h`:
+
+1. Early graphics I/O and system-value lowering.
+2. `pan_preprocess_nir`.
+3. The authenticated texture/buffer descriptor, fragment-position,
+   push-to-UBO and half-quantization lowerings, followed by DCE and NIR validation.
+4. `pan_postprocess_nir`, followed by NIR validation.
+5. Only generated system-value inlining, followed by final NIR validation.
+6. `pan_shader_compile`.
+
+The T720 postprocess itself generates viewport and sampler LOD system values
+(the latter for the Midgard LOD erratum). Their final replacement with the
+fixture viewport or actual sampler UBO is the release contract's permitted
+sysval-inline phase. Half arithmetic no longer runs after postprocess. The
+compiler requires active NIR validation and refuses an `NDEBUG` build. Its
+varying policy still uses the upstream untrusted high-precision uint producer;
+the job builder must describe that producer as uint independently of the
+fragment consumer's float interpretation.
+
+Both actual AIR pairs were freshly translated using SPIRV-Tools v2026.4
+(`vulkan1.2: PASS`) and recompiled after these ordering changes. All four
+Midgard binaries remain byte-identical to their earlier authenticated values:
+
+| Pair/stage | Bytes | First tag | Work registers | TLS/WLS | SHA-256 |
+| --- | ---: | ---: | ---: | --- | --- |
+| read_surf vertex | 208 | 5 | 1 | 0/0 | `c6ee709a69f08c5d556399155fd881b648f50ba368f630ccf315824aa467eef7` |
+| read_surf fragment | 1232 | 5 | 6 | 0/0 | `a87ae5aef8fd86863bf2d62b57924243107defddcb2da91ae172affc646a3b23` |
+| downsample_4 vertex | 2048 | 5 | 8 | 0/0 | `f5556b29f212c3674cb16b166a7dbf93671b4c27b7c65e54b78d77a2837f2be1` |
+| downsample_4 fragment | 3472 | 5 | 7 | 0/0 | `1771f55d5bf91525734b33166e001bdf2b402e7467988c366016c8c1f8ff2a82` |
+
+Run the complete host regression against staged proprietary inputs:
+
+```sh
+python3 test_compiler_profiles.py \
+  /private/tmp/a5xelte-mesa-full/buildtools \
+  /private/tmp/a5xelte-root-view/System/Library/Frameworks/QuartzCore.framework/default.metallib \
+  /private/tmp/a5-metal2vulkan/target/release/metal2vulkan \
+  /private/tmp/a5-metal2vulkan/crates/metal2vulkan-validation/profiles/vk12-floor.json \
+  /private/tmp/a5-spirv-tools/spirv-tools/1.4.363.0/bin/spirv-val \
+  /private/tmp/a5-compiler-profile-regression
+```
+
+This gate validates both genuine SPIR-V pairs, compiles four authenticated
+stages with matching renderer metadata, verifies malformed SPIR-V is rejected
+by the actual validator, rejects a module used under the wrong compiler profile,
+and checks missing validation fails before translation. Logs and the metadata
+manifest remain in the private output directory. No generated shader is added
+to Git. These are compiler checks; unchanged shader bytes do not establish
+correct device pixels, and the earlier 0169 DS4 device pixel oracle failed.
+
+
+## Release Panfrost correction candidate 0170
+
+The released v4 job contract now includes vertex task split5, distinct U32 VS
+varying and F32 FS consumer formats for DS4, tile-unit fragment bounds,
+contiguous varying buffers, special position/point-size formats and a real
+nonempty read_surf heap. The generated read_surf allocation is12 KiB; historical
+8 KiB hashes above describe earlier trials. Kernel AS1 maps all three pages.
+Actual source/destination byte strides are relocated by the validated kernel
+read_surf path, so padded4352-byte IOSurfaces do not require repacking to4320.
+The genuine pair's shader bytes remain unchanged after the compiler-order fix.
+The candidate still requires new device pixel evidence.

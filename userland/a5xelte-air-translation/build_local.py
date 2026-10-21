@@ -26,6 +26,9 @@ def main() -> int:
         if " -c ../mesa-26.2.4/src/panfrost/a5_t720_copy_shader.c" in line
     )
     cc = shlex.split(compile_line)
+    # This profile depends on validation remaining active; a release NDEBUG
+    # build is rejected by the compiler source rather than silently skipping it.
+    cc.append("-Werror")
     cc[cc.index("-c") + 1] = str(source)
     obj = output.with_suffix(".o")
     cc[cc.index("-o") + 1] = str(obj)

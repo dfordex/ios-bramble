@@ -12,6 +12,10 @@
 #include "panfrost/compiler/pan_compiler.h"
 #include "panfrost/compiler/midgard/disassemble.h"
 
+#ifdef NDEBUG
+#error This bounded compiler requires active NIR validation
+#endif
+
 static unsigned io_type_size(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_attribute_slots(type, false);
@@ -55,7 +59,7 @@ static bool lower_fixed_viewport(nir_builder *b,
    /* Proof only: the actual display pipeline must supply a dynamic viewport. */
    nir_def *v = scale ? nir_imm_vec3(b, 540.0f, 960.0f, 0.5f)
                       : nir_imm_vec3(b, 540.0f, 960.0f, 0.5f);
-   nir_def_rewrite_uses(&intr->def, v);
+   nir_def_replace(&intr->def, v);
    return true;
 }
 
@@ -175,7 +179,7 @@ static bool lower_downsample_sampler_lod(nir_builder *b,
     * values dynamic in UBO0 bytes16..27, separate from dimensions/push data. */
    nir_def *value = nir_load_ubo(b, 3, 32, nir_imm_int(b, 0),
       nir_imm_int(b, 16), .range = 28, .align_mul = 4);
-   nir_def_rewrite_uses(&intr->def, value);
+   nir_def_replace(&intr->def, value);
    return true;
 }
 
@@ -271,21 +275,6 @@ static int compile_spirv(const char *input, const char *output,
    NIR_PASS(_, nir, nir_lower_system_values);
    if (stage == MESA_SHADER_FRAGMENT)
       NIR_PASS(_, nir, nir_lower_wpos_center);
-   NIR_PASS(_, nir, nir_shader_instructions_pass, lower_single_texture,
-            nir_metadata_control_flow, NULL);
-   if (downsample) {
-      struct buffer_lowering ctx = {.stage = stage};
-      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_downsample_buffers,
-               nir_metadata_control_flow, &ctx);
-      if (ctx.invalid) {
-         fprintf(stderr, "unsupported downsample descriptor binding\n");
-         ralloc_free(nir);
-         return 2;
-      }
-      NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
-               nir_address_format_32bit_index_offset);
-   }
-   NIR_PASS(_, nir, nir_opt_dce);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
             nir_address_format_32bit_offset);
 
@@ -315,10 +304,27 @@ static int compile_spirv(const char *input, const char *output,
       inputs.varying_layout = &varying_layout;
    }
    pan_preprocess_nir(nir, inputs.gpu_id);
+   /* Descriptor lowering follows preprocessing, before postprocessing. */
+   NIR_PASS(_, nir, nir_shader_instructions_pass, lower_single_texture,
+            nir_metadata_control_flow, NULL);
+   if (downsample) {
+      struct buffer_lowering ctx = {.stage = stage};
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_downsample_buffers,
+               nir_metadata_control_flow, &ctx);
+      if (ctx.invalid) {
+         fprintf(stderr, "unsupported downsample descriptor binding\n");
+         ralloc_free(nir);
+         return 2;
+      }
+      NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
+               nir_address_format_32bit_index_offset);
+   }
    if (stage == MESA_SHADER_VERTEX)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_zero_base_vertex,
                nir_metadata_control_flow, NULL);
-   pan_postprocess_nir(nir, &inputs, &info);
+   /* Driver descriptor/I/O and arithmetic lowering belongs before Panfrost's
+    * postprocess boundary (pan_compiler.h). In particular, its algebraic and
+    * scalarization passes must see the half-rounding ALU we introduce. */
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_push_to_ubo,
             nir_metadata_control_flow, downsample ? &downsample : NULL);
    if (stage == MESA_SHADER_FRAGMENT)
@@ -326,6 +332,14 @@ static int compile_spirv(const char *input, const char *output,
                nir_metadata_control_flow, NULL);
    NIR_PASS(_, nir, nir_shader_alu_pass, lower_half_quantize,
             nir_metadata_control_flow, NULL);
+   NIR_PASS(_, nir, nir_opt_dce);
+   nir_validate_shader(nir, "A5 descriptor/I/O/arithmetic lowering");
+   pan_postprocess_nir(nir, &inputs, &info);
+   nir_validate_shader(nir, "Panfrost postprocess");
+
+   /* Only sysval inlining follows postprocess. Midgard's postprocess itself
+    * creates sampler LOD sysvals for the T720 erratum and viewport sysvals;
+    * these do not exist at the preceding driver-lowering boundary. */
    if (downsample && stage == MESA_SHADER_FRAGMENT) {
       bool invalid = false;
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_downsample_sampler_lod,
@@ -336,12 +350,12 @@ static int compile_spirv(const char *input, const char *output,
          return 2;
       }
    }
-   NIR_PASS(_, nir, nir_opt_dce);
    fprintf(stderr, "%s: NIR after Panfrost lowering\n", input);
    nir_print_shader(nir, stdout);
    if (stage == MESA_SHADER_VERTEX)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_fixed_viewport,
                nir_metadata_control_flow, NULL);
+   nir_validate_shader(nir, "A5 final sysval inlining");
    pan_shader_compile(nir, &inputs, &binary, &info);
 
    int rc = 1;
@@ -350,9 +364,12 @@ static int compile_spirv(const char *input, const char *output,
        fwrite(binary.data, 1, binary.size, f) == binary.size &&
        fclose(f) == 0) {
       f = NULL;
-      printf("%s: Midgard bytes=%u first_tag=%u textures=%u work_regs=%u\n",
+      printf("%s: Midgard bytes=%u first_tag=%u textures=%u work_regs=%u "
+             "tls=%u wls=%u attributes=%u ubos=%u samplers=%u\n",
              output, binary.size, info.midgard.first_tag,
-             info.texture_count, info.work_reg_count);
+             info.texture_count, info.work_reg_count, info.tls_size,
+             info.wls_size, info.attribute_count,
+             info.ubo_count, info.sampler_count);
       disassemble_midgard(stdout, binary.data, binary.size, inputs.gpu_id, false);
       rc = 0;
    }

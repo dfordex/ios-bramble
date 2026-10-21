@@ -331,7 +331,9 @@ static int validReadSurf(const A5MaliClient *client,
         (destination->usage & A5MaliWrite) &&
         source->width == 1080 && source->height == 1920 &&
         destination->width == 1080 && destination->height == 1920 &&
-        source->rowBytes == 4320 && destination->rowBytes == 4320;
+        source->rowBytes >= 4320 && source->rowBytes <= 8192 &&
+        !(source->rowBytes & 15) && destination->rowBytes >= 4320 &&
+        destination->rowBytes <= 8192 && !(destination->rowBytes & 15);
 }
 
 kern_return_t A5MaliReadSurf(A5MaliClient *client,

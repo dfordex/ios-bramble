@@ -205,3 +205,16 @@ the corresponding controlled output checks.
 The source mismatches are actionable without assuming the development A5
 Linux driver is correct. The current phone result remains failed DS4 pixels;
 complete iOS rendering on Mali has not been demonstrated.
+
+
+## Correction candidate 0170
+
+The source-proven bounded-path corrections were implemented after this audit in
+patches0166–0170, the tracked command builders/encoder and the compiler wrapper.
+This includes T720 setup, MMU drain/cache handling, all current fragment bounds,
+vertex dispatch/varying layout, nonempty heaps and padded read_surf row strides.
+The original audit above records the pre-fix snapshot; do not reinterpret its
+static findings as proof of the new candidate's phone result. See the latest
+[A5 progress entry](../A5XELTE_PROGRESS.md) for build, installation and pixel evidence.
+General Metal pipeline/resource coverage, asynchronous IRQ/reset/PM architecture
+and the swizzle/LOD hypotheses are not claimed completed by these source fixes.

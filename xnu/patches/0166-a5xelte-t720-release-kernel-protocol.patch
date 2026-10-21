@@ -1,0 +1,277 @@
+--- a/iokit/Kernel/arm/A5XELTEGPU.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPU.cpp
+@@ -165,6 +165,24 @@
+             return false;
+         }
+     }
++    /* Released Panfrost T720 issues10797 and the pre-T760 attribute rule:
++     * establish only the model-specific required bits; preserve unrelated
++     * inherited configuration instead of importing another SoC's quirks. */
++    if ((a5g3d_read32(gpu, 0) >> 16) != 0x720u) {
++        service->setProperty("A5G3DJobResult", "shader-quirk-model-mismatch");
++        return false;
++    }
++    const uint32_t shaderRequired = (1u << 18) | (1u << 25);
++    const uint32_t shaderOld = a5g3d_read32(gpu, 0xf04);
++    a5g3d_write32(gpu, 0xf04, shaderOld | shaderRequired);
++    __sync_synchronize();
++    const uint32_t shaderConfigured = a5g3d_read32(gpu, 0xf04);
++    IOLog("A5XELTE G3D: T720 shader config old=%08x readback=%08x required=%08x\n",
++        shaderOld, shaderConfigured, shaderRequired);
++    if ((shaderConfigured & shaderRequired) != shaderRequired) {
++        service->setProperty("A5G3DJobResult", "t720-shader-quirk-readback-failed");
++        return false;
++    }
+     /* Match panfrost_gpu_power_on: L2, shader, then tiler. The domain
+      * and CMU gates were verified in a5g3d_probe_existing_power().
+      */
+@@ -376,7 +394,9 @@
+     a5g3d_write32(gpu, slotBase + 0x44, 0);
+     a5g3d_write32(gpu, slotBase + 0x50, request.shaderMask);
+     a5g3d_write32(gpu, slotBase + 0x54, 0);
+-    a5g3d_write32(gpu, slotBase + 0x58, (8 << 16) | (3 << 8) | (3 << 12));
++    /* T720 HW_ISSUE_10649 requires START_MMU in addition to PT flushing. */
++    a5g3d_write32(gpu, slotBase + 0x58,
++        (8u << 16) | (3u << 8) | (1u << 10) | (3u << 12));
+     __sync_synchronize();
+     a5g3d_write32(gpu, slotBase + 0x60, 1); /* JS_COMMAND_NEXT = START */
+
+--- a/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
+@@ -18,7 +18,7 @@
+ #if __has_include("A5XELTEReadSurfFixture.inc")
+ #include "A5XELTEReadSurfFixture.inc"
+ #define A5XELTE_READ_SURF_AVAILABLE 1
+-static_assert(sizeof(kAS1ReadSurfFixture) == 0x2000,
++static_assert(sizeof(kAS1ReadSurfFixture) == 0x3000,
+     "read_surf descriptor size changed");
+ #else
+ #define A5XELTE_READ_SURF_AVAILABLE 0
+@@ -38,7 +38,7 @@
+     kAS1Base = 0x10000000,
+     kAS1Window = 0x800000,
+     kAS1JobVA = 0x12000000,
+-    kAS1JobBytes = 0x2000,
++    kAS1JobBytes = 0x3000, /* descriptors/scratch + separate 4-KiB tiler heap */
+     kAS1BufferBase = 0x12200000,
+     kAS1BufferWindow = 0x100000,
+     kAS1BGRA = 0x42475241,
+@@ -109,6 +109,52 @@
+     return false;
+ }
+
++/* A faulted slot can remain active. Read MMIO before acknowledgements and
++ * never inspect or recycle a DMA target until a terminal idle fence. */
++static void
++a5g3d_as1_fault_snapshot(vm_offset_t gpu, uint32_t slot, const char *reason)
++{
++    const uint32_t slotBase = 0x1800 + slot * 0x80;
++    const uint64_t address = static_cast<uint64_t>(
++        a5g3d_as1_read(gpu, 0x2464)) << 32 | a5g3d_as1_read(gpu, 0x2460);
++    const uint64_t head = static_cast<uint64_t>(
++        a5g3d_as1_read(gpu, slotBase + 4)) << 32 |
++        a5g3d_as1_read(gpu, slotBase);
++    const uint64_t gpuAddress = static_cast<uint64_t>(
++        a5g3d_as1_read(gpu, 0x44)) << 32 | a5g3d_as1_read(gpu, 0x40);
++    IOLog("A5XELTE G3D: AS1 fault snapshot reason=%s slot=%u irq=%08x mmu_raw=%08x gpu_irq=%08x as_status=%08x fault_status=%08x fault_va=%016llx js_status=%08x js_head=%016llx gpu_fault=%08x gpu_va=%016llx\n",
++        reason, slot, a5g3d_as1_read(gpu, 0x1000),
++        a5g3d_as1_read(gpu, 0x2000), a5g3d_as1_read(gpu, 0x20),
++        a5g3d_as1_read(gpu, 0x2468), a5g3d_as1_read(gpu, 0x245c),
++        address, a5g3d_as1_read(gpu, slotBase + 0x24), head,
++        a5g3d_as1_read(gpu, 0x3c), gpuAddress);
++}
++
++static bool
++a5g3d_as1_mmu_clean(vm_offset_t gpu)
++{
++    return a5g3d_as1_wait(gpu) && !a5g3d_as1_read(gpu, 0x245c) &&
++        !(a5g3d_as1_read(gpu, 0x2000) & 0x00020002u);
++}
++
++/* Released Panfrost drains all translated accesses before changing or
++ * disabling an AS root. LOCKADDR=63 is the full-address-space region
++ * encoding used by lock_region(0, ~0ULL), not a fixed surface-window lock. */
++static bool
++a5g3d_as1_drain(vm_offset_t gpu)
++{
++    if (!a5g3d_as1_mmu_clean(gpu))
++        return false;
++    a5g3d_as1_write(gpu, 0x2450, 63u);
++    a5g3d_as1_write(gpu, 0x2454, 0u);
++    __sync_synchronize();
++    a5g3d_as1_write(gpu, 0x2458, 2u); /* LOCK */
++    if (!a5g3d_as1_mmu_clean(gpu))
++        return false;
++    a5g3d_as1_write(gpu, 0x2458, 5u); /* FLUSH_MEM */
++    return a5g3d_as1_mmu_clean(gpu);
++}
++
+ static bool
+ a5g3d_as1_surface_valid(SweetSurface *surface, uint32_t *bytes)
+ {
+@@ -163,7 +209,7 @@
+         physical > 0xffffffffULL - (kAS1TableBytes - 1) ||
+         !ctx->jobs->getBytesNoCopy() || !jobPhysical ||
+         (jobPhysical & 4095) || jobSpan < kAS1JobBytes ||
+-        jobPhysical > 0xffffdfffULL)
++        jobPhysical > 0xffffefffULL - (kAS1JobBytes - kAS1Page))
+         return false;
+     bzero(bytes, kAS1TableBytes);
+     uint64_t *l0 = reinterpret_cast<uint64_t *>(bytes);
+@@ -183,8 +229,10 @@
+         (physical + kAS1JobTablePage * kAS1Page) | 3u;
+     uint64_t *jobsL3 = reinterpret_cast<uint64_t *>(
+         bytes + kAS1JobTablePage * kAS1Page);
+-    jobsL3[0] = jobPhysical | kAS1PageDescriptor;
+-    jobsL3[1] = (jobPhysical + kAS1Page) | kAS1PageDescriptor;
++    static_assert(kAS1JobBytes == 3 * kAS1Page,
++        "AS1 job descriptor and tiler heap need exactly three pages");
++    for (uint32_t page = 0; page < kAS1JobBytes / kAS1Page; ++page)
++        jobsL3[page] = (jobPhysical + page * kAS1Page) | kAS1PageDescriptor;
+     for (uint32_t table = 0; table < 2; ++table)
+         l2[(kAS1BufferBase >> 21) + table] =
+             (physical + (kAS1BufferTablePage + table) * kAS1Page) | 3u;
+@@ -209,10 +257,9 @@
+         return kAS1UpdateBusy; /* no MMIO or live PTE flush attempted */
+     bool ok = false;
+     do {
+-        if (!(a5g3d_as1_read(gpu, 0x018) & 2u) ||
+-            !a5g3d_as1_wait(gpu) ||
+-            a5g3d_as1_read(gpu, 0x245c) ||
+-            (a5g3d_as1_read(gpu, 0x200c) & 0x00020002u))
++        if ((a5g3d_as1_read(gpu, 0) >> 16) != 0x720u ||
++            !(a5g3d_as1_read(gpu, 0x018) & 2u) ||
++            !a5g3d_as1_mmu_clean(gpu))
+             break;
+         IOByteCount span = 0;
+         const uint64_t physical = ctx->tables->getPhysicalSegment(0,
+@@ -223,28 +270,35 @@
+             0, kAS1TableBytes) != kIOReturnSuccess)
+             break;
+         __sync_synchronize();
++        if (!a5g3d_as1_drain(gpu))
++            break;
+         const uint64_t transtab = disable ? 0 : (physical | 7u);
+         a5g3d_as1_write(gpu, 0x2440, static_cast<uint32_t>(transtab));
+         a5g3d_as1_write(gpu, 0x2444, static_cast<uint32_t>(transtab >> 32));
+         a5g3d_as1_write(gpu, 0x2448, disable ? 0 : 0x888d88);
+         a5g3d_as1_write(gpu, 0x244c, 0);
++        a5g3d_as1_write(gpu, 0x2470, disable ? 1u : 0u);
++        a5g3d_as1_write(gpu, 0x2474, 0u);
++        __sync_synchronize();
+         a5g3d_as1_write(gpu, 0x2458, 1u); /* AS1 UPDATE */
+-        if (!a5g3d_as1_wait(gpu))
++        if (!a5g3d_as1_mmu_clean(gpu))
+             break;
+         if (!disable) {
+             /* Include the kernel-owned descriptor pages after four windows. */
+             a5g3d_as1_write(gpu, 0x2450, kAS1Base | 26u);
+             a5g3d_as1_write(gpu, 0x2454, 0);
+             a5g3d_as1_write(gpu, 0x2458, 2u); /* LOCK */
+-            if (!a5g3d_as1_wait(gpu))
++            if (!a5g3d_as1_mmu_clean(gpu))
+                 break;
+             a5g3d_as1_write(gpu, 0x2458, 4u); /* FLUSH_PT */
+-            if (!a5g3d_as1_wait(gpu))
++            if (!a5g3d_as1_mmu_clean(gpu))
+                 break;
+         }
+-        ok = !a5g3d_as1_read(gpu, 0x245c) &&
+-            !(a5g3d_as1_read(gpu, 0x200c) & 0x00020002u);
++        ok = a5g3d_as1_mmu_clean(gpu);
+     } while (false);
++    if (!ok)
++        a5g3d_as1_fault_snapshot(gpu, 1,
++            disable ? "root-disable" : "root-enable-or-update");
+     /* A failed MMU update may leave AS1 reading the old or new page table.
+      * A5XELTEGPU.cpp still owns AS0; never poison that independent queue.
+      */
+@@ -510,18 +564,29 @@
+     const uint32_t slotBase = 0x1800 + slot * 0x80;
+     const uint32_t slotMask = (1u << slot) | (1u << (slot + 16));
+     const uint32_t shader = a5g3d_as1_read(gpu, 0x140);
+-    if (!shader || !(a5g3d_as1_read(gpu, 0x018) & 2u) ||
++    if ((a5g3d_as1_read(gpu, 0) >> 16) != 0x720u ||
++        !shader || !(a5g3d_as1_read(gpu, 0x018) & 2u) ||
+         !(a5g3d_as1_read(gpu, 0x01c) & (1u << slot)) ||
+         !ctx->installed || ctx->poisoned)
+         return kAS1SubmitBusy;
++    /* RAW is authoritative in this polling driver, independent of IRQ masks.
++     * Capture fault registers before clearing any sampled job interrupt. */
++    if (a5g3d_as1_read(gpu, 0x245c) ||
++        (a5g3d_as1_read(gpu, 0x2000) & 0x00020002u) ||
++        (a5g3d_as1_read(gpu, 0x20) & 0x81u)) {
++        a5g3d_as1_fault_snapshot(gpu, slot, "job-preflight");
++        return kAS1SubmitFault;
++    }
+     /* Clearing JOB_IRQ refreshes sampled JS_STATE on Mali-T720. */
+     a5g3d_as1_write(gpu, 0x1004, slotMask);
+     if ((a5g3d_as1_read(gpu, 0x1010) & slotMask) ||
+         a5g3d_as1_read(gpu, slotBase + 0x24) ||
+         a5g3d_as1_read(gpu, slotBase + 0x60) ||
+         a5g3d_as1_read(gpu, 0x245c) ||
+-        (a5g3d_as1_read(gpu, 0x200c) & 0x00020002u))
++        (a5g3d_as1_read(gpu, 0x2000) & 0x00020002u)) {
++        a5g3d_as1_fault_snapshot(gpu, slot, "job-slot-busy");
+         return kAS1SubmitFault;
++    }
+     if (ctx->jobs->performOperation(kIOMemoryIncoherentIOStore,
+         0, kAS1JobBytes) != kIOReturnSuccess)
+         return kAS1SubmitIOError;
+@@ -531,9 +596,10 @@
+     a5g3d_as1_write(gpu, slotBase + 0x44, 0);
+     a5g3d_as1_write(gpu, slotBase + 0x50, shader);
+     a5g3d_as1_write(gpu, slotBase + 0x54, 0);
+-    /* Low config bits choose AS1; no userspace-controlled register fields. */
++    /* Low config bits choose AS1. T720 HW_ISSUE_10649 additionally requires
++     * START_MMU; no userspace-controlled register fields are accepted. */
+     a5g3d_as1_write(gpu, slotBase + 0x58,
+-        (8u << 16) | (3u << 8) | (3u << 12) | 1u);
++        (8u << 16) | (3u << 8) | (1u << 10) | (3u << 12) | 1u);
+     __sync_synchronize();
+     *started = true;
+     a5g3d_as1_write(gpu, slotBase + 0x60, 1u);
+@@ -551,8 +617,10 @@
+         completion->mmuIRQ = mmuIRQ;
+         completion->gpuIRQ = gpuIRQ;
+     }
+-    if (!((jobIRQ & slotMask) || mmuIRQ || (gpuIRQ & 0x81u)))
++    if (!((jobIRQ & slotMask) || mmuIRQ || (gpuIRQ & 0x81u))) {
++        a5g3d_as1_fault_snapshot(gpu, slot, "job-timeout");
+         return kAS1SubmitTimeout;
++    }
+     bool idle = false;
+     for (unsigned i = 0; i < 1000; ++i) {
+         if (!a5g3d_as1_read(gpu, slotBase + 0x24) &&
+@@ -562,14 +630,16 @@
+         }
+         IODelay(10);
+     }
+-    if (!idle)
++    if (!idle) {
++        a5g3d_as1_fault_snapshot(gpu, slot, "job-still-active");
+         return kAS1SubmitFault;
++    }
++    if (mmuIRQ || (gpuIRQ & 0x81u) || (jobIRQ & (1u << (slot + 16))))
++        a5g3d_as1_fault_snapshot(gpu, slot, "job-terminal-fault");
++    /* Retain all GPU-written varyings, polygon data and heap before any
++     * subsequent stage cleans the entire job BO back to memory. */
+     if (ctx->jobs->performOperation(kIOMemoryIncoherentIOFlush,
+-        jobOffset, 16) != kIOReturnSuccess)
+-        return kAS1SubmitIOError;
+-    if (linkedJobOffset &&
+-        ctx->jobs->performOperation(kIOMemoryIncoherentIOFlush,
+-            linkedJobOffset, 16) != kIOReturnSuccess)
++        0, kAS1JobBytes) != kIOReturnSuccess)
+         return kAS1SubmitIOError;
+     __sync_synchronize();
+     const uint32_t header = *reinterpret_cast<const uint32_t *>(
+@@ -701,7 +771,7 @@
+             completion->tilerFence = tilerFence;
+         if (status == kAS1SubmitCompleted &&
+             ctx->jobs->performOperation(kIOMemoryIncoherentIOFlush,
+-                0x1000, 0x1000) != kIOReturnSuccess)
++                0, kAS1JobBytes) != kIOReturnSuccess)
+             status = kAS1SubmitIOError;
+     }
+     if (status == kAS1SubmitCompleted) {

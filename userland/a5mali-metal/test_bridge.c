@@ -218,11 +218,29 @@ int main(void)
     assert(A5MaliSubmitBatchCommands(&client, &readSurf, 1,
         &batch) == KERN_SUCCESS && batch.completedCount == 1);
     fullSource.rowBytes = 4352;
-    const uint32_t beforeInvalid = fake.submits;
     assert(A5MaliReadSurf(&client, &fullSource, &fullDestination,
-        NULL) == kIOReturnBadArgument && fake.submits == beforeInvalid);
+        NULL) == KERN_SUCCESS);
     assert(A5MaliSubmitBatchCommands(&client, &readSurf, 1,
-        &batch) == kIOReturnBadArgument);
+        &batch) == KERN_SUCCESS && batch.completedCount == 1);
+    fullDestination.rowBytes = 4352;
+    assert(A5MaliReadSurf(&client, &fullSource, &fullDestination,
+        NULL) == KERN_SUCCESS);
+    const uint32_t beforeInvalid = fake.submits;
+    const uint32_t invalidRows[] = {4316, 4324, 8208};
+    for (unsigned i = 0; i < sizeof(invalidRows) / sizeof(invalidRows[0]); ++i) {
+        fullSource.rowBytes = invalidRows[i];
+        assert(A5MaliReadSurf(&client, &fullSource, &fullDestination,
+            NULL) == kIOReturnBadArgument && fake.submits == beforeInvalid);
+        assert(A5MaliSubmitBatchCommands(&client, &readSurf, 1,
+            &batch) == kIOReturnBadArgument);
+        fullSource.rowBytes = 4352;
+        fullDestination.rowBytes = invalidRows[i];
+        assert(A5MaliReadSurf(&client, &fullSource, &fullDestination,
+            NULL) == kIOReturnBadArgument && fake.submits == beforeInvalid);
+        assert(A5MaliSubmitBatchCommands(&client, &readSurf, 1,
+            &batch) == kIOReturnBadArgument);
+        fullDestination.rowBytes = 4352;
+    }
     fake.malformedImport = 1;
     A5MaliResource rejected;
     const uint32_t released = fake.releases;

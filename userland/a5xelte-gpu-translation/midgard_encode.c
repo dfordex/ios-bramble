@@ -95,8 +95,10 @@ static void encode_framebuffer(uint8_t *out, uint64_t desc_va,
     }
     put64(out, fb + 25 * 8, desc_va + 0x1000);
     put64(out, fb + 26 * 8, desc_va + 0x1200);
-    put64(out, fb + 27 * 8, desc_va + 0x1000);
-    put64(out, fb + 28 * 8, desc_va + 0x1000);
+    put64(out, fb + 27 * 8, desc_va +
+        (preload ? A5_MIDGARD_HEAP_OFFSET : 0x1000));
+    put64(out, fb + 28 * 8, desc_va +
+        (preload ? A5_MIDGARD_HEAP_OFFSET + A5_MIDGARD_HEAP_BYTES : 0x1000));
     if (preload) {
         const uint32_t bins_x = (dst->width + 1023) / 1024;
         const uint32_t bins_y = (dst->height + 1023) / 1024;
@@ -110,9 +112,14 @@ static void encode_framebuffer(uint8_t *out, uint64_t desc_va,
 }
 
 static void encode_fragment_job(uint8_t *out, uint64_t desc_va,
-    uint32_t job_index)
+    uint32_t job_index, const struct a5_midgard_rect *bounds)
 {
     put32(out, 0x10, (job_index << 16) | 0x13u); /* 64-bit fragment job */
+    /* Fragment payload uses inclusive 16x16 tile indices; the SFBD and
+     * viewport separately retain exact pixel scissors. */
+    put32(out, 0x20, (bounds->x >> 4) | ((bounds->y >> 4) << 16));
+    put32(out, 0x24, ((bounds->x + bounds->width - 1) >> 4) |
+        (((bounds->y + bounds->height - 1) >> 4) << 16));
     put64(out, 0x28, desc_va + 0x100);
 }
 
@@ -182,7 +189,7 @@ enum a5_midgard_status a5_midgard_encode_copy(
         (destination->width - 1));
     encode_framebuffer(out, descriptor_va, destination, destination_rect,
         0, 1);
-    encode_fragment_job(out, descriptor_va, 2);
+    encode_fragment_job(out, descriptor_va, 2, destination_rect);
     return A5_MIDGARD_OK;
 }
 
@@ -202,6 +209,6 @@ enum a5_midgard_status a5_midgard_encode_clear(
     memset(out, 0, A5_MIDGARD_DESCRIPTOR_BYTES);
     encode_framebuffer(out, descriptor_va, destination, destination_rect,
         bgra8_word, 0);
-    encode_fragment_job(out, descriptor_va, 1);
+    encode_fragment_job(out, descriptor_va, 1, destination_rect);
     return A5_MIDGARD_OK;
 }

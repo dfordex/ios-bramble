@@ -13,7 +13,15 @@ typedef struct {
     BatchItem items[8];
 } BatchReply;
 typedef struct { A5MaliHeader h; uint64_t token; } HandleRequest;
-typedef struct { uint32_t batches, releases, expectedOperation; } Fake;
+typedef struct { A5MaliHeader h; uint32_t port, usage; uint64_t reserved; } ImportRequest;
+typedef struct {
+    A5MaliHeader h; uint64_t handle; uint32_t width, height, rowBytes, format;
+} ImportReply;
+typedef struct { A5MaliHeader h; uint64_t token; uint32_t mappedBytes, flags; } MapReply;
+typedef struct {
+    uint32_t batches, releases, expectedOperation;
+    uint32_t imports, importWidth, importHeight, importRow;
+} Fake;
 
 @interface NamedFunctionFixture : NSObject
 @property (nonatomic, copy) NSString *name;
@@ -42,6 +50,29 @@ static kern_return_t mock(void *opaque, uint32_t selector, const void *input,
     size_t inputSize, void *output, size_t *outputSize)
 {
     Fake *fake = opaque;
+    if (selector == A5MaliImport) {
+        assert(inputSize == sizeof(ImportRequest));
+        const ImportRequest *request = input;
+        assert(request->port && request->usage);
+        ImportReply reply = {{1, sizeof(reply), 0, 0},
+            0x100000100ULL + fake->imports, fake->importWidth,
+            fake->importHeight, fake->importRow, 0x42475241};
+        assert(output && *outputSize == sizeof(reply));
+        memcpy(output, &reply, sizeof(reply));
+        *outputSize = sizeof(reply);
+        ++fake->imports;
+        return KERN_SUCCESS;
+    }
+    if (selector == A5MaliMap) {
+        assert(inputSize == sizeof(HandleRequest));
+        const HandleRequest *request = input;
+        MapReply reply = {{1, sizeof(reply), 0, 0}, request->token,
+            fake->importRow * fake->importHeight, A5MaliRead | A5MaliWrite};
+        assert(output && *outputSize == sizeof(reply));
+        memcpy(output, &reply, sizeof(reply));
+        *outputSize = sizeof(reply);
+        return KERN_SUCCESS;
+    }
     if (selector == A5MaliBatchSubmit) {
         assert(inputSize == 472 && output && *outputSize == 224);
         const BatchRequest *request = input;
@@ -174,6 +205,68 @@ static void renderCandidate(A5MaliRestrictedDevice *device,
     [encoder endEncoding];
     [buffer commit];
     assert(buffer.status == MTLCommandBufferStatusCompleted && !buffer.error);
+}
+
+static void renderRows(A5MaliRestrictedDevice *device,
+    A5MaliReadSurfCandidate *pipeline, Fake *fake, uint32_t sourceRow,
+    uint32_t destinationRow, BOOL accepted)
+{
+    A5MaliMetalTexture *source = [device hostTestTextureWithResource:
+        (A5MaliResource){0x100000031ULL, 1080, 1920, sourceRow, A5MaliRead}];
+    A5MaliMetalTexture *destination = [device hostTestTextureWithResource:
+        (A5MaliResource){0x100000032ULL, 1080, 1920, destinationRow, A5MaliWrite}];
+    A5MaliMetalBuffer *buffer = [[device newCommandQueue] commandBuffer];
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor new];
+    pass.colorAttachments[0].texture = (id<MTLTexture>)destination;
+    pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    A5MaliMetalRenderEncoder *encoder =
+        [buffer renderCommandEncoderWithDescriptor:pass];
+    assert(encoder);
+    [encoder setRenderPipelineState:pipeline];
+    [encoder setFragmentTexture:source atIndex:0];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [encoder endEncoding];
+    uint32_t before = fake->batches;
+    [buffer commit];
+    [buffer waitUntilCompleted];
+    assert(buffer.status == (accepted ? MTLCommandBufferStatusCompleted :
+        MTLCommandBufferStatusError));
+    assert((buffer.error == nil) == accepted);
+    assert(fake->batches == before + (accepted ? 1 : 0));
+}
+
+static void importPaddedRows(void)
+{
+    Fake fake = {.importWidth = 1080, .importHeight = 1920, .importRow = 4352};
+    @autoreleasepool {
+        A5MaliRestrictedDevice *device = [[A5MaliRestrictedDevice alloc]
+            initWithTransport:mock context:&fake];
+        NSDictionary *properties = @{
+            (__bridge id)kIOSurfaceWidth: @1080,
+            (__bridge id)kIOSurfaceHeight: @1920,
+            (__bridge id)kIOSurfaceBytesPerElement: @4,
+            (__bridge id)kIOSurfaceBytesPerRow: @4352,
+            (__bridge id)kIOSurfacePixelFormat: @(0x42475241u),
+        };
+        IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)properties);
+        assert(surface && IOSurfaceGetBytesPerRow(surface) == 4352);
+        assert(IOSurfaceGetAllocSize(surface) >= 4352 * 1920);
+        MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+            width:1080 height:1920 mipmapped:NO];
+        descriptor.storageMode = MTLStorageModeShared;
+        descriptor.usage = MTLTextureUsageShaderRead;
+        A5MaliMetalTexture *texture = [device newTextureWithDescriptor:descriptor
+            iosurface:surface plane:0];
+        assert(texture && [texture privateSurface].rowBytes == 4352);
+        assert(fake.imports == 1);
+        descriptor.width = 1081;
+        assert(![device newTextureWithDescriptor:descriptor iosurface:surface plane:0]);
+        assert(fake.imports == 1);
+        CFRelease(surface);
+    }
+    assert(fake.releases == 1);
 }
 
 static A5MaliReadSurfCandidate *authenticatedCandidate(
@@ -438,7 +531,15 @@ int main(void)
                     A5MaliWrite}];
         renderCandidate(withShader, candidate, source, destination, YES);
         assert(renderFake.batches == 1);
+        renderRows(withShader, candidate, &renderFake, 4352, 4352, YES);
+        renderRows(withShader, candidate, &renderFake, 4352, 4320, YES);
+        renderRows(withShader, candidate, &renderFake, 4320, 4352, YES);
+        renderRows(withShader, candidate, &renderFake, 4316, 4352, NO);
+        renderRows(withShader, candidate, &renderFake, 4352, 4316, NO);
+        renderRows(withShader, candidate, &renderFake, 4324, 4352, NO);
+        renderRows(withShader, candidate, &renderFake, 4352, 8208, NO);
     }
-    assert(renderFake.releases == 4);
+    assert(renderFake.releases == 18);
+    importPaddedRows();
     return 0;
 }

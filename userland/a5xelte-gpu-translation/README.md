@@ -9,7 +9,8 @@ draw descriptors; the framebuffer fields follow its `v4.xml` layout.
 
 The caller must be trusted kernel code. It validates surface ownership, BGRA8
 format and single-plane layout, pins/map pages in one GPU address space,
-allocates an independent 8 KiB descriptor region, stores CPU caches, submits
+allocates an independent 12 KiB command region (including a separate mapped
+4 KiB tiler heap at offset `0x2000`), stores CPU caches, submits
 the jobs in order, waits for finite fences, invalidates GPU-written caches and
 handles faults before releasing any mapping. No user-supplied Mali address,
 job, shader or descriptor may pass directly to this encoder. `mapped_bytes`
@@ -18,9 +19,10 @@ from the descriptor range and the other image.
 
 This implementation limits both images to at most 2048 × 2048 BGRA8
 with a 16-byte-aligned row up to 8192 bytes. The copy rectangles may differ in
-origin but must have equal dimensions. The destination preload bit preserves
-pixels outside the destination rectangle; partial copy and partial clear
-have **not** been verified on the phone. Their packed fields pass local tests only. The
+origin but must have equal dimensions. Fragment dispatch bounds use inclusive
+16×16 tile indices; the framebuffer retains exact pixel bounds. Destination
+preload is requested for copy; preservation of pixels outside partial copy and
+partial clear has **not** been verified on the phone. Their packed fields pass local tests only. The
 full-frame texture-copy path is the existing hardware reference, not proof
 that this refactored encoder or a Metal provider works on device.
 

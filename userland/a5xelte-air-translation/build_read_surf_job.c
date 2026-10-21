@@ -11,12 +11,15 @@
 #include "genxml/v4_pack.h"
 
 enum {
-   BYTES = 0x2000,
+   BYTES = 0x3000, HEAP = 0x2000, HEAP_BYTES = 0x1000,
+   PSIZ_SWIZZLE = MALI_CHANNEL_R | (MALI_CHANNEL_0 << 3) |
+      (MALI_CHANNEL_0 << 6) | (MALI_CHANNEL_1 << 9),
    VERTEX_JOB = 0x000, TILER_JOB = 0x100, FRAGMENT_JOB = 0x200,
    FB = 0x300, VS_RSD = 0x500, FS_RSD = 0x540,
    TEXTURE = 0x600, SURFACE = 0x620, TEX_TABLE = 0x660,
    SAMPLER = 0x680, UBO_DESC = 0x6c0,
-   VS_ATTRS = 0x700, VS_VARYINGS = 0x7c0, VS_VARY_BUFS = 0x7e0,
+   VS_ATTRS = 0x700, VS_ATTR_BUFS = 0x7a0,
+   VS_VARYINGS = 0x7c0, VS_VARY_BUFS = 0x7e0,
    FS_VARYINGS = 0x820, FS_VARY_BUFS = 0x840, VIEWPORT = 0x860,
    UBO_DATA = 0x880, FS_SHADER = 0x900, VS_SHADER = 0xe00,
    POS_BUF = 0xf00, PSIZ_BUF = 0xf40,
@@ -79,7 +82,8 @@ static int validate_layout(void)
    struct region { const char *name; unsigned off, len; };
    const struct region r[] = {
       {"vertex_job", VERTEX_JOB, 0xc0}, {"tiler_job", TILER_JOB, 0xc0},
-      {"fragment_job", FRAGMENT_JOB, 0x40}, {"framebuffer", FB, 0x100},
+      {"fragment_job", FRAGMENT_JOB, 0x40},
+      {"framebuffer", FB, pan_size(FRAMEBUFFER)},
       {"vs_rsd", VS_RSD, pan_size(RENDERER_STATE)},
       {"fs_rsd", FS_RSD, pan_size(RENDERER_STATE)},
       {"texture", TEXTURE, pan_size(TEXTURE)},
@@ -88,6 +92,7 @@ static int validate_layout(void)
       {"sampler", SAMPLER, pan_size(SAMPLER)},
       {"ubo_desc", UBO_DESC, pan_size(UNIFORM_BUFFER)},
       {"vs_attrs", VS_ATTRS, 17 * pan_size(ATTRIBUTE)},
+      {"vertex_id_buffer", VS_ATTR_BUFS, pan_size(ATTRIBUTE_VERTEX_ID)},
       {"vs_varyings", VS_VARYINGS, 2 * pan_size(ATTRIBUTE)},
       {"vs_varying_buffers", VS_VARY_BUFS, 2 * pan_size(ATTRIBUTE_BUFFER)},
       {"fs_varyings", FS_VARYINGS, pan_size(ATTRIBUTE)},
@@ -99,6 +104,7 @@ static int validate_layout(void)
       {"polygon_list_and_body", POLY, POLY_BYTES},
       {"position_buffer", POS_BUF, 64},
       {"pointsize_buffer", PSIZ_BUF, 16},
+      {"tiler_heap", HEAP, HEAP_BYTES},
    };
    for (unsigned i = 0; i < sizeof(r) / sizeof(r[0]); ++i) {
       if (r[i].off + r[i].len > BYTES) {
@@ -131,8 +137,8 @@ static void framebuffer(uint8_t *d, uint64_t va, uint64_t dst,
    put32(d, fb + 35 * 4, stride * height);
    put64(d, fb + 25 * 8, va + POLY);
    put64(d, fb + 26 * 8, va + POLY_BODY);
-   put64(d, fb + 27 * 8, va + POLY);
-   put64(d, fb + 28 * 8, va + POLY);
+   put64(d, fb + 27 * 8, va + HEAP);
+   put64(d, fb + 28 * 8, va + HEAP + HEAP_BYTES);
    unsigned bins = ((width + 1023) / 1024) * ((height + 1023) / 1024);
    put32(d, fb + 48 * 4, 0x200 + bins * 0x200);
    put32(d, fb + 49 * 4, 0x01c7);
@@ -213,21 +219,27 @@ static void resources(uint8_t *d, uint64_t va, uint64_t src,
    put32(d, UBO_DATA + 8, height);
    put32(d, UBO_DATA + 64, color_rule);
 
-   /* LD_ATTR index 16 selects the Midgard vertex-ID special descriptor. */
-   pan_pack((struct mali_attribute_vertex_id_packed *)(d + VS_ATTRS + 16 * 8),
+   /* LD_ATTR16 first selects an ordinary ATTRIBUTE, whose buffer index
+    * selects the separate Midgard vertex-ID special BUFFER descriptor. */
+   pan_pack((struct mali_attribute_vertex_id_packed *)(d + VS_ATTR_BUFS),
             ATTRIBUTE_VERTEX_ID, cfg) {
       cfg.divisor_r = 0x1f;
       cfg.divisor_p = 0x4;
    }
+   pan_pack((struct mali_attribute_packed *)(d + VS_ATTRS + 16 * pan_size(ATTRIBUTE)),
+            ATTRIBUTE, cfg) {
+      cfg.buffer_index = 0;
+      cfg.format = (MALI_R32UI << 12) | PSIZ_SWIZZLE;
+   }
    pan_pack((struct mali_attribute_packed *)(d + VS_VARYINGS), ATTRIBUTE, cfg) {
       cfg.buffer_index = 0;
       cfg.offset_enable = true;
-      cfg.format = (MALI_RGBA32F << 12) | 0x688;
+      cfg.format = (MALI_SNAP_4 << 12) | 0x688;
    }
    pan_pack((struct mali_attribute_packed *)(d + VS_VARYINGS + 8), ATTRIBUTE, cfg) {
       cfg.buffer_index = 1;
       cfg.offset_enable = true;
-      cfg.format = (MALI_R32F << 12) | 0x688;
+      cfg.format = (MALI_R16F << 12) | PSIZ_SWIZZLE;
    }
    pan_pack((struct mali_attribute_buffer_packed *)(d + VS_VARY_BUFS),
             ATTRIBUTE_BUFFER, cfg) {
@@ -235,11 +247,11 @@ static void resources(uint8_t *d, uint64_t va, uint64_t src,
       cfg.stride = 16;
       cfg.size = 64;
    }
-   pan_pack((struct mali_attribute_buffer_packed *)(d + VS_VARY_BUFS + 32),
+   pan_pack((struct mali_attribute_buffer_packed *)(d + VS_VARY_BUFS + pan_size(ATTRIBUTE_BUFFER)),
             ATTRIBUTE_BUFFER, cfg) {
       cfg.pointer = psiz;
-      cfg.stride = 4;
-      cfg.size = 16;
+      cfg.stride = 2;
+      cfg.size = 8;
    }
    pan_pack((struct mali_attribute_packed *)(d + FS_VARYINGS), ATTRIBUTE, cfg) {
       cfg.buffer_index = 0;
@@ -268,11 +280,17 @@ static void jobs(uint8_t *d, uint64_t va, uint64_t pos,
       cfg.workgroups_z_shift = 32;
       cfg.thread_group_split = 2;
    }
+   pan_pack((struct mali_compute_job_parameters_packed *)(d + VERTEX_JOB +
+            MALI_COMPUTE_JOB_SECTION_PARAMETERS_OFFSET), COMPUTE_JOB_PARAMETERS, cfg) {
+      cfg.job_task_split = 5;
+   }
    pan_pack((struct mali_draw_packed *)(d + VERTEX_JOB + 64), DRAW, cfg) {
       cfg.state = va + VS_RSD;
       cfg.attributes = va + VS_ATTRS;
+      cfg.attribute_buffers = va + VS_ATTR_BUFS;
       cfg.varyings = va + VS_VARYINGS;
       cfg.varying_buffers = va + VS_VARY_BUFS;
+      cfg.thread_storage = va + FB;
    }
    pan_pack((struct mali_job_header_packed *)(d + TILER_JOB), JOB_HEADER, cfg) {
       cfg.type = MALI_JOB_TYPE_TILER;
@@ -318,8 +336,8 @@ static void jobs(uint8_t *d, uint64_t va, uint64_t pos,
    }
    pan_pack((struct mali_fragment_job_payload_packed *)(d + FRAGMENT_JOB + 32),
             FRAGMENT_JOB_PAYLOAD, cfg) {
-      cfg.bound_max_x = width - 1;
-      cfg.bound_max_y = height - 1;
+      cfg.bound_max_x = (width - 1) >> MALI_TILE_SHIFT;
+      cfg.bound_max_y = (height - 1) >> MALI_TILE_SHIFT;
       cfg.framebuffer = va + FB;
    }
 }
@@ -335,6 +353,15 @@ static int validate_descriptor(const uint8_t *d, uint64_t va, uint64_t src,
    pan_unpack((const struct mali_job_header_packed *)(d + FRAGMENT_JOB),
               JOB_HEADER, fj);
    pan_unpack((const struct mali_draw_packed *)(d + VERTEX_JOB + 64), DRAW, vd);
+   pan_unpack((const struct mali_compute_job_parameters_packed *)(d + VERTEX_JOB +
+              MALI_COMPUTE_JOB_SECTION_PARAMETERS_OFFSET), COMPUTE_JOB_PARAMETERS, vp);
+   pan_unpack((const struct mali_attribute_packed *)(d + VS_ATTRS + 16 * pan_size(ATTRIBUTE)),
+              ATTRIBUTE, vertex_id);
+   pan_unpack((const struct mali_attribute_vertex_id_packed *)(d + VS_ATTR_BUFS),
+              ATTRIBUTE_VERTEX_ID, vertex_id_buffer);
+   pan_unpack((const struct mali_attribute_packed *)(d + VS_VARYINGS), ATTRIBUTE, pos_attr);
+   pan_unpack((const struct mali_attribute_packed *)(d + VS_VARYINGS + pan_size(ATTRIBUTE)),
+              ATTRIBUTE, ps_attr);
    pan_unpack((const struct mali_draw_packed *)(d + TILER_JOB + 64), DRAW, td);
    pan_unpack((const struct mali_renderer_state_packed *)(d + VS_RSD),
               RENDERER_STATE, vs);
@@ -347,10 +374,12 @@ static int validate_descriptor(const uint8_t *d, uint64_t va, uint64_t src,
               UNIFORM_BUFFER, ubo);
    pan_unpack((const struct mali_attribute_buffer_packed *)(d + VS_VARY_BUFS),
               ATTRIBUTE_BUFFER, vb);
-   pan_unpack((const struct mali_attribute_buffer_packed *)(d + VS_VARY_BUFS + 32),
+   pan_unpack((const struct mali_attribute_buffer_packed *)(d + VS_VARY_BUFS + pan_size(ATTRIBUTE_BUFFER)),
               ATTRIBUTE_BUFFER, pb);
    pan_unpack((const struct mali_fragment_job_payload_packed *)(d + FRAGMENT_JOB + 32),
               FRAGMENT_JOB_PAYLOAD, fp);
+   pan_unpack((const struct mali_tiler_context_packed *)(d + FB +
+              MALI_FRAMEBUFFER_SECTION_TILER_OFFSET), TILER_CONTEXT, tiler);
    uint64_t table = 0, fb_target = 0;
    uint32_t poly_size = 0, color_rule = 0;
    memcpy(&table, d + TEX_TABLE, 8);
@@ -362,7 +391,14 @@ static int validate_descriptor(const uint8_t *d, uint64_t va, uint64_t src,
             tj.type == MALI_JOB_TYPE_TILER && tj.index == 2 &&
             tj.dependency_1 == 1 &&
             fj.type == MALI_JOB_TYPE_FRAGMENT && fj.index == 3 &&
+            vp.job_task_split == 5 &&
             vd.state == va + VS_RSD && td.state == va + FS_RSD &&
+            vd.thread_storage == va + FB &&
+            vd.attribute_buffers == va + VS_ATTR_BUFS &&
+            vertex_id.buffer_index == 0 &&
+            vertex_id.format == ((MALI_R32UI << 12) | PSIZ_SWIZZLE) &&
+            vertex_id_buffer.type == MALI_ATTRIBUTE_SPECIAL_VERTEX_ID &&
+            vertex_id_buffer.divisor_r == 31 && vertex_id_buffer.divisor_p == 4 &&
             vd.attributes == va + VS_ATTRS && td.textures == va + TEX_TABLE &&
             td.uniform_buffers == va + UBO_DESC && td.fbd == va + FB &&
             vs.shader.shader == va + VS_SHADER + 5 &&
@@ -372,8 +408,18 @@ static int validate_descriptor(const uint8_t *d, uint64_t va, uint64_t src,
             tex.width == width && tex.height == height && tex.levels == 1 &&
             surface.pointer == src && table == va + TEXTURE &&
             ubo.pointer == va + UBO_DATA && ubo.entries == 5 &&
-            vb.pointer == pos && pb.pointer == psiz &&
+            pos_attr.buffer_index == 0 && pos_attr.format == ((MALI_SNAP_4 << 12) | 0x688) &&
+            ps_attr.buffer_index == 1 && ps_attr.format == ((MALI_R16F << 12) | PSIZ_SWIZZLE) &&
+            vb.pointer == pos && vb.stride == 16 && vb.size == 64 &&
+            pb.pointer == psiz && pb.stride == 2 && pb.size == 8 &&
+            fp.bound_min_x == 0 && fp.bound_min_y == 0 &&
+            fp.bound_max_x == ((width - 1) >> MALI_TILE_SHIFT) &&
+            fp.bound_max_y == ((height - 1) >> MALI_TILE_SHIFT) &&
             fp.framebuffer == va + FB && fb_target == dst &&
+            tiler.heap_start == va + HEAP &&
+            tiler.heap_end == va + HEAP + HEAP_BYTES &&
+            tiler.heap_end <= va + BYTES &&
+            !overlap(tiler.heap_start, HEAP_BYTES, va + POLY, POLY_BYTES) &&
             poly_size == POLY_BYTES && color_rule == 0x2222;
    if (!ok) fprintf(stderr, "packed descriptor readback mismatch\n");
    return ok;

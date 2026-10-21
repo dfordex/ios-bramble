@@ -30,7 +30,10 @@ enum a5_midgard_status {
 };
 
 enum {
-    A5_MIDGARD_DESCRIPTOR_BYTES = 0x2000,
+    /* Final page is a real tiler heap, disjoint from polygon/commands. */
+    A5_MIDGARD_DESCRIPTOR_BYTES = 0x3000,
+    A5_MIDGARD_HEAP_OFFSET = 0x2000,
+    A5_MIDGARD_HEAP_BYTES = 0x1000,
     A5_MIDGARD_TILER_OFFSET = 0x300,
     A5_MIDGARD_FRAGMENT_OFFSET = 0,
 };

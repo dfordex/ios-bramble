@@ -7,7 +7,9 @@ pairs. Its JSON checks reject a silent change of resource ABI.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -141,7 +143,18 @@ def main() -> int:
     parser.add_argument("output_prefix", type=Path)
     parser.add_argument("--translator", required=True, type=Path)
     parser.add_argument("--profile", required=True, type=Path)
+    parser.add_argument("--spirv-val", type=Path,
+                        help="required real SPIRV-Tools validator; otherwise use "
+                             "METAL2VULKAN_SPIRV_VAL or PATH")
     args = parser.parse_args()
+    validator = args.spirv_val or os.environ.get("METAL2VULKAN_SPIRV_VAL") or \
+        shutil.which("spirv-val")
+    if not validator or not Path(validator).is_file():
+        raise ValueError("spirv-val is required; give --spirv-val or install SPIRV-Tools")
+    environment = os.environ.copy()
+    environment["METAL2VULKAN_SPIRV_VAL"] = str(Path(validator).resolve())
+    validator_version = subprocess.check_output(
+        [environment["METAL2VULKAN_SPIRV_VAL"], "--version"], text=True).splitlines()[0]
     spec = PAIRS[args.pair]
     out = args.output_prefix.resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -150,13 +163,16 @@ def main() -> int:
         str(args.translator), str(args.metallib), str(out) + ".spv",
         "--function", spec["vertex"], "--fragment", spec["fragment"],
         "--profile", str(args.profile), "--color-format", "0:BGRA8Unorm",
-        "--emit-meta", str(meta_path), "--no-spirv-val",
+        "--emit-meta", str(meta_path),
     ]
     if "vertex_descriptor" in spec:
         descriptor_path = out.with_name(out.name + "-vertex-descriptor.json")
         descriptor_path.write_text(json.dumps(spec["vertex_descriptor"], indent=2) + "\n")
         command += ["--vertex-descriptor", str(descriptor_path)]
-    subprocess.run(command, check=True)
+    # The translator validates every stage under the supplied profile's target
+    # environments and enabled layout features before writing any stage. Its
+    # default tolerates a missing validator, so resolve and require it above.
+    subprocess.run(command, check=True, env=environment)
     meta = json.loads(meta_path.read_text())
     abi = check_meta(meta, spec)
     for stage in ("vert", "frag"):
@@ -166,7 +182,8 @@ def main() -> int:
             raise ValueError(f"{path} is not SPIR-V")
         abi[stage] = {"bytes": len(binary),
                       "sha256": hashlib.sha256(binary).hexdigest()}
-    print(json.dumps({"pair": args.pair, "functions": [spec["vertex"],
+    print(json.dumps({"pair": args.pair, "spirv_validator": validator_version,
+                      "functions": [spec["vertex"],
                       spec["fragment"]], **abi}, indent=2))
     return 0
 

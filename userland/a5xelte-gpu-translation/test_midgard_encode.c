@@ -27,6 +27,20 @@ static float coordinate(const uint8_t *bytes, size_t offset)
     return value;
 }
 
+static void check_fragment_tiles(const uint8_t *bytes,
+    const struct a5_midgard_rect *r)
+{
+    /* Independent decode of the upstream v4 12-bit X/Y fields. Pixel
+     * bounds in the SFBD must not be mistaken for this dispatch range. */
+    const uint32_t minimum = word(bytes, 0x20);
+    const uint32_t maximum = word(bytes, 0x24);
+    assert((minimum & 0xfffu) == r->x / 16);
+    assert(((minimum >> 16) & 0xfffu) == r->y / 16);
+    assert((maximum & 0xfffu) == (r->x + r->width - 1) / 16);
+    assert(((maximum >> 16) & 0xfffu) == (r->y + r->height - 1) / 16);
+    assert(!(minimum & 0xf000f000u) && !(maximum & 0xf000f000u));
+}
+
 int main(void)
 {
     uint8_t descriptor[A5_MIDGARD_DESCRIPTOR_BYTES + 8];
@@ -61,6 +75,12 @@ int main(void)
     assert(coordinate(descriptor, 0x8c0) == 10.0f);
     assert(coordinate(descriptor, 0x8c4) == 20.0f);
     assert(address(descriptor, 0x28) == 0x02000100);
+    check_fragment_tiles(descriptor, &destination_rect);
+    assert(address(descriptor, 0x1d8) == 0x02002000);
+    assert(address(descriptor, 0x1e0) == 0x02003000);
+    for (unsigned i = A5_MIDGARD_HEAP_OFFSET;
+         i < A5_MIDGARD_HEAP_OFFSET + A5_MIDGARD_HEAP_BYTES; ++i)
+        assert(descriptor[i] == 0);
 
     const struct a5_midgard_rect whole = {0, 0, 1080, 1920};
     assert(a5_midgard_encode_clear(descriptor,
@@ -73,6 +93,10 @@ int main(void)
     assert(word(descriptor, 0x128) == 0);
     assert(word(descriptor, 0x12c) == (1919u << 16 | 1079u));
     assert(word(descriptor, 0x1200) == 0xa0000000);
+    check_fragment_tiles(descriptor, &whole);
+    assert(word(descriptor, 0x24) == (119u << 16 | 67u));
+    /* Empty heap is allowed only for the disabled-tiler clear path. */
+    assert(address(descriptor, 0x1d8) == address(descriptor, 0x1e0));
 
     const struct a5_midgard_image small = {
         0x06000000, 64ULL * 16, 16, 16, 64,
@@ -85,6 +109,7 @@ int main(void)
     assert(word(descriptor, 0x12c) == (11u << 16 | 11u));
     assert(word(descriptor, 0x1c0) == 0x204);
     assert(word(descriptor, 0x1c4) == 0xfff);
+    check_fragment_tiles(descriptor, &corner);
 
     const struct a5_midgard_image small_source = {
         0x07000000, 64ULL * 16, 16, 16, 64,
@@ -99,6 +124,27 @@ int main(void)
     assert(word(descriptor, 0x91c) == 0x000f000f);
     assert(word(descriptor, 0x1c0) == 0x400);
     assert(word(descriptor, 0x1c4) == 0x1c7);
+    check_fragment_tiles(descriptor, &small_whole);
+
+    /* Cross both tile boundaries from a nonzero origin, including a
+     * two-pixel rectangle spanning tile0/tile1. Neither endpoint may use
+     * width/height directly as a tile coordinate. */
+    const struct a5_midgard_rect crossings[] = {
+        {15, 15, 2, 2}, {16, 31, 17, 2}, {31, 32, 33, 17},
+        {1079, 1919, 1, 1},
+    };
+    for (unsigned i = 0; i < sizeof(crossings) / sizeof(crossings[0]); ++i) {
+        assert(a5_midgard_encode_copy(descriptor,
+            A5_MIDGARD_DESCRIPTOR_BYTES, 0x02000000, &source,
+            &crossings[i], &destination, &crossings[i]) == A5_MIDGARD_OK);
+        check_fragment_tiles(descriptor, &crossings[i]);
+        assert(a5_midgard_encode_clear(descriptor,
+            A5_MIDGARD_DESCRIPTOR_BYTES, 0x02000000, &destination,
+            &crossings[i], 0x12345678) == A5_MIDGARD_OK);
+        check_fragment_tiles(descriptor, &crossings[i]);
+    }
+    assert(a5_midgard_encode_copy(descriptor, 0x2000, 0x02000000,
+        &source, &source_rect, &destination, &destination_rect) == A5_MIDGARD_INVALID);
 
     struct a5_midgard_image bad = source;
     bad.row_bytes = 4000;

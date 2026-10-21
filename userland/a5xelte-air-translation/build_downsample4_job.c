@@ -93,7 +93,8 @@ static int validate_layout(void)
    struct region { const char *name; unsigned off, len; };
    const struct region r[] = {
       {"vertex_job", VERTEX_JOB, 0xc0}, {"tiler_job", TILER_JOB, 0xc0},
-      {"fragment_job", FRAGMENT_JOB, 0x40}, {"framebuffer", FB, 0x100},
+      {"fragment_job", FRAGMENT_JOB, 0x40},
+      {"framebuffer", FB, pan_size(FRAMEBUFFER)},
       {"vs_rsd", VS_RSD, pan_size(RENDERER_STATE)},
       {"fs_rsd", FS_RSD, pan_size(RENDERER_STATE)},
       {"texture", TEXTURE, pan_size(TEXTURE)},
@@ -322,7 +323,9 @@ static void resources(uint8_t *d, uint64_t va, uint64_t src)
       cfg.offset_enable = true;
       cfg.format = (MALI_R16F << 12) | PSIZ_SWIZZLE;
    }
-   attribute(d, VS_VARYINGS + 16, 2, MALI_RG32F, 0);
+   /* Released Panfrost stores highp VS varyings as U32 and reads smooth
+    * FS varyings as F32. Match each descriptor to its stage instruction. */
+   attribute(d, VS_VARYINGS + 16, 2, MALI_RG32UI, 0);
    attr_buffer(d, VS_VARY_BUFS, va + POS_BUF, 16, 64);
    attr_buffer(d, VS_VARY_BUFS + pan_size(ATTRIBUTE_BUFFER), va + PSIZ_BUF, 2, 8);
    attr_buffer(d, VS_VARY_BUFS + 2 * pan_size(ATTRIBUTE_BUFFER), va + UV_BUF, 8, 32);
@@ -343,6 +346,10 @@ static void jobs(uint8_t *d, uint64_t va, uint64_t pos,
       cfg.invocations = 3; /* four vertex IDs: 0..3 */
       cfg.workgroups_z_shift = 32;
       cfg.thread_group_split = 2;
+   }
+   pan_pack((struct mali_compute_job_parameters_packed *)(d + VERTEX_JOB +
+            MALI_COMPUTE_JOB_SECTION_PARAMETERS_OFFSET), COMPUTE_JOB_PARAMETERS, cfg) {
+      cfg.job_task_split = 5;
    }
    pan_pack((struct mali_draw_packed *)(d + VERTEX_JOB + 64), DRAW, cfg) {
       cfg.state = va + VS_RSD;
@@ -412,6 +419,8 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
    pan_unpack((const struct mali_job_header_packed *)(d + TILER_JOB), JOB_HEADER, tj);
    pan_unpack((const struct mali_job_header_packed *)(d + FRAGMENT_JOB), JOB_HEADER, fj);
    pan_unpack((const struct mali_draw_packed *)(d + VERTEX_JOB + 64), DRAW, vd);
+   pan_unpack((const struct mali_compute_job_parameters_packed *)(d + VERTEX_JOB +
+              MALI_COMPUTE_JOB_SECTION_PARAMETERS_OFFSET), COMPUTE_JOB_PARAMETERS, vp);
    pan_unpack((const struct mali_draw_packed *)(d + TILER_JOB + 64), DRAW, td);
    pan_unpack((const struct mali_renderer_state_packed *)(d + VS_RSD), RENDERER_STATE, vs);
    pan_unpack((const struct mali_renderer_state_packed *)(d + FS_RSD), RENDERER_STATE, fs);
@@ -420,6 +429,8 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
    pan_unpack((const struct mali_attribute_buffer_packed *)(d + VS_VARY_BUFS + 2 * pan_size(ATTRIBUTE_BUFFER)), ATTRIBUTE_BUFFER, uv);
    pan_unpack((const struct mali_attribute_packed *)(d + VS_VARYINGS), ATTRIBUTE, pos_attr);
    pan_unpack((const struct mali_attribute_packed *)(d + VS_VARYINGS + 8), ATTRIBUTE, ps_attr);
+   pan_unpack((const struct mali_attribute_packed *)(d + VS_VARYINGS + 16), ATTRIBUTE, uv_attr);
+   pan_unpack((const struct mali_attribute_packed *)(d + FS_VARYINGS), ATTRIBUTE, fs_uv_attr);
    pan_unpack((const struct mali_attribute_buffer_packed *)(d + FS_VARY_BUFS), ATTRIBUTE_BUFFER, fi);
    pan_unpack((const struct mali_uniform_buffer_packed *)(d + VS_UBO_DESC + 8), UNIFORM_BUFFER, matrix);
    pan_unpack((const struct mali_uniform_buffer_packed *)(d + FS_UBO_DESC + 24), UNIFORM_BUFFER, filter);
@@ -461,7 +472,8 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
    memcpy(&weight3, d + FILTER_DATA + 70, 2);
    return vj.type == MALI_JOB_TYPE_VERTEX && vj.next == va + TILER_JOB &&
       tj.type == MALI_JOB_TYPE_TILER && tj.dependency_1 == 1 &&
-      fj.type == MALI_JOB_TYPE_FRAGMENT && vd.attributes == va + VS_ATTRS &&
+      fj.type == MALI_JOB_TYPE_FRAGMENT && vp.job_task_split == 5 &&
+      vd.attributes == va + VS_ATTRS &&
       vd.attribute_buffers == va + VS_ATTR_BUFS && vd.uniform_buffers == va + VS_UBO_DESC &&
       vd.thread_storage == va + FB && vd.fbd == va + FB &&
       td.thread_storage == va + FB && td.fbd == va + FB &&
@@ -477,6 +489,8 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
       ab.pointer == va + VERTEX_DATA && ab.stride == 48 && ab.size == 192 &&
       pos_attr.buffer_index == 0 && pos_attr.format == ((MALI_SNAP_4 << 12) | 0x688) &&
       ps_attr.buffer_index == 1 && ps_attr.format == ((MALI_R16F << 12) | PSIZ_SWIZZLE) &&
+      uv_attr.buffer_index == 2 && uv_attr.format == ((MALI_RG32UI << 12) | 0x688) &&
+      fs_uv_attr.buffer_index == 0 && fs_uv_attr.format == ((MALI_RG32F << 12) | 0x688) &&
       ps.pointer == va + PSIZ_BUF && ps.stride == 2 && ps.size == 8 &&
       uv.pointer == va + UV_BUF && uv.stride == 8 && fi.pointer == uv.pointer &&
       surface.pointer == va + SOURCE && surface.row_stride == 256 &&

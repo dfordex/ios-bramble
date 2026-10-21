@@ -1,0 +1,59 @@
+--- a/iokit/Kernel/arm/A5XELTEGPUFramePresent.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUFramePresent.cpp
+@@ -77,6 +77,10 @@
+     reinterpret_cast<uint64_t *>(fb)[28] = kPrivateVA + 0x4000;
+     uint32_t *fragment = word_at(bytes, 0);
+     fragment[4] = 0x00020013;
++    /* Release Panfrost FRAGMENT_JOB payload bounds are 16x16 tile indices,
++     * independent of the pixel bounds stored in the framebuffer. */
++    fragment[8] = 0;
++    fragment[9] = (1079u >> 4) | ((1919u >> 4) << 16);
+     bzero(word_at(bytes, kPolygon), 4096);
+     word_at(bytes, kPolygon)[128] = 0xa0000000;
+     bzero(word_at(bytes, 0x300), 16);
+@@ -148,8 +152,10 @@
+             a5g3d_queue_release(lease.owner, tilerToken);
+             break;
+         }
++        /* Reconcile every GPU-written private page, including heap/scratch,
++         * before queue_submit cleans the whole backing for fragment work. */
+         if (lease.backing->performOperation(kIOMemoryIncoherentIOFlush,
+-            kData + kPolygon, 4096) != kIOReturnSuccess)
++            kData, 0x4000) != kIOReturnSuccess)
+             break;
+         if (!a5g3d_frame_map_reacquire(&lease))
+             break;
+@@ -170,6 +176,8 @@
+                 IOLog("A5XELTE G3D: full-frame source=%u fences=%llu/%llu shown=%llu\n",
+                     source->id, tilerDone.fence, fragmentDone.fence,
+                     gPresentedFrames);
++            if (gPresentedFrames == 1)
++                IOLog("A5XELTE G3D: full-panel tile bounds=0..67,0..119; completion is not pixel readback\n");
+             result = kA5G3DFramePresentCompleted;
+         } else if (fragmentStatus == kA5G3DQueueBusy ||
+                    fragmentStatus == kA5G3DQueueInvalid) {
+--- a/iokit/Kernel/arm/A5XELTEGPUTransfer.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUTransfer.cpp
+@@ -140,7 +140,7 @@
+         if (result)
+             result->tilerFence = tilerDone.fence;
+         if (backing->performOperation(kIOMemoryIncoherentIOFlush,
+-            kA5G3DDataOffset + kA5G3DPolygonOffset, 4096) !=
++            kA5G3DDataOffset, 0x4000) !=
+             kIOReturnSuccess) {
+             status = kA5G3DTransferIOError;
+             break;
+--- a/iokit/Kernel/arm/A5XELTEGPUResources.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUResources.cpp
+@@ -239,9 +239,9 @@
+             a5g3d_queue_release(owner, token); /* Invalid/Busy may keep token */
+         if (ok)
+             ok = backing->performOperation(kIOMemoryIncoherentIOFlush,
+-                0x4000 + 0x1000, 4096) == kIOReturnSuccess;
++                0x4000, 0x4000) == kIOReturnSuccess;
+         if (!ok && tilerStatus == kA5G3DQueueCompleted)
+-            IOLog("A5XELTE G3D: live IOSurface %u polygon flush failed\n",
++            IOLog("A5XELTE G3D: live IOSurface %u private-data invalidate failed\n",
+                 source.id);
+         if (ok)
+             ok = a5g3d_queue_acquire(owner, &token, &backing, &gpu);
