@@ -35,9 +35,11 @@ install the dylib or modify an iOS root image.
 
 `A5MaliRestrictedDevice` proves that the staged `_MTLDevice` superclass can
 be linked and that an exact `A5XELTEGPU` service can be passed into the private
-bridge. It has no bundle manifest, no `MTLDevice` or `MTLDeviceSPI` conformance,
-and exposes only the private bounded commands. It cannot enter stock Metal
-discovery. `A5MaliCommandBuffer` does not claim `MTLCommandBuffer` conformance.
+bridge. Patch 0156 adds a source-only bundle and a build-and-boot-gated
+`IOAcceleratorES` proxy. The bundle is not installed, and the class has no
+`MTLDevice` or `MTLDeviceSPI` conformance, so stock Metal cannot add it as a
+working device. `A5MaliCommandBuffer` does not claim `MTLCommandBuffer`
+conformance.
 
 The local `A5MaliMetalAPI` adapter exercises a real public-selector copy
 sequence: a queue creates a command buffer, a blit encoder records one or more
@@ -51,7 +53,7 @@ geometry becomes a command-buffer error without submitting a GPU job.
 The adapter does not conform to `MTLCommandQueue`, `MTLCommandBuffer`,
 `MTLBlitCommandEncoder`, or `MTLTexture`: their remaining required selectors
 and semantics are absent. In particular it has no general render pipeline,
-shader compiler, allocation, asynchronous queue, or presentation path.
+shader compiler, complete allocation, asynchronous queue, or presentation path.
 The library adapter checks the exact SHA-256 and size of the locally staged
 iOS 16.7.16 QuartzCore `default.metallib`, then vends only `read_surf_vert`
 and `read_surf_frag`. The public pipeline factory accepts only those two

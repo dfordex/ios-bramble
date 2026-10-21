@@ -11,8 +11,8 @@ The staged Metal image follows this path:
 
 1. `_MTLRegisterDevices` looks for a real `IOAcceleratorES` IOKit class.
    `A5XELTEGPU` does not inherit from that class. A property or service name
-   cannot satisfy the kernel's `metaCast` class match. The locally built XNU
-   image does not contain an `IOAcceleratorES` class string.
+   cannot satisfy the kernel's `metaCast` class match. Patch 0156 supplies a
+   separate proxy metaclass only in an explicitly provider-ready build.
 2. It reads `MetalPluginName` and optional `MetalPluginClassName` from the
    matched service and loads a bundle in `/System/Library/Extensions`.
 3. The principal class must descend from `_MTLDevice`, accept
@@ -41,9 +41,10 @@ Metal's device-add gate.
 
 The audit checks part of step 3 without changing the registration gate. It
 deliberately does not supply placeholder protocol declarations. The
-private `A5MaliRestrictedDevice` bridge currently has a bounded IOSurface
-copy and a candidate `read_surf` descriptor, but the stock render pipeline
-returns unsupported. That is a hard stop for advertising this device.
+private `A5MaliRestrictedDevice` bridge has a bounded IOSurface copy and an
+authenticated, exact-library `read_surf` pipeline candidate. The candidate
+still lacks the full `MTLRenderPipelineState` and general draw semantics.
+That is a hard stop for advertising this device.
 
 Before enabling registration, the implementation needs a genuine kernel
 provider with bounded per-client resource mapping and fault isolation; an

@@ -19,11 +19,12 @@ and `initFeatureQueries` before adding it to the device array.
 The private `A5XELTEGPU` class is not an `IOAcceleratorES` subclass. The
 restricted `_MTLDevice` subclass in this directory connects to an exact
 `A5XELTEGPU` service only and deliberately declares neither Metal protocol.
-No bundle manifest or IOAcceleratorES registration is built. This keeps
-stock clients on the existing software path until a working render provider
-can satisfy their commands. A future integration must provide a true
-IOAcceleratorES provider class and set both plugin properties only after the
-userland and kernel drawing path is complete and tested.
+Patch 0156 adds a genuine `IOAcceleratorES`-derived proxy and a source-only
+plugin bundle. The proxy's build-time readiness flag defaults to zero; with
+that flag enabled it also requires explicit `a5gpu=8 a5gpuclient=1 a5metal=1`
+boot arguments. The bundle is built locally and is not installed on the phone.
+Its class does not claim `MTLDevice` or `MTLDeviceSPI`, so the stock Metal
+device-add gate still rejects it. See `DISCOVERY_GATING.md`.
 
 The local `A5MaliMetalAPI` exercises the public queue/buffer/blit selectors
 for a bounded IOSurface BGRA8 copy. It does not claim protocol conformance;
@@ -32,9 +33,11 @@ Its host test cannot verify
 the private `_MTLAddDevice` gate, shader compilation, or on-device submission.
 The descriptor inspector recognizes only the candidate `read_surf_vert` and
 `read_surf_frag` labels with a single BGRA8Unorm target, no blend/depth,
-one sample, and no vertex attributes. Both candidate and rejected descriptors
-return an unsupported pipeline error: function labels are not shader binary
-identity, and no GPU render job has run through this adapter. The validated
+one sample, and no vertex attributes. The exact QuartzCore metallib SHA-256,
+same-library function identity, and kernel operation-4 bit now gate one local
+pipeline candidate. Other descriptors return unsupported. The candidate is
+not a full Metal pipeline state, and no GPU render job has run through this
+adapter on the phone. The validated
 `read_surf` AIR metadata has no Metal vertex-buffer inputs; the Mali position
 and point-size buffers are backend tiler outputs, not API bindings.
 
@@ -43,8 +46,9 @@ layouts with operation 4. The current host fixture accepts only 1080×1920
 BGRA8 surfaces at stride 4320, one source and one destination, full-surface
 rectangles, and kernel-owned UBO fields for level count, dimensions, and
 `ColorWriteRule=0x2222`. A distinct Query bit 4 gates the encoder. The private
-candidate can record this request against a mock transport; stock
-`newRenderPipelineStateWithDescriptor:error:` still returns unsupported.
+candidate can record this request against a mock transport. The public
+`newRenderPipelineStateWithDescriptor:error:` returns only a restricted
+candidate for the authenticated pair when operation 4 is present.
 
 ## QuartzCore selector references and current capability
 
@@ -75,8 +79,8 @@ are implemented and pixel-tested.
 
 ## Release gate
 
-Do not create the extension bundle manifest, `MetalPluginName` property, or
-IOAcceleratorES class while the provider cannot compile the iOS shaders,
-allocate their resources, encode their render state and commands, and
-retire/fail command buffers correctly. The local restricted class is a link
-and client-ABI checkpoint, not a discoverable iOS Metal device.
+Keep the patch-0156 registration gate disabled while the provider cannot
+compile the other iOS shaders, allocate their resources, encode their render
+state and commands, and retire/fail command buffers correctly. The local
+restricted class is a link and client-ABI checkpoint, not a functioning iOS
+Metal device.
