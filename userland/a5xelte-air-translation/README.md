@@ -1,68 +1,141 @@
-# QuartzCore AIR to Mali T720: verified compiler boundary
+# QuartzCore `read_surf` to Mali T720: local graphics shader proof
 
-This note is based on a **local, read-only** inspection of the staged iOS
-16.7.16 root and the locally available Mesa 26.2.4 source/build tree. It does
-not include Apple shader bodies, extracted bitcode, generated SPIR-V, or a
-Metal provider. It is not a shader translator or a claim that iOS rendering
-has reached Mali.
+This directory compiles **one actual stock iOS 16.7.16 QuartzCore graphics
+pair** to Mali T720 Midgard machine code on a Mac. It is a host experiment,
+not an iOS Metal device or a hardware run. No Apple metallib, extracted
+bitcode, generated SPIR-V, or firmware image is kept here.
 
-## An actual iOS graphics input
+## Proven input and path
 
-`System/Library/Frameworks/QuartzCore.framework/default.metallib` contains
-141 function records: 39 vertex, 95 fragment and 7 kernel functions (the
-`TYPE` values are respectively 0, 1 and 2). Each has `NAME`, `TYPE`, `HASH`,
-`OFFT`, `VERS`, `MDSZ` and `RFLT` tags. One vertex entry is
-`std_vert0_lpf`. Its embedded bitcode wrapper starts with the known LLVM
-bitcode magic and has a declared payload offset and length.
+The source is the staged
+`System/Library/Frameworks/QuartzCore.framework/default.metallib`.
+Upstream [metal2vulkan](https://github.com/steelbrain/metal2vulkan) translated
+the actual `read_surf_vert` and `read_surf_frag` AIR functions into Vulkan
+graphics SPIR-V stages using its `vk12-floor` profile and BGRA8Unorm color
+attachment. Unlike a generic LLVM `llc -march=spirv64` conversion, these
+modules have graphics entry points and stage interfaces. The local translator
+outputs are 712 bytes (vertex) and 4352 bytes (fragment); their exact
+contents remain outside Git.
 
-The first payload was extracted **only to `/private/tmp`**, using the wrapper's
-exact length. Homebrew LLVM 22.1.8 `llvm-dis` accepted it. The resulting IR
-identifies `air64-apple-ios16.7.0`, `!air.vertex`, `air.position`, vertex input
-locations, and a constant-buffer matrix input. This demonstrates that the
-input is a graphics-stage AIR module whose parameter metadata is needed to
-produce a vertex shader interface. Passing the entire metallib, or the
-wrapper plus trailing bytes, to `llvm-dis` fails; the exact payload bounds
-matter.
+`spirv_pair_midgard.c` reads those two SPIR-V modules, calls Mesa 26.2.4
+`spirv_to_nir`, applies the narrowly required Panfrost lowering, and calls
+`pan_shader_compile` for GPU ID `0x07201000`. It rejects every other SPIR-V
+module by its fixture fingerprint because some lowering depends on this
+specific function pair. The FNV fingerprint is a scope guard, not a security
+hash or a general compiler cache key.
 
-## Why generic LLVM does not yield a Mali shader
+Local result on the translated stock modules:
 
-After removing an empty `@llvm.global_ctors` declaration from the temporary
-IR, LLVM 22 `llc -march=spirv64 -filetype=obj` emitted a SPIR-V binary. Its
-text form begins with `OpCapability Kernel`, `OpCapability Addresses`,
-`OpMemoryModel Physical64 OpenCL` and `OpSource OpenCL_CPP`. It exports the
-function with `LinkageAttributes`; it has **no graphics `OpEntryPoint`**.
-These facts are observable without retaining or publishing the shader body.
-This SPIR-V is not a Vulkan vertex shader and cannot be passed directly to
-the Mesa Midgard graphics path while preserving Metal's vertex parameters,
-bindings and output semantics. The same problem exists for fragment outputs,
-textures, samplers, interpolation and render state.
+| Stage | Midgard bytes | Relevant disassembly |
+| --- | ---: | --- |
+| Vertex | 208 | position varying store |
+| Fragment | 1232 | `TEX_FETCH ... texture0`, UBO loads including `+0x40`, color output |
 
-Mesa's Midgard entry point is `midgard_compile_shader_nir(nir_shader *,
-const pan_compile_inputs *, util_dynarray *, pan_shader_info *)` in
-`src/panfrost/compiler/midgard/midgard_compile.h`. It compiles **NIR**, after
-stage-specific Mesa/Panfrost lowering. The local Mesa build has
-`libpanfrost_midgard.a` and `libnir.a`, but linking those libraries to an
-untranslated AIR module does not supply a `nir_shader` with correct graphics
-stage interfaces or resource binding information. The existing XNU fixed
-BGRA encoder is also not an AIR/NIR shader compiler.
+## Resource and lowering contract
 
-The open-source [metal2vulkan](https://github.com/steelbrain/metal2vulkan)
-project explicitly translates AIR with Metal-shaped pipeline inputs into
-SPIR-V graphics stages. Its **runtime** requires a Vulkan 1.2 device. The
-Mali T720 is Midgard and the [Mesa Panfrost capability table](https://docs.mesa3d.org/drivers/panfrost.html)
-lists its OpenGL/GLES path, not a Vulkan implementation. Using that runtime
-would not create a T720 backend. Its translator could inform a future
-AIR-to-NIR bridge, but the bridge must preserve Metal reflection, render
-pipeline state, descriptor/buffer layouts and errors, and feed the Midgard
-compiler plus XNU job/resource queue.
+The original fragment reflection reports `Texture(0)` with **read** access,
+not sampled filtering. `read_surf_frag` uses integer texel fetch and texture
+dimension/level queries. T720 Midgard's current Mesa backend handles the
+fetch but has no `query_levels` or `txs` shader opcode, so the experiment
+rewrites those queries to UBO slot 0:
 
-## Completion criterion
+| UBO 0 offset | 32-bit value | Provenance |
+| ---: | --- | --- |
+| 0 | texture level count | equivalent to `query_levels` |
+| 4 | base level width | equivalent to `txs` x at LOD 0 |
+| 8 | base level height | equivalent to `txs` y at LOD 0 |
+| 64 | `ColorWriteRule` | original SPIR-V push constant byte 64 |
 
-For a concrete first shader, select `std_vert0_lpf` and a matching QuartzCore
-fragment function, compile both to NIR with the actual AIR argument metadata,
-then to Midgard binary and a full render-job descriptor. Validate the output
-pixels and synchronization from an actual QuartzCore command on the phone.
-An `MTLCreateSystemDefaultDevice` success, a metallib parser, or a SPIR-V
-binary with OpenCL `Kernel` capability would not satisfy this criterion.
+The host must populate those values for the **same texture0** it binds; the
+fixture asks only about LOD 0. The fragment-position input is lowered to the
+Midgard position varying. The vertex proof assumes `baseVertex=0` and a
+1080×1920 viewport; a runtime must supply these dynamically. The
+`fquantize2f16` NIR operation is lowered to f32→f16→f32 because Midgard lacks
+the direct opcode. This preserves normal finite half-rounding but has not been
+shown to match all source NaN/denormal cases; the upstream translation also
+reports half-precision notes. These constraints must be honored or tested
+before rendering is claimed correct.
 
-No BOOT or SYSTEM write was made during this inspection.
+The compiler prints `textures=0` in its shader-info summary despite emitting
+`TEX_FETCH ... texture0` in the Midgard disassembly. The descriptor fixture
+therefore explicitly binds texture and sampler slot 0; this is a compiler
+metadata gap, not evidence that the shader needs no texture.
+
+## Bounded T720 render descriptor fixture
+
+`build_read_surf_job.c` uses Mesa's generated v4 pack/unpack definitions to
+create and check one **host-only** 8 KiB GPU descriptor page for the two exact
+Midgard shader fingerprints above. It accepts only 1080×1920 BGRA8 input and
+output, a single texture at LOD 0, four vertex IDs drawn as a triangle strip,
+and distinct non-overlapping mapped 40-bit GPU addresses. This draw topology
+is a fixture choice; stock QuartzCore call-site draw state is not proven.
+
+| Offset | Resource |
+| ---: | --- |
+| `0x000`, `0x100`, `0x200` | Vertex, tiler, and separate fragment jobs |
+| `0x300` | Framebuffer with BGRA8 target and preload pointers |
+| `0x500`, `0x540` | Vertex and fragment renderer states |
+| `0x600`, `0x620`, `0x660`, `0x680` | Texture0, linear surface, texture pointer table, sampler0 |
+| `0x6c0`, `0x880` | UBO0 descriptor and 80-byte data |
+| `0x700`–`0x860` | Special vertex ID, varying attributes/buffers, viewport |
+| `0x900`, `0xe00` | Exact fragment (1232 B) and vertex (208 B) code |
+| `0xf00`, `0xf40` | GPU-written position and point-size outputs |
+| `0x1000`–`0x1a00` | Polygon header and body, allocated as one 0xa00-byte span |
+
+The polygon body pointer is `0x1200`, **inside** that span. The full 0xa00-byte
+span comes from the 1080×1920 fixture's four 1024×1024 bins and is checked
+against every descriptor region. The source image pointer is at `0x620`; the
+destination image appears at `0x350` and `0x380`. All other addresses refer to
+the descriptor page or its internal varying outputs. UBO0 contains levels=1,
+width=1080, height=1920, and `ColorWriteRule=0x2222` at offset 64. That rule
+is the translated pipeline's BGRA8Unorm rule, confirmed by upstream
+metal2vulkan metadata and its graphics binder test. Zero would select the
+wrong fragment behavior.
+
+The builder checks exact shader fingerprints, address bounds and overlap,
+descriptor range overlap, and packed readback of the key job links, resource
+pointers, counts, polygon extent, and color rule. It does **not** prove that
+the T720 accepts or completes these jobs, that polygon heap capacity is
+sufficient under all geometry, or that iOS calls this pipeline. No device
+submission, Metal device, iOS ownership, shader cache, or synchronization is
+provided here.
+
+## Reproduction with locally staged inputs
+
+The tested host has Mesa source at
+`/private/tmp/a5xelte-mesa-full/mesa-26.2.4` and its Meson build at
+`/private/tmp/a5xelte-mesa-full/buildtools`. Given the translated files in
+`/private/tmp/a5-read-surf.vert.spv` and `.frag.spv`:
+
+```sh
+python3 build_local.py /private/tmp/a5xelte-mesa-full/buildtools /private/tmp/a5-spirv-pair
+/private/tmp/a5-spirv-pair \
+  /private/tmp/a5-read-surf.vert.spv \
+  /private/tmp/a5-read-surf.frag.spv \
+  /private/tmp/a5-read-surf.vert.midgard \
+  /private/tmp/a5-read-surf.frag.midgard
+```
+
+`build_local.py` reuses the exact compiler and linker flags of the local
+Mesa `a5_t720_copy_shader` target and builds Mesa's `libvtn.a`. Outputs stay
+under `/private/tmp`. This experiment uses the **real translated shader
+modules**, with no hand-written replacement shader.
+
+To build and validate the descriptor for a fixed private descriptor VA:
+
+```sh
+python3 build_job_local.py /private/tmp/a5xelte-mesa-full/buildtools /private/tmp/a5-read-surf-job
+/private/tmp/a5-read-surf-job \
+  /private/tmp/a5-read-surf.vert.midgard \
+  /private/tmp/a5-read-surf.frag.midgard \
+  /private/tmp/a5-read-surf-job-kernel.bin \
+  1080 1920 0x10000000 0x10800000 0x12000f00 0x12000f40 0x12000000
+```
+
+The source and destination addresses in this command are fixture addresses,
+not device allocation evidence. For this exact invocation the private output
+was 8192 bytes, SHA-256
+`26885bced5b3d15fa00e38b8c41e8a0eb458d42852021873f7d420af48dd8e9a`.
+No generated binary is tracked in Git.
+
+No BOOT, SYSTEM, or USERDATA write was made for this experiment.
