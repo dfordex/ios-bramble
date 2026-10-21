@@ -10,7 +10,7 @@ from pathlib import Path
 import struct
 
 
-EXPECTED_SHA256 = '568670c008f93bf67b7fb223cdee9c003bf8de28580537eddf15cb510798c280'
+EXPECTED_SHA256 = '7683f29de37719b5aaa7e1716df25e1aebe52f9930d57f79d8ce792b62f74d24'
 EXPECTED_SIZE = 0x4000
 BASE = 0x02000000
 
@@ -30,6 +30,8 @@ def validate(data):
     for offset, expected in ((0x10, 0x0b), (0x110, 0x0f), (0x210, 0x13)):
         if data[offset] != expected:
             raise ValueError(f'downsample4 job type mismatch at 0x{offset:x}')
+    if struct.unpack_from('<II', data, 0x220) != (0, 0x00010001):
+        raise ValueError('downsample4 fragment bounds must cover tiles 0..1 on both axes')
 
 
 def main():

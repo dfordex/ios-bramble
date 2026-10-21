@@ -393,8 +393,9 @@ static void jobs(uint8_t *d, uint64_t va, uint64_t pos,
    }
    pan_pack((struct mali_fragment_job_payload_packed *)(d + FRAGMENT_JOB + 32),
             FRAGMENT_JOB_PAYLOAD, cfg) {
-      cfg.bound_max_x = width - 1;
-      cfg.bound_max_y = height - 1;
+      /* Fragment bounds are inclusive tile indices, unlike pixel scissors. */
+      cfg.bound_max_x = (width - 1) >> MALI_TILE_SHIFT;
+      cfg.bound_max_y = (height - 1) >> MALI_TILE_SHIFT;
       cfg.framebuffer = va + FB;
    }
 }
@@ -471,6 +472,9 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
       sampler.normalized_coordinates && sampler.minify_nearest && sampler.magnify_nearest &&
       viewport.scissor_maximum_x == DST_WIDTH - 1 &&
       viewport.scissor_maximum_y == DST_HEIGHT - 1 &&
+      fragment.bound_min_x == 0 && fragment.bound_min_y == 0 &&
+      fragment.bound_max_x == ((DST_WIDTH - 1) >> MALI_TILE_SHIFT) &&
+      fragment.bound_max_y == ((DST_HEIGHT - 1) >> MALI_TILE_SHIFT) &&
       fragment.framebuffer == va + FB && target == va + DESTINATION &&
       tiler.heap_start == va + HEAP &&
       tiler.heap_end == va + HEAP + HEAP_BYTES &&
