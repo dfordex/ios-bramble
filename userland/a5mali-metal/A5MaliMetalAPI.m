@@ -108,6 +108,37 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
     return [[A5MaliMetalQueue alloc] initWithDevice:self];
 }
 
+- (A5MaliMetalTexture *)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
+{
+    /* A standalone BGRA texture is backed by a real IOSurface so the kernel
+     * import path owns its GPU mapping. Other formats and layouts fail closed. */
+    if (!descriptor || descriptor.textureType != MTLTextureType2D ||
+        descriptor.pixelFormat != MTLPixelFormatBGRA8Unorm ||
+        descriptor.width == 0 || descriptor.width > 2048 ||
+        descriptor.height == 0 || descriptor.height > 2048 ||
+        descriptor.mipmapLevelCount != 1 || descriptor.arrayLength != 1 ||
+        descriptor.sampleCount != 1 ||
+        descriptor.storageMode != MTLStorageModeShared ||
+        (descriptor.usage & ~(MTLTextureUsageShaderRead |
+            MTLTextureUsageRenderTarget)) || !descriptor.usage)
+        return nil;
+    const NSUInteger rowBytes = descriptor.width * 4;
+    NSDictionary *properties = @{
+        (__bridge id)kIOSurfaceWidth: @(descriptor.width),
+        (__bridge id)kIOSurfaceHeight: @(descriptor.height),
+        (__bridge id)kIOSurfaceBytesPerElement: @4,
+        (__bridge id)kIOSurfaceBytesPerRow: @(rowBytes),
+        (__bridge id)kIOSurfacePixelFormat: @(0x42475241u),
+    };
+    IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)properties);
+    if (!surface)
+        return nil;
+    A5MaliMetalTexture *texture =
+        [self newTextureWithDescriptor:descriptor iosurface:surface plane:0];
+    CFRelease(surface);
+    return texture;
+}
+
 - (id)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)descriptor
                                       error:(NSError * _Nullable * _Nullable)error
 {
@@ -136,6 +167,7 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
         descriptor.storageMode != MTLStorageModeShared ||
         descriptor.width != IOSurfaceGetWidth(surface) ||
         descriptor.height != IOSurfaceGetHeight(surface) ||
+        IOSurfaceGetBytesPerRow(surface) != descriptor.width * 4 ||
         IOSurfaceGetPixelFormat(surface) != 0x42475241 ||
         (descriptor.usage & ~(MTLTextureUsageShaderRead |
             MTLTextureUsageRenderTarget)) || !descriptor.usage)

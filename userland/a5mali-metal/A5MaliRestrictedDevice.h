@@ -55,6 +55,7 @@ NS_ASSUME_NONNULL_BEGIN
 /* A deliberately narrow public-selector slice. No Metal protocol is claimed. */
 @interface A5MaliRestrictedDevice (LimitedMetalSelectors)
 - (nullable A5MaliMetalQueue *)newCommandQueue;
+- (nullable A5MaliMetalTexture *)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor;
 - (nullable A5MaliMetalTexture *)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
                                                    iosurface:(IOSurfaceRef)surface
                                                        plane:(NSUInteger)plane;
