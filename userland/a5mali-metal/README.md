@@ -50,20 +50,29 @@ an injected device and synthetic resource fixture; unsupported slice/level
 geometry becomes a command-buffer error without submitting a GPU job.
 The adapter does not conform to `MTLCommandQueue`, `MTLCommandBuffer`,
 `MTLBlitCommandEncoder`, or `MTLTexture`: their remaining required selectors
-and semantics are absent. In particular it has no stock render pipeline,
-shader library, general allocation, asynchronous queue, or presentation path.
-`read_surf` pipeline descriptor validation recognizes one candidate shape but
-still returns an unsupported error, because a function name alone does not
-prove the compiled shader identity or a working render submission path.
+and semantics are absent. In particular it has no general render pipeline,
+shader compiler, allocation, asynchronous queue, or presentation path.
+The library adapter checks the exact SHA-256 and size of the locally staged
+iOS 16.7.16 QuartzCore `default.metallib`, then vends only `read_surf_vert`
+and `read_surf_frag`. The public pipeline factory accepts only those two
+functions from the same authenticated library, a fixed BGRA8 descriptor,
+and a kernel Query advertising operation 4. Wrong metallibs, synthetic
+function labels, disabled operation 4, and other descriptors fail closed.
+No metallib or shader bytes are committed.
 The private candidate can be bound to a narrow render encoder for local ABI
 tests. It accepts one BGRA8 1080×1920 source and target at stride 4320, a
 full viewport, one triangle draw, no blend/depth, and only when Query
 advertises operation 4 via capability bit 4. It records operation 4 through
-the existing selector 6/7 layout. The public pipeline factory remains
-unsupported, so stock iOS cannot enter this encoder. The host test injects
+the existing selector 6/7 layout. The host test injects
 bit 4; it is not a Mali hardware result. Patch 0154 exposes that bit only
 when a local Midgard shader fixture is present at kernel build time. Its
 absence leaves this render encoder unavailable.
+
+The optional positive library test uses
+`A5_MALI_STOCK_QUARTZCORE_METALLIB=/absolute/path/default.metallib ./build.sh`.
+The default build still runs negative library and mock command tests. The
+pipeline object does not implement the full `MTLRenderPipelineState` contract,
+and no stock iOS app has used this path on the phone.
 
 Stock iOS Metal matches a genuine `IOAcceleratorES` service, reads
 `MetalPluginName` and optional `MetalPluginClassName`, loads its bundle from
@@ -72,7 +81,7 @@ Stock iOS Metal matches a genuine `IOAcceleratorES` service, reads
 calls `initLimits` and `initFeatureQueries`. The staged iOS 16.7.16 private
 protocol declares 407 instance selectors; `_MTLDevice` does not itself provide
 all required resource allocation and capability methods. This bridge lacks
-Metal shader/AIR compilation, render and compute pipelines, buffers,
+Metal shader/AIR compilation, general render and compute pipelines, buffers,
 samplers, texture state, resource hazards, and asynchronous command-buffer
 retirement. Making it discoverable as a Metal device now would cause clients
 to select a renderer that cannot execute their drawing commands. The BOOT

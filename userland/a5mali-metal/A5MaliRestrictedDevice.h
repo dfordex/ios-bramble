@@ -24,6 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
 @class A5MaliMetalQueue, A5MaliMetalTexture;
 @class A5MaliMetalBuffer, A5MaliMetalBlitEncoder;
 @class A5MaliReadSurfCandidate, A5MaliMetalRenderEncoder;
+@class A5MaliMetalLibrary, A5MaliMetalFunction;
 
 @interface A5MaliRestrictedDevice : A5_MALI_DEVICE_SUPER
 /* The selector Metal calls after discovering a genuine IOAcceleratorES.
@@ -50,6 +51,7 @@ NS_ASSUME_NONNULL_BEGIN
 /* A checked descriptor shape, not an MTLRenderPipelineState. */
 @interface A5MaliReadSurfCandidate : NSObject
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
+@property (nullable, copy, atomic) NSString *label;
 @end
 
 /* A deliberately narrow public-selector slice. No Metal protocol is claimed. */
@@ -65,6 +67,31 @@ NS_ASSUME_NONNULL_BEGIN
 #ifdef A5_MALI_HOST_TEST
 - (A5MaliMetalTexture *)hostTestTextureWithResource:(A5MaliResource)resource;
 #endif
+@end
+
+@interface A5MaliRestrictedDevice (ExactQuartzCoreLibrary)
+- (nullable A5MaliMetalLibrary *)newDefaultLibraryWithBundle:(NSBundle *)bundle
+                                                        error:(NSError * _Nullable * _Nullable)error;
+- (nullable A5MaliMetalLibrary *)newLibraryWithURL:(NSURL *)url
+                                              error:(NSError * _Nullable * _Nullable)error;
+- (nullable A5MaliMetalLibrary *)newLibraryWithData:(dispatch_data_t)data
+                                               error:(NSError * _Nullable * _Nullable)error;
+@end
+
+/* One authenticated QuartzCore metallib identity; no general AIR compiler. */
+@interface A5MaliMetalLibrary : NSObject
+@property (nonatomic, readonly) A5MaliRestrictedDevice *device;
+@property (nullable, copy, atomic) NSString *label;
+@property (nonatomic, readonly) NSArray<NSString *> *functionNames;
+- (nullable A5MaliMetalFunction *)newFunctionWithName:(NSString *)name;
+@end
+
+@interface A5MaliMetalFunction : NSObject
+@property (nonatomic, readonly) NSString *name;
+@property (nonatomic, readonly) MTLFunctionType functionType;
+@property (nonatomic, readonly) A5MaliRestrictedDevice *device;
+@property (nonatomic, readonly) A5MaliMetalLibrary *library;
+@property (nullable, copy, atomic) NSString *label;
 @end
 
 typedef NS_ENUM(NSUInteger, A5MaliPipelineShape) {

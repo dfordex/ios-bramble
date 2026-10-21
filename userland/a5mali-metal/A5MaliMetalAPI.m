@@ -48,6 +48,10 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 - (A5MaliDevice *)privateDevice;
 @end
 
+@interface A5MaliReadSurfCandidate (PrivateInit)
+- (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device;
+@end
+
 @interface A5MaliMetalTexture () {
     A5MaliSurface *_surface;
     A5MaliRestrictedDevice *_device;
@@ -144,9 +148,21 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 {
     A5MaliPipelineShape shape =
         A5MaliInspectReadSurfPipelineDescriptor(descriptor);
+    id vertex = descriptor.vertexFunction;
+    id fragment = descriptor.fragmentFunction;
+    BOOL authenticatedPair =
+        [vertex isKindOfClass:[A5MaliMetalFunction class]] &&
+        [fragment isKindOfClass:[A5MaliMetalFunction class]] &&
+        [vertex library] == [fragment library] &&
+        [vertex device] == self && [fragment device] == self;
+    if (shape == A5MaliPipelineShapeReadSurfCandidate &&
+        authenticatedPair && [[self privateDevice] supportsPrivateReadSurf]) {
+        if (error) *error = nil;
+        return [[A5MaliReadSurfCandidate alloc] initWithDevice:self];
+    }
     if (error) {
         NSString *reason = shape == A5MaliPipelineShapeReadSurfCandidate ?
-            @"read_surf descriptor is a candidate; shader identity, buffer ABI and GPU render submission are unverified" :
+            @"read_surf requires functions from the exact QuartzCore metallib and kernel operation 4" :
             @"render pipeline is outside the validated read_surf descriptor profile";
         *error = [NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
             code:kIOReturnUnsupported

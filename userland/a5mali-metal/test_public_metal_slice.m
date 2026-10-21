@@ -122,7 +122,7 @@ static A5MaliReadSurfCandidate *inspectReadSurfCandidate(
     NSError *error = nil;
     assert(![device newRenderPipelineStateWithDescriptor:descriptor
         error:&error] && error.code == kIOReturnUnsupported);
-    assert([error.localizedDescription containsString:@"unverified"]);
+    assert([error.localizedDescription containsString:@"exact QuartzCore"]);
     descriptor.colorAttachments[0].blendingEnabled = YES;
     assert(A5MaliInspectReadSurfPipelineDescriptor(descriptor) ==
         A5MaliPipelineShapeUnsupported);
@@ -158,6 +158,26 @@ static void renderCandidate(A5MaliRestrictedDevice *device,
     [encoder endEncoding];
     [buffer commit];
     assert(buffer.status == MTLCommandBufferStatusCompleted && !buffer.error);
+}
+
+static A5MaliReadSurfCandidate *authenticatedCandidate(
+    A5MaliRestrictedDevice *device, const char *path)
+{
+    NSError *error = nil;
+    A5MaliMetalLibrary *library = [device newLibraryWithURL:
+        [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]]
+        error:&error];
+    assert(library && !error);
+    MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
+    desc.vertexFunction = (id<MTLFunction>)
+        [library newFunctionWithName:@"read_surf_vert"];
+    desc.fragmentFunction = (id<MTLFunction>)
+        [library newFunctionWithName:@"read_surf_frag"];
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    desc.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
+    id result = [device newRenderPipelineStateWithDescriptor:desc error:&error];
+    assert([result isKindOfClass:[A5MaliReadSurfCandidate class]] && !error);
+    return result;
 }
 
 int main(void)
@@ -208,6 +228,8 @@ int main(void)
             commandCapabilities:31];
         A5MaliReadSurfCandidate *candidate =
             inspectReadSurfCandidate(withShader);
+        const char *metallib = getenv("A5_MALI_STOCK_QUARTZCORE_METALLIB");
+        if (metallib) candidate = authenticatedCandidate(withShader, metallib);
         A5MaliMetalTexture *source = [withShader hostTestTextureWithResource:
             (A5MaliResource){0x100000021ULL, 1080, 1920, 4320,
                 A5MaliRead}];
