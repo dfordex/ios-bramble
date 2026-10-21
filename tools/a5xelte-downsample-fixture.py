@@ -10,7 +10,7 @@ from pathlib import Path
 import struct
 
 
-EXPECTED_SHA256 = 'bc8bbca9900e8a2a701012720ba83b82368f2d1d176dc0f898191f4cc9ba4fb0'
+EXPECTED_SHA256 = 'd1f7579ee7ec5bbeca861801bfadaae328692e2d0fc2db3ad0b08f3b9712db41'
 EXPECTED_SIZE = 0x4000
 BASE = 0x02000000
 
@@ -21,7 +21,8 @@ def validate(data):
     for offset, expected in {
         0x18: BASE + 0x100, 0x350: BASE + 0x8000,
         0x380: BASE + 0x8000, 0x620: BASE + 0x4000,
-        0x660: BASE + 0x600,
+        0x660: BASE + 0x600, 0x3d8: BASE + 0x9000,
+        0x3e0: BASE + 0xa000,
     }.items():
         if struct.unpack_from('<Q', data, offset)[0] != expected:
             raise ValueError(f'downsample4 pointer mismatch at 0x{offset:x}')

@@ -46,6 +46,8 @@ def main():
     if args.test_downsample:
         if b'actual QuartzCore downsample_blur_vert_lph/downsample_4_frag_lph start' not in args.kernel.read_bytes():
             ap.error('kernel lacks the actual translated downsample4 fixture/test')
+        if b'A5XELTE G3D DS4: AS0 LOCK/FLUSH_PT complete' not in args.kernel.read_bytes():
+            ap.error('kernel lacks the corrected downsample4 page-table flush')
         required['a5downsampletest'] = '1'
     if args.install_bundle:
         if b'A5XELTE Metal install:' not in args.kernel.read_bytes():

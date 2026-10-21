@@ -1,0 +1,216 @@
+--- a/iokit/Kernel/arm/A5XELTEGPU.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPU.cpp
+@@ -276,6 +276,33 @@
+     return true;
+ }
+ 
++/* Snapshot before IRQ acknowledgement, reset, or descriptor access. Faulted
++ * jobs can remain active, so read only MMIO and retain their pinned memory. */
++static void
++a5g3d_queue_capture_fault(vm_offset_t gpu, uint32_t slot, uint64_t fence,
++    const char *reason, uint32_t jobIRQ, uint32_t mmuIRQ, uint32_t gpuIRQ,
++    A5G3DQueueCompletion *completion)
++{
++    const uint32_t slotBase = 0x1800 + slot * 0x80;
++    const uint32_t faultStatus = a5g3d_read32(gpu, 0x241c);
++    const uint64_t faultAddress = static_cast<uint64_t>(
++        a5g3d_read32(gpu, 0x2424)) << 32 | a5g3d_read32(gpu, 0x2420);
++    const uint64_t head = static_cast<uint64_t>(
++        a5g3d_read32(gpu, slotBase + 4)) << 32 |
++        a5g3d_read32(gpu, slotBase);
++    const uint32_t jsState = a5g3d_read32(gpu, 0x1010);
++    if (completion) {
++        completion->jobIRQ = jobIRQ;
++        completion->mmuIRQ = mmuIRQ;
++        completion->gpuIRQ = gpuIRQ;
++        completion->jsState = jsState;
++        completion->headerStatus = 0xffffffffu; /* DMA target not read */
++    }
++    IOLog("A5XELTE G3D: fault snapshot reason=%s fence=%llu slot=%u irq=%08x mmu=%08x gpu=%08x as0_status=%08x fault_status=%08x fault_va=%016llx js_head=%016llx js=%08x\n",
++        reason, fence, slot, jobIRQ, mmuIRQ, gpuIRQ,
++        a5g3d_read32(gpu, 0x2428), faultStatus, faultAddress, head, jsState);
++}
++
+ A5G3DQueueStatus
+ a5g3d_queue_submit(IOService *service, vm_offset_t gpu,
+     IOBufferMemoryDescriptor *storage, uint8_t *bytes,
+@@ -363,6 +390,8 @@
+         IODelay(10);
+     }
+     if (!((jobIRQ & slotMask) || mmuIRQ || (gpuIRQ & 0x81))) {
++        a5g3d_queue_capture_fault(gpu, slot, fence, "poll-timeout",
++            jobIRQ, mmuIRQ, gpuIRQ, completion);
+         IOLog("A5XELTE G3D: fence=%llu slot=%u timed out; AS0/pages pinned\n",
+             fence, slot);
+         service->setProperty("A5G3DFenceResult", "poll-timeout-pinned");
+@@ -384,12 +413,17 @@
+      * backing stays pinned and cannot be recycled by a later request.
+      */
+     if (!slotIdle) {
++        a5g3d_queue_capture_fault(gpu, slot, fence, "slot-still-active",
++            jobIRQ, mmuIRQ, gpuIRQ, completion);
+         IOLog("A5XELTE G3D: fence=%llu slot=%u still active status=%08x pending=%08x irq=%08x mmu=%08x gpu=%08x\n",
+             fence, slot, slotStatus, pending, jobIRQ, mmuIRQ, gpuIRQ);
+         service->setProperty("A5G3DFenceResult", "slot-not-idle-pinned");
+         gA5G3DQueueState = 2;
+         return kA5G3DQueueFault;
+     }
++    if (mmuIRQ || (gpuIRQ & 0x81) || (jobIRQ & (1u << (slot + 16))))
++        a5g3d_queue_capture_fault(gpu, slot, fence, "terminal-fault",
++            jobIRQ, mmuIRQ, gpuIRQ, completion);
+     const bool headerFlushed = storage->performOperation(
+         kIOMemoryIncoherentIOFlush,
+         kA5G3DDataOffset + request.jobOffset, 16) == kIOReturnSuccess;
+--- a/iokit/Kernel/arm/A5XELTEDownsampleSelftest.inc
++++ b/iokit/Kernel/arm/A5XELTEDownsampleSelftest.inc
+@@ -11,6 +11,40 @@
+ #define A5_DOWNSAMPLE_FIXTURE_AVAILABLE 0
+ #endif
+ 
++static bool
++a5g3d_downsample_mmu_ready(vm_offset_t gpu)
++{
++    for (unsigned i = 0; i < 10000; ++i) {
++        if (!(a5g3d_read32(gpu, 0x2428) & 1u))
++            return true;
++        IODelay(10);
++    }
++    return false;
++}
++
++static bool
++a5g3d_downsample_flush_tables(vm_offset_t gpu)
++{
++    if (!a5g3d_downsample_mmu_ready(gpu) ||
++        a5g3d_read32(gpu, 0x2000) || a5g3d_read32(gpu, 0x241c))
++        return false;
++    /* Panfrost lock_region: aligned 64 KiB at TestVA covers all twelve
++     * private pages. Width is log2(65536)-1, encoded with the base VA. */
++    static_assert((kA5G3DTestVA & 0xffffu) == 0,
++        "downsample lock range must be naturally aligned");
++    a5g3d_write32(gpu, 0x2410,
++        static_cast<uint32_t>(kA5G3DTestVA) | 15u);
++    a5g3d_write32(gpu, 0x2414, 0u);
++    __sync_synchronize();
++    a5g3d_write32(gpu, 0x2418, 2u); /* AS_COMMAND_LOCK */
++    if (!a5g3d_downsample_mmu_ready(gpu) ||
++        a5g3d_read32(gpu, 0x2000) || a5g3d_read32(gpu, 0x241c))
++        return false;
++    a5g3d_write32(gpu, 0x2418, 4u); /* AS_COMMAND_FLUSH_PT */
++    return a5g3d_downsample_mmu_ready(gpu) &&
++        !a5g3d_read32(gpu, 0x2000) && !a5g3d_read32(gpu, 0x241c);
++}
++
+ static void
+ a5g3d_downsample4_selftest(IOService *service, vm_offset_t gpu,
+     IOBufferMemoryDescriptor *storage)
+@@ -24,6 +58,8 @@
+     const uint32_t sourceOffset = 0x4000;
+     const uint32_t destinationOffset = 0x8000;
+     const uint32_t destinationBytes = 32 * 32 * 4;
++    const uint32_t heapOffset = 0x9000;
++    const uint32_t heapEndOffset = 0xa000;
+     const uint32_t privateBytes = 0xc000;
+     const uint32_t poison = 0x5a5a5a5a;
+     const uint32_t canary = 0xa5a5a5a5;
+@@ -57,19 +93,23 @@
+     /* Check the generated chain structure; no previous test shader is used
+      * as a substitute when this local fixture is missing or malformed. */
+     uint32_t vertexType = 0, tilerType = 0, fragmentType = 0;
+-    uint64_t next = 0;
++    uint64_t next = 0, heapStart = 0, heapEnd = 0;
+     const uint8_t *fixture = reinterpret_cast<const uint8_t *>(kA5DownsampleFixture);
+     memcpy(&vertexType, fixture + 0x10, 4);
+     memcpy(&tilerType, fixture + 0x110, 4);
+     memcpy(&fragmentType, fixture + 0x210, 4);
+     memcpy(&next, fixture + 0x18, 8);
++    memcpy(&heapStart, fixture + 0x3d8, 8);
++    memcpy(&heapEnd, fixture + 0x3e0, 8);
+     if ((vertexType & 0xffu) != 0x0bu ||
+         (tilerType & 0xffu) != 0x0fu ||
+         (fragmentType & 0xffu) != 0x13u ||
+-        next != kA5G3DTestVA + 0x100) {
++        next != kA5G3DTestVA + 0x100 ||
++        heapStart != kA5G3DTestVA + heapOffset ||
++        heapEnd != kA5G3DTestVA + heapEndOffset) {
+         gA5G3DQueueState = 0;
+         service->setProperty("A5G3DDownsampleResult", "fixture-chain-invalid");
+-        IOLog("A5XELTE G3D DS4: refusing malformed translated fixture\n");
++        IOLog("A5XELTE G3D DS4: refusing malformed translated fixture chain or heap\n");
+         return;
+     }
+     bzero(data, privateBytes);
+@@ -81,9 +121,9 @@
+             source[y * 64 + x] = a5_downsample_source_pixel(x, y);
+     for (uint32_t i = 0; i < destinationBytes / 4; ++i)
+         destination[i] = poison;
+-    uint32_t *guard = reinterpret_cast<uint32_t *>(data +
+-        destinationOffset + destinationBytes);
+-    const uint32_t guardWords = (privateBytes - destinationOffset - destinationBytes) / 4;
++    /* The tiler owns its separate zeroed page; guard only after its end. */
++    uint32_t *guard = reinterpret_cast<uint32_t *>(data + heapEndOffset);
++    const uint32_t guardWords = (privateBytes - heapEndOffset) / 4;
+     for (uint32_t i = 0; i < guardWords; ++i)
+         guard[i] = canary;
+ 
+@@ -101,16 +141,18 @@
+         return;
+     }
+     __sync_synchronize();
+-    a5g3d_write32(gpu, 0x2418, 1u);
+-    unsigned wait;
+-    for (wait = 0; wait < 10000 && (a5g3d_read32(gpu, 0x2428) & 1u); ++wait)
+-        IODelay(10);
+-    if (wait == 10000) {
+-        service->setProperty("A5G3DDownsampleResult", "mmu-update-timeout-pinned");
++    if (!a5g3d_downsample_flush_tables(gpu)) {
++        a5g3d_queue_capture_fault(gpu, 1, 0, "downsample-table-flush",
++            a5g3d_read32(gpu, 0x1000), a5g3d_read32(gpu, 0x2000),
++            a5g3d_read32(gpu, 0x20), nullptr);
++        service->setProperty("A5G3DDownsampleResult", "mmu-flush-failed-pinned");
+         gA5G3DQueueState = 2;
+-        IOLog("A5XELTE G3D DS4: AS0 update timeout; all private pages pinned\n");
+-        return;
+-    }
++        IOLog("A5XELTE G3D DS4: AS0 table flush uncertain; all private pages pinned\n");
++        return;
++    }
++    IOLog("A5XELTE G3D DS4: AS0 LOCK/FLUSH_PT complete base=%08x bytes=%u heap=%016llx..%016llx guards=%u\n",
++        static_cast<uint32_t>(kA5G3DTestVA), privateBytes,
++        heapStart, heapEnd, guardWords);
+     gA5G3DQueueState = 0;
+     service->setProperty("A5G3DDownsampleResult", "running-translated-shaders");
+     IOLog("A5XELTE G3D DS4: actual QuartzCore downsample_blur_vert_lph/downsample_4_frag_lph start src=64x64 dst=32x32 mapped=%u\n",
+@@ -126,7 +168,7 @@
+     bool chainFlushed = false;
+     if (vertexStatus == kA5G3DQueueCompleted) {
+         chainFlushed = storage->performOperation(kIOMemoryIncoherentIOFlush,
+-            kA5G3DDataOffset, descriptorBytes) == kIOReturnSuccess;
++            kA5G3DDataOffset, privateBytes) == kIOReturnSuccess;
+         if (chainFlushed) {
+             __sync_synchronize();
+             memcpy(&vertexHeader, data, 4);
+@@ -141,8 +183,8 @@
+     A5G3DQueueCompletion fragmentDone = {};
+     A5G3DQueueStatus fragmentStatus = kA5G3DQueueInvalid;
+     if (chainOK) {
+-        /* Descriptor invalidation above preserves GPU-written vertex outputs
+-         * and tiler scratch before the next submission's CPU cache store. */
++        /* Invalidate all private data, including GPU-written vertex outputs,
++         * polygon scratch and the tiler heap, before the next whole-BO clean. */
+         A5G3DQueueRequest fragment = {};
+         fragment.slot = 0;
+         fragment.jobOffset = 0x200;
+@@ -183,9 +225,11 @@
+     service->setProperty("A5G3DDownsamplePixels", matching, 32);
+     service->setProperty("A5G3DDownsampleResult", passed ? "gpu-pixels-pass" :
+         "gpu-pixels-failed-or-job-incomplete");
+-    IOLog("A5XELTE G3D DS4: fragment fence=%llu status=%u header=%08x irq=%08x mmu=%08x gpu=%08x pixels=%u/1024 untouched=%u source=%u/4096 guards=%u/%u rgb_tol=1 alpha_exact=255 pass=%u\n",
++    IOLog("A5XELTE G3D DS4: fragment fence=%llu status=%u header=%08x irq=%08x mmu=%08x gpu=%08x submitted=%u evaluated=%u pixels=%u/1024 untouched=%u source=%u/4096 guards=%u/%u rgb_tol=1 alpha_exact=255 pass=%u\n",
+         fragmentDone.fence, fragmentStatus, fragmentDone.headerStatus,
+         fragmentDone.jobIRQ, fragmentDone.mmuIRQ, fragmentDone.gpuIRQ,
++        fragmentDone.fence != 0 && fragmentStatus != kA5G3DQueueInvalid,
++        outputFlushed,
+         matching, unchanged, sourceMatching, guardsMatching, guardWords,
+         passed);
+     if (outputFlushed) {

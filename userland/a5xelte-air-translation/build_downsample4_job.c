@@ -15,6 +15,9 @@
 
 enum {
    BYTES = 0x4000, SRC_BYTES = 0x4000, DST_BYTES = 0x1000,
+   SOURCE = 0x4000, DESTINATION = 0x8000,
+   HEAP = 0x9000, HEAP_BYTES = 0x1000, GUARDS = 0xa000,
+   PRIVATE_BYTES = 0xc000,
    VERTEX_JOB = 0, TILER_JOB = 0x100, FRAGMENT_JOB = 0x200,
    FB = 0x300, VS_RSD = 0x500, FS_RSD = 0x540,
    TEXTURE = 0x600, SURFACE = 0x620, TEX_TABLE = 0x660,
@@ -120,6 +123,22 @@ static int validate_layout(void)
             return 0;
          }
    }
+   /* These are separate ranges of the caller's pinned private mapping. Only
+    * the descriptor is emitted here; the kernel initializes source/destination,
+    * zeroes the real tiler heap and places guard words after its exclusive end. */
+   const struct region windows[] = {
+      {"descriptor", 0, BYTES}, {"source", SOURCE, SRC_BYTES},
+      {"destination", DESTINATION, DST_BYTES}, {"tiler_heap", HEAP, HEAP_BYTES},
+      {"guards", GUARDS, PRIVATE_BYTES - GUARDS},
+   };
+   if ((HEAP & 4095) || !HEAP_BYTES || (HEAP_BYTES & 4095) ||
+       HEAP + HEAP_BYTES != GUARDS) return 0;
+   for (unsigned i = 0; i < sizeof(windows) / sizeof(windows[0]); ++i) {
+      if (windows[i].off + windows[i].len > PRIVATE_BYTES) return 0;
+      for (unsigned j = i + 1; j < sizeof(windows) / sizeof(windows[0]); ++j)
+         if (overlap(windows[i].off, windows[i].len,
+                     windows[j].off, windows[j].len)) return 0;
+   }
    return 1;
 }
 
@@ -139,8 +158,8 @@ static void framebuffer(uint8_t *d, uint64_t va, uint64_t dst,
    put32(d, fb + 35 * 4, stride * height);
    put64(d, fb + 25 * 8, va + POLY);
    put64(d, fb + 26 * 8, va + POLY_BODY);
-   put64(d, fb + 27 * 8, va + POLY);
-   put64(d, fb + 28 * 8, va + POLY);
+   put64(d, fb + 27 * 8, va + HEAP);
+   put64(d, fb + 28 * 8, va + HEAP + HEAP_BYTES);
    unsigned bins = ((width + 1023) / 1024) * ((height + 1023) / 1024);
    put32(d, fb + 48 * 4, 0x200 + bins * 0x200);
    put32(d, fb + 49 * 4, 0x01c7);
@@ -398,6 +417,8 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
    pan_unpack((const struct mali_viewport_packed *)(d + VIEWPORT), VIEWPORT, viewport);
    pan_unpack((const struct mali_fragment_job_payload_packed *)(d + FRAGMENT_JOB + 32),
               FRAGMENT_JOB_PAYLOAD, fragment);
+   pan_unpack((const struct mali_tiler_context_packed *)(d + FB +
+              MALI_FRAMEBUFFER_SECTION_TILER_OFFSET), TILER_CONTEXT, tiler);
    const unsigned formats[] = {MALI_RGBA32F, MALI_RG32F, MALI_RG32F, MALI_RGBA16F};
    const unsigned offsets[] = {0, 16, 24, 32};
    for (unsigned i = 0; i < 4; ++i) {
@@ -440,12 +461,21 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
       edr.pointer == va + EDR_DATA && edr.entries == 1 &&
       ab.pointer == va + VERTEX_DATA && ab.stride == 48 && ab.size == 192 &&
       uv.pointer == va + UV_BUF && uv.stride == 8 && fi.pointer == uv.pointer &&
-      surface.pointer == va + 0x4000 && surface.row_stride == 256 &&
+      surface.pointer == va + SOURCE && surface.row_stride == 256 &&
       tex.width == SRC_WIDTH && tex.height == SRC_HEIGHT && tex.levels == 1 &&
       sampler.normalized_coordinates && sampler.minify_nearest && sampler.magnify_nearest &&
       viewport.scissor_maximum_x == DST_WIDTH - 1 &&
       viewport.scissor_maximum_y == DST_HEIGHT - 1 &&
-      fragment.framebuffer == va + FB && target == va + 0x8000 &&
+      fragment.framebuffer == va + FB && target == va + DESTINATION &&
+      tiler.heap_start == va + HEAP &&
+      tiler.heap_end == va + HEAP + HEAP_BYTES &&
+      tiler.heap_start < tiler.heap_end &&
+      tiler.heap_end <= va + PRIVATE_BYTES &&
+      tiler.polygon_list == va + POLY && tiler.polygon_list_body == va + POLY_BODY &&
+      tiler.polygon_list_size <= POLY_BYTES &&
+      !overlap(tiler.heap_start, HEAP_BYTES, va, BYTES) &&
+      !overlap(tiler.heap_start, HEAP_BYTES, surface.pointer, SRC_BYTES) &&
+      !overlap(tiler.heap_start, HEAP_BYTES, target, DST_BYTES) &&
       dimensions[0] == 1 && dimensions[1] == SRC_WIDTH && dimensions[2] == SRC_HEIGHT &&
       write_rule == A5DownsampleColorWriteRule && edr_half == A5DownsampleEDRHalf &&
       weight3 == A5DownsampleWeight3Half;
@@ -459,16 +489,16 @@ int main(int argc, char **argv)
    }
    uint64_t va;
    if (!validate_layout() || !parse_u64(argv[4], &va) ||
-       !valid_va(va, 0x9000) || va > (1ULL << 40) - 0x9000) return 2;
+       !valid_va(va, PRIVATE_BYTES)) return 2;
    uint8_t d[BYTES] = {0};
    if (!read_exact(argv[1], d + VS_SHADER, VS_BYTES, UINT64_C(0x9614671d6cd46fb1)) ||
        !read_exact(argv[2], d + FS_SHADER, FS_BYTES, UINT64_C(0xe4eeb225fe017513))) {
       fprintf(stderr, "shader bytes differ from the translated downsample_4 pair\n");
       return 2;
    }
-   framebuffer(d, va, va + 0x8000, DST_WIDTH, DST_HEIGHT, DST_WIDTH * 4);
+   framebuffer(d, va, va + DESTINATION, DST_WIDTH, DST_HEIGHT, DST_WIDTH * 4);
    renderer_states(d, va);
-   resources(d, va, va + 0x4000);
+   resources(d, va, va + SOURCE);
    jobs(d, va, va + POS_BUF, DST_WIDTH, DST_HEIGHT);
    if (!validate_descriptor(d, va)) {
       fprintf(stderr, "packed downsample descriptor readback mismatch\n");
@@ -480,6 +510,7 @@ int main(int argc, char **argv)
    int close_rc = fclose(f);
    if (n != sizeof(d) || close_rc) return 1;
    printf("downsample4 fixture bytes=%u base=0x%llx source=+0x4000 dest=+0x8000 "
+          "heap=+0x9000..+0xa000 guards=+0xa000..+0xc000 "
           "jobs=+0,+0x100,+0x200 fixed_viewport=1080x1920 output=32x32\n",
           BYTES, (unsigned long long)va);
    return 0;
