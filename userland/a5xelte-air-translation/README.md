@@ -102,6 +102,37 @@ provided here.
 
 ## Reproduction with locally staged inputs
 
+`translate_stock_quartzcore.py` is a source-only offline front end for two
+named stock QuartzCore pairs. Besides `read_surf`, it translates the actual
+`buffer_image_blit_vert_lpf` and `buffer_image_blit_frag_lpf` functions to
+graphics SPIR-V and rejects a change in their reflected resource ABI. The
+second pair uses read-only vertex Buffer1 (storage, whole) and Buffer2
+(64-byte uniform), and read-only fragment Buffer1 (16-byte uniform) and
+Buffer9 (storage, whole). Its push ranges are vertex bytes 0–7 for two
+buffer bind offsets and fragment bytes 64–75 for two bind offsets plus
+`ColorWriteRule=0x2222`; it writes one BGRA8Unorm color attachment. This
+second pair is **AIR→SPIR-V only**: its Vulkan buffer descriptors still need
+lowering to NIR/Midgard. A direct backend attempt stopped at unsupported
+`vulkan_resource_index`. No Mali binary, T720 draw descriptor, or phone test
+exists for this pair.
+
+Both pairs can be translated without adding the proprietary metallib or
+generated shader bytes to Git:
+
+```sh
+python3 translate_stock_quartzcore.py buffer_image_blit \
+  /private/tmp/a5xelte-root-view/System/Library/Frameworks/QuartzCore.framework/default.metallib \
+  /private/tmp/a5-blit-pair \
+  --translator /private/tmp/a5-metal2vulkan/target/release/metal2vulkan \
+  --profile /private/tmp/a5-metal2vulkan/crates/metal2vulkan-validation/profiles/vk12-floor.json
+```
+
+On the staged input this produced 7052-byte vertex and 7836-byte fragment
+SPIR-V modules. The tool checks resource read access, buffer windows,
+push ranges, BGRA8 output, and both SPIR-V magic words. It accepts the same
+arguments with `read_surf` as the pair name. Other functions are outside
+these checked profiles.
+
 The tested host has Mesa source at
 `/private/tmp/a5xelte-mesa-full/mesa-26.2.4` and its Meson build at
 `/private/tmp/a5xelte-mesa-full/buildtools`. Given the translated files in
