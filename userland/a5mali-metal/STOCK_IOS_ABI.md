@@ -84,3 +84,11 @@ compile the other iOS shaders, allocate their resources, encode their render
 state and commands, and retire/fail command buffers correctly. The local
 restricted class is a link and client-ABI checkpoint, not a functioning iOS
 Metal device.
+
+
+The 0158–0159 implementation supersedes the earlier uninstalled scaffold:
+`StockMetalPlugin` now includes actual protocol attachment, runtime required
+selector checks, iOS16 inline limits/features initialization, concrete private
+buffers and typed rejection for unsupported SPI. See STOCK_ACCEPTANCE_ABI.md
+for the audited signatures. The signed plugin is embedded for VFS installation
+by0159; stock runtime acceptance still requires the phone probe result.

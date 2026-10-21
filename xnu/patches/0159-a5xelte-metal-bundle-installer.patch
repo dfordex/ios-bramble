@@ -1,0 +1,269 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -206,6 +206,8 @@
+ void IOKitInitializeTime(void);         /* XXX */
+ void IOSleep(unsigned int);             /* XXX */
+ void IOSetImageBoot(void);              /* XXX */
++
++#include "a5xelte_metal_bundle_installer.inc"
+ void loopattach(void);                  /* XXX */
+
+ void ipc_task_enable(task_t task);
+@@ -1007,6 +1009,10 @@
+ 	}
+ #endif /* DEVFS */
+
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++	a5metal_install_start();
++#endif
++
+ #if CONFIG_BASESYSTEMROOT
+ #if CONFIG_IMAGEBOOT
+ 	if (bsdmgroot_bootable()) {
+--- a/bsd/vfs/vfs_subr.c
++++ b/bsd/vfs/vfs_subr.c
+@@ -1257,6 +1257,22 @@
+
+ 		mp = vfs_rootmountalloc_internal(vfsp, "root_device");
+ 		mp->mnt_devvp = rootvp;
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++		/* This explicit local installer needs HFS journal replay and a
++		 * genuine writable initial mount before launchd discovers Metal. */
++		{
++			uint32_t install = 0, rootrw = 0, emmcwrite = 0;
++			char rootname[16] = { 0 };
++			if (!strcmp(vfsp->vfc_name, "hfs") &&
++			    PE_parse_boot_argn("a5metal_install", &install, sizeof(install)) && install == 1 &&
++			    PE_parse_boot_argn("rootrw", &rootrw, sizeof(rootrw)) && rootrw == 1 &&
++			    PE_parse_boot_argn("emmcwrite", &emmcwrite, sizeof(emmcwrite)) && emmcwrite == 1 &&
++			    PE_parse_boot_argn("emmcroot", rootname, sizeof(rootname)) && !strcmp(rootname, "USERDATA")) {
++				mp->mnt_flag &= ~MNT_RDONLY;
++				printf("A5XELTE Metal install: initial HFS root mount read-write\n");
++			}
++		}
++#endif
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 		/*
+ 		 * SWEET has no data volume: /private/var lives on the root, so
+--- /dev/null
++++ b/bsd/kern/a5xelte_metal_bundle_installer.inc
+@@ -0,0 +1,214 @@
++/* A5XELTE opt-in installation of our small signed userland bundle.
++ * Included by bsd_init.c. Files are installed through the mounted HFS VFS,
++ * after normal HFS journal replay and before launchd starts, never raw sectors.
++ */
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++#include <sys/namei.h>
++#include <sys/fcntl.h>
++#include <sys/stat.h>
++#include <sys/errno.h>
++
++struct a5metal_install_file {
++	const char *path;
++	const unsigned char *data;
++	unsigned int size;
++	unsigned short mode;
++};
++
++#if __has_include("A5XELTEMetalBundlePayload.inc")
++#include "A5XELTEMetalBundlePayload.inc"
++#endif
++
++#if defined(A5METAL_PAYLOAD_PRESENT)
++static int
++a5metal_install_mkdir(const char *path, vfs_context_t ctx, mount_t rootmount)
++{
++	struct nameidata nd;
++	struct vnode_attr va;
++	vnode_t vp = NULLVP;
++	int error;
++
++	NDINIT(&nd, CREATE, OP_MKDIR, LOCKPARENT, UIO_SYSSPACE,
++	    CAST_USER_ADDR_T(path), ctx);
++	nd.ni_cnd.cn_flags |= WILLBEDIR;
++	nd.ni_flag = NAMEI_NOFOLLOW_ANY;
++	error = namei(&nd);
++	if (error) {
++		return error;
++	}
++	if (nd.ni_vp != NULLVP) {
++		vp = nd.ni_vp;
++		error = vnode_isdir(vp) && vnode_mount(vp) == rootmount ? 0 : ENOTDIR;
++	} else if (nd.ni_dvp == NULLVP || vnode_mount(nd.ni_dvp) != rootmount) {
++		error = EXDEV;
++	} else {
++		VATTR_INIT(&va);
++		VATTR_SET(&va, va_type, VDIR);
++		VATTR_SET(&va, va_mode, 0755);
++		VATTR_SET(&va, va_uid, 0);
++		VATTR_SET(&va, va_gid, 0);
++		error = vn_create(nd.ni_dvp, &vp, &nd, &va, 0, 0, NULL, ctx);
++		if (!error && vp != NULLVP) {
++			vnode_update_identity(vp, nd.ni_dvp, nd.ni_cnd.cn_nameptr,
++			    nd.ni_cnd.cn_namelen, nd.ni_cnd.cn_hash,
++			    VNODE_UPDATE_NAME | VNODE_UPDATE_PARENT);
++			(void)VNOP_FSYNC(nd.ni_dvp, MNT_WAIT, ctx);
++		}
++	}
++	nameidone(&nd);
++	if (vp != NULLVP) {
++		vnode_put(vp);
++	}
++	if (nd.ni_dvp != NULLVP) {
++		vnode_put(nd.ni_dvp);
++	}
++	return error;
++}
++
++static int
++a5metal_install_file(const struct a5metal_install_file *file,
++    vfs_context_t ctx, mount_t rootmount)
++{
++	vnode_t vp = NULLVP;
++	struct vnode_attr va;
++	unsigned char scratch[512];
++	unsigned int offset;
++	int error, residual = 0;
++	bool same = true;
++
++	/* Fixed private destinations only. The generated table cannot widen this. */
++	if (strcmp(file->path, "/System/Library/Extensions/A5MaliMetal.bundle/A5MaliMetal") &&
++	    strcmp(file->path, "/System/Library/Extensions/A5MaliMetal.bundle/Info.plist") &&
++	    strcmp(file->path, "/System/Library/Extensions/A5MaliMetal.bundle/_CodeSignature/CodeResources") &&
++	    strcmp(file->path, "/usr/libexec/a5mali-metal-probe") &&
++	    strcmp(file->path, "/Library/LaunchDaemons/com.orhunnx.a5mali-metal-probe.plist")) {
++		return EINVAL;
++	}
++	if (!file->size || file->size > 2U * 1024U * 1024U) {
++		return EFBIG;
++	}
++	error = vnode_open(file->path, FREAD | FWRITE | O_CREAT | O_NOFOLLOW,
++	    file->mode, VNODE_LOOKUP_NOFOLLOW, &vp, ctx);
++	if (error) {
++		return error;
++	}
++	if (!vnode_isreg(vp) || vnode_mount(vp) != rootmount) {
++		error = EXDEV;
++		goto out;
++	}
++	VATTR_INIT(&va);
++	VATTR_WANTED(&va, va_data_size);
++	error = vnode_getattr(vp, &va, ctx);
++	if (error) {
++		goto out;
++	}
++	same = va.va_data_size == file->size;
++	for (offset = 0; same && offset < file->size; offset += sizeof(scratch)) {
++		unsigned int count = MIN((unsigned int)sizeof(scratch), file->size - offset);
++		error = vn_rdwr(UIO_READ, vp, (caddr_t)scratch, count, offset,
++		    UIO_SYSSPACE, 0, vfs_context_ucred(ctx), &residual, kernproc);
++		if (error || residual || memcmp(scratch, file->data + offset, count)) {
++			same = false;
++		}
++	}
++	if (!same) {
++		VATTR_INIT(&va);
++		VATTR_SET(&va, va_data_size, file->size);
++		error = vnode_setattr(vp, &va, ctx);
++		if (error) {
++			goto out;
++		}
++		error = vn_rdwr(UIO_WRITE, vp, (caddr_t)file->data, file->size, 0,
++		    UIO_SYSSPACE, IO_SYNC, vfs_context_ucred(ctx), &residual, kernproc);
++		if (error || residual) {
++			error = error ? error : EIO;
++			goto out;
++		}
++	}
++	VATTR_INIT(&va);
++	VATTR_SET(&va, va_mode, file->mode);
++	VATTR_SET(&va, va_uid, 0);
++	VATTR_SET(&va, va_gid, 0);
++	error = vnode_setattr(vp, &va, ctx);
++	if (!error) {
++		error = VNOP_FSYNC(vp, MNT_WAIT, ctx);
++	}
++	printf("A5XELTE Metal install: %s %s bytes=%u error=%d\n",
++	    same ? "existing" : "written", file->path, file->size, error);
++ out:
++	{
++		int close_error = vnode_close(vp, FREAD | FWRITE, ctx);
++		if (!error) {
++			error = close_error;
++		}
++	}
++	return error;
++}
++
++static void
++a5metal_install_payload(void)
++{
++	static const char *const directories[] = {
++		"/System", "/System/Library", "/System/Library/Extensions",
++		"/System/Library/Extensions/A5MaliMetal.bundle",
++		"/System/Library/Extensions/A5MaliMetal.bundle/_CodeSignature",
++		"/usr", "/usr/libexec", "/Library", "/Library/LaunchDaemons"
++	};
++	vfs_context_t ctx = vfs_context_kernel();
++	mount_t rootmount = vnode_mount(rootvnode);
++	unsigned int index;
++	int error = 0;
++
++	/* rootrw=1 selects the existing writable mountroot path. */
++	if (vfs_isrdonly(rootmount)) {
++		printf("A5XELTE Metal install: root is read-only; requires rootrw=1; no files changed\n");
++		goto done;
++	}
++	if (strcmp(vfs_statfs(rootmount)->f_fstypename, "hfs")) {
++		printf("A5XELTE Metal install: refusing non-HFS root\n");
++		goto done;
++	}
++	printf("A5XELTE Metal install: writable HFS root ready; files=%lu\n",
++	    sizeof(a5metal_install_files) / sizeof(a5metal_install_files[0]));
++	for (index = 0; index < sizeof(directories) / sizeof(directories[0]); index++) {
++		error = a5metal_install_mkdir(directories[index], ctx, rootmount);
++		if (error) {
++			printf("A5XELTE Metal install: mkdir %s error=%d\n", directories[index], error);
++			goto done;
++		}
++	}
++	for (index = 0; index < sizeof(a5metal_install_files) / sizeof(a5metal_install_files[0]); index++) {
++		error = a5metal_install_file(&a5metal_install_files[index], ctx, rootmount);
++		if (error) {
++			printf("A5XELTE Metal install: file %s error=%d\n",
++			    a5metal_install_files[index].path, error);
++			goto done;
++		}
++	}
++	error = VFS_SYNC(rootmount, MNT_WAIT, ctx);
++	printf("A5XELTE Metal install: complete files=%u sync=%d\n", index, error);
++ done:
++	return;
++}
++#endif /* A5METAL_PAYLOAD_PRESENT */
++
++static void
++a5metal_install_start(void)
++{
++	int enabled = 0, writable = 0;
++	char rootname[16] = { 0 };
++	if (!PE_parse_boot_argn("a5metal_install", &enabled, sizeof(enabled)) || enabled != 1) {
++		return;
++	}
++	if (!PE_parse_boot_argn("emmcwrite", &writable, sizeof(writable)) || writable != 1 ||
++	    !PE_parse_boot_argn("emmcroot", rootname, sizeof(rootname)) || strcmp(rootname, "USERDATA")) {
++		printf("A5XELTE Metal install: requires emmcroot=USERDATA emmcwrite=1\n");
++		return;
++	}
++#if defined(A5METAL_PAYLOAD_PRESENT)
++	a5metal_install_payload();
++#else
++	printf("A5XELTE Metal install: local payload missing; no files changed\n");
++#endif
++}
++#endif /* ARM64_BOARD_CONFIG_A5XELTE */
+--- a/.gitignore
++++ b/.gitignore
+@@ -1 +1,2 @@
+ /iokit/Kernel/arm/A5XELTEReadSurfFixture.inc
++/bsd/kern/A5XELTEMetalBundlePayload.inc

@@ -61,3 +61,28 @@ to retain the working Samsung loader/ADT and select `a5gpu=8 a5gpuclient=1
 a5metal=1`. The companion bundle must be installed separately under
 `/System/Library/Extensions`; it is not embedded in BOOT. Preparation does
 not flash the device or establish stock Metal acceptance.
+
+## 0158–0159 provider integration
+
+The stock plugin now attaches the OS's real MTLDevice and MTLDeviceSPI protocols
+only after checking required instance-selector presence and the iOS16 limits
+layout. Its initializer returns nil if that check failed. It initializes the
+inline limits and installs the stock conservative feature-query base object,
+with no Apple GPU family advertised. This implements the static device-add
+contract; it does not establish general shader or pipeline coverage.
+
+Patch0158 permits the existing QuartzCore displayable-context entitlement to
+open the bounded private client only under a5metal=1. The custom private
+entitlement remains supported. Patch0159 embeds our signed bundle/probe/job
+locally and installs five fixed paths through the normally mounted HFS VFS
+before launchd. It requires a5metal_install=1 rootrw=1 emmcroot=USERDATA
+emmcwrite=1, and reuses the normal HFS journal replay rather than editing raw
+filesystem metadata in TWRP. The source generator contains no proprietary
+binary. Build outputs and generated includes remain private.
+
+The acceptance probe calls the unmodified MTLCreateSystemDefaultDevice and
+checks the returned Mali object's protocols and completed init methods.
+`STOCK DEVICE ACCEPTED` in the phone log is the acceptance criterion. Compiler,
+selector-presence and host mock tests are not that runtime result. Unsupported
+shader families, compute, heaps, GPU-address reservations and other unimplemented
+features explicitly fail; full SpringBoard rendering remains separate.

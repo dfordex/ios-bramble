@@ -19,6 +19,8 @@ def main():
     ap.add_argument('reference_boot', type=Path)
     ap.add_argument('kernel', type=Path, help='fresh linked unstripped arm64 kernel')
     ap.add_argument('output_boot', type=Path)
+    ap.add_argument('--install-bundle', action='store_true',
+                    help='install the locally embedded bundle through the mounted HFS VFS')
     args = ap.parse_args()
     if args.output_boot.exists():
         ap.error('output exists; choose a new private output path')
@@ -39,6 +41,11 @@ def main():
         ap.error('reference ADT is truncated')
     words = payload[0x48:0x2a8].split(b'\0', 1)[0].decode('ascii').split()
     required = {'a5gpu': '8', 'a5gpuclient': '1', 'a5metal': '1'}
+    if args.install_bundle:
+        if b'A5XELTE Metal install:' not in args.kernel.read_bytes():
+            ap.error('kernel lacks the embedded bundle installer')
+        required.update(a5metal_install='1', rootrw='1', emmcwrite='1',
+                        emmcroot='USERDATA')
     words = [w for w in words if w.split('=', 1)[0] not in required]
     words += [f'{k}={v}' for k, v in required.items()]
     cmdline = ' '.join(words)
@@ -64,7 +71,9 @@ def main():
                         '--ramdisk', str(payload_path)], check=True)
     print(f'kernel entry={info["entry"]}; chained fixups={info["fixups"]}')
     print(f'boot arguments: {cmdline}')
-    print('Companion: /System/Library/Extensions/A5MaliMetal.bundle (separate installation).')
+    print('Companion: /System/Library/Extensions/A5MaliMetal.bundle (' +
+          ('installed from embedded payload before launchd' if args.install_bundle
+           else 'separate installation required') + ').')
     print('Discovery enabled; stock Metal device acceptance/rendering is not established.')
 
 

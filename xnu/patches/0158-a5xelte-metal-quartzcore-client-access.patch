@@ -1,0 +1,37 @@
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
+@@ -17,6 +17,7 @@
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+ #include <libkern/c++/OSBoolean.h>
++#include <pexpert/pexpert.h>
+
+ static_assert(sizeof(A5GPUClientHeader) == 16 &&
+     sizeof(A5GPUClientImportRequest) == 32 &&
+@@ -149,11 +150,25 @@
+      */
+     OSObject *entitlement = copyClientEntitlement(owningTask,
+         "com.orhunnx.a5xelte.gpu-resource-client");
+-    const bool allowed = entitlement == kOSBooleanTrue;
++    bool allowed = entitlement == kOSBooleanTrue;
+     if (entitlement)
+         entitlement->release();
++    /* Stock compositor processes already carry this entitlement in the staged
++     * iOS image. Keep the private entitlement path and require the explicit
++     * Metal boot opt-in before accepting the existing QuartzCore capability.
++     */
++    int stockMetal = 0;
++    if (!allowed && PE_parse_boot_argn("a5metal", &stockMetal,
++        sizeof(stockMetal)) && stockMetal == 1) {
++        entitlement = copyClientEntitlement(owningTask,
++            "com.apple.QuartzCore.displayable-context");
++        allowed = entitlement == kOSBooleanTrue;
++        if (entitlement)
++            entitlement->release();
++    }
+     if (!allowed)
+         return false;
++    IOLog("A5XELTE Metal: resource client authorized\n");
+
+     fTask = owningTask;
+     fLock = IOLockAlloc();
