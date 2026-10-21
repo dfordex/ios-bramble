@@ -1,0 +1,786 @@
+--- a/iokit/Kernel/arm/A5XELTEGPUAS1.h
++++ b/iokit/Kernel/arm/A5XELTEGPUAS1.h
+@@ -4,6 +4,7 @@
+ #include <pexpert/arm64/board_config.h>
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ #include <stdint.h>
++#include "A5XELTENativeABI.h"
+ class SweetSurface;
+ class IOBufferMemoryDescriptor;
+ struct A5G3DAS1Context;
+@@ -59,6 +60,11 @@
+ A5G3DAS1SubmitStatus a5g3d_as1_submit(A5G3DAS1Context *,
+     const A5G3DAS1Request &, A5G3DAS1Completion *);
+ bool a5g3d_as1_read_surf_available();
++bool a5g3d_as1_native_available();
++bool a5g3d_as1_native_span(A5G3DAS1Context *,uint32_t,bool,A5NativeSpan *);
++A5G3DAS1SubmitStatus a5g3d_as1_submit_native(A5G3DAS1Context *,
++    const A5NativeSubmitRequest &,const uint8_t *,uint32_t,uint32_t,uint32_t,
++    A5G3DAS1Completion *);
+ /* On an ambiguous MMU update, keep the context and all surfaces pinned. */
+ void a5g3d_as1_destroy(A5G3DAS1Context *);
+ #endif
+--- a/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
+@@ -9,6 +9,7 @@
+ #include "midgard_encode.h"
+ #include "SweetSurface.h"
+ #include <IOKit/IOLib.h>
++#include <pexpert/pexpert.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/IOBufferMemoryDescriptor.h>
+ 
+@@ -33,18 +34,18 @@
+     kAS1SurfaceTablePages = 3 + kAS1Slots * kAS1TablesPerSlot,
+     kAS1JobTablePage = kAS1SurfaceTablePages,
+     kAS1BufferTablePage = kAS1JobTablePage + 1,
+-    kAS1TablePages = kAS1BufferTablePage + 2,
++    kAS1TablePages = kAS1BufferTablePage + 16,
+     kAS1TableBytes = kAS1TablePages * kAS1Page,
+     kAS1Base = 0x10000000,
+     kAS1Window = 0x800000,
+     kAS1JobVA = 0x12000000,
+-    kAS1JobBytes = 0x3000, /* descriptors/scratch + separate 4-KiB tiler heap */
++    kAS1JobBytes = A5NativeJobBytes, /* pinned native descriptors/code/scratch */
+     kAS1BufferBase = 0x12200000,
+-    kAS1BufferWindow = 0x100000,
++    kAS1BufferWindow = 0x800000,
+     kAS1BGRA = 0x42475241,
+ };
+ static const uint64_t kAS1PageDescriptor = 0x2c1ULL;
+-static_assert(kAS1TableBytes == 0x16000 &&
++static_assert(kAS1TableBytes == 0x24000 &&
+     kAS1Slots * kAS1Window == kAS1JobVA - kAS1Base,
+     "AS1 bounds");
+ 
+@@ -159,13 +160,17 @@
+ a5g3d_as1_surface_valid(SweetSurface *surface, uint32_t *bytes)
+ {
+     if (!surface || !bytes || !surface->memory ||
+-        surface->pixelFormat != kAS1BGRA || surface->offset != 0 ||
+-        surface->planeCount != 0 || surface->bytesPerElement != 4 ||
++        !((surface->pixelFormat==kAS1BGRA && surface->bytesPerElement==4) ||
++          (surface->pixelFormat==0x52476841 && surface->bytesPerElement==8) ||
++          (surface->pixelFormat==0x4c303038 && surface->bytesPerElement==1) ||
++          (surface->pixelFormat==0x32433038 && surface->bytesPerElement==2) ||
++          (surface->pixelFormat==0x4c303066 && surface->bytesPerElement==4)) ||
++        surface->offset != 0 || surface->planeCount != 0 ||
+         surface->elementWidth != 1 || surface->elementHeight != 1 ||
+         !surface->width || !surface->height ||
+         surface->width > 2048 || surface->height > 2048 ||
+-        surface->bytesPerRow < static_cast<uint64_t>(surface->width) * 4 ||
+-        surface->bytesPerRow > 8192 ||
++        surface->bytesPerRow < static_cast<uint64_t>(surface->width) * surface->bytesPerElement ||
++        surface->bytesPerRow > 16384 ||
+         OSDynamicCast(IOBufferMemoryDescriptor, surface->memory) == nullptr)
+         return false;
+     const uint64_t length = static_cast<uint64_t>(surface->bytesPerRow) *
+@@ -229,11 +234,10 @@
+         (physical + kAS1JobTablePage * kAS1Page) | 3u;
+     uint64_t *jobsL3 = reinterpret_cast<uint64_t *>(
+         bytes + kAS1JobTablePage * kAS1Page);
+-    static_assert(kAS1JobBytes == 3 * kAS1Page,
+-        "AS1 job descriptor and tiler heap need exactly three pages");
++    static_assert(kAS1JobBytes <= 512 * kAS1Page, "AS1 job L3 bounds");
+     for (uint32_t page = 0; page < kAS1JobBytes / kAS1Page; ++page)
+         jobsL3[page] = (jobPhysical + page * kAS1Page) | kAS1PageDescriptor;
+-    for (uint32_t table = 0; table < 2; ++table)
++    for (uint32_t table = 0; table < 16; ++table)
+         l2[(kAS1BufferBase >> 21) + table] =
+             (physical + (kAS1BufferTablePage + table) * kAS1Page) | 3u;
+     return ctx->tables->performOperation(kIOMemoryIncoherentIOStore,
+@@ -428,8 +432,7 @@
+ {
+     uint8_t *tables = static_cast<uint8_t *>(ctx->tables->getBytesNoCopy());
+     return reinterpret_cast<uint64_t *>(tables +
+-        (kAS1BufferTablePage + slot / 2) * kAS1Page) +
+-        (slot % 2) * (kAS1BufferWindow / kAS1Page);
++        (kAS1BufferTablePage + slot * 4) * kAS1Page);
+ }
+ 
+ bool
+@@ -694,6 +697,10 @@
+         IOLockUnlock(lock);
+         return kAS1SubmitInvalid;
+     }
++    if (ctx->surface[request.destinationSlot]->pixelFormat!=kAS1BGRA ||
++        (samples && ctx->surface[request.sourceSlot]->pixelFormat!=kAS1BGRA)) {
++        IOLockUnlock(lock);return kAS1SubmitInvalid;
++    }
+     a5_midgard_image destination = a5g3d_as1_image(ctx,
+         request.destinationSlot);
+     a5_midgard_rect destinationRect = a5g3d_as1_rect(request.destination);
+@@ -722,7 +729,8 @@
+             return kAS1SubmitInvalid;
+         }
+         uint8_t *job = static_cast<uint8_t *>(ctx->jobs->getBytesNoCopy());
+-        memcpy(job, kAS1ReadSurfFixture, kAS1JobBytes);
++        bzero(job,kAS1JobBytes);
++        memcpy(job, kAS1ReadSurfFixture, sizeof(kAS1ReadSurfFixture));
+         /* Only validated kernel-owned addresses and BGRA byte strides are
+          * relocated. Shader dimensions/viewport remain the fixed 1080x1920
+          * profile. A padded IOSurface row is not a larger pixel width. */
+@@ -817,6 +825,8 @@
+     return status;
+ }
+ 
++#include "A5XELTENativeQueue.inc"
++
+ void
+ a5g3d_as1_destroy(A5G3DAS1Context *ctx)
+ {
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.h
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.h
+@@ -34,7 +34,7 @@
+     kA5GPUClientCompilerConnectionType = 1,
+     kA5GPUClientBufferSlots = 4,
+     kA5GPUClientBufferHandleBase = 0x101,
+-    kA5GPUClientBufferMaxBytes = 0x100000,
++    kA5GPUClientBufferMaxBytes = 0x800000,
+     kA5GPUClientBatchMax = 8,
+     kA5GPUClientBatchCompleted = 0,
+     kA5GPUClientBatchInvalid = 1,
+@@ -195,7 +195,7 @@
+  * the typed BGRA encoder cannot bind them to a draw. */
+ struct A5GPUClientCreateBufferRequest {
+     A5GPUClientHeader header;
+-    uint32_t bytes; /* page aligned, 4 KiB..1 MiB */
++    uint32_t bytes; /* page aligned, 4 KiB..8 MiB */
+     uint32_t usage; /* Read/Write; enforced by future typed operations */
+ };
+ struct A5GPUClientCreateBufferResult {
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClient.cpp
+@@ -22,6 +22,9 @@
+ #include <sys/ubc.h>
+ #include <sys/vnode.h>
+ 
++static_assert(sizeof(A5NativeQueryRequest)==80 && sizeof(A5NativeQueryResult)==352 &&
++    sizeof(A5NativeSubmitRequest)==120 && sizeof(A5NativeSubmitResult)==40,
++    "Native Metal ABI changed");
+ static_assert(sizeof(A5GPUClientHeader) == 16 &&
+     sizeof(A5GPUClientCompilerCompleteRequest) == 24 &&
+     sizeof(A5GPUClientImportRequest) == 32 &&
+@@ -57,6 +60,7 @@
+         uint32_t generation;
+         uint32_t usage;
+         bool mapped;
++        uint32_t mappingSlot;
+     };
+     struct BufferSlot {
+         IOBufferMemoryDescriptor *buffer;
+@@ -70,11 +74,13 @@
+     IOLock *fLock = nullptr;
+     ResourceSlot fSlots[kA5GPUClientMaxResources] = {};
+     BufferSlot fBuffers[kA5GPUClientBufferSlots] = {};
++    uint32_t fMappingEpoch = 1;
+     bool fClosed = false;
+     bool fCompilerOnly = false;
+     A5G3DAS1Context *fAS1 = nullptr;
+ 
+     void releaseAll();
++    bool ensureSurfaceMappingLocked(uint32_t logicalSlot,uint32_t protectedSlots);
+     IOReturn query(IOExternalMethodArguments *args);
+     IOReturn compilerComplete(IOExternalMethodArguments *args);
+     static bool compilerAuthorized(task_t task);
+@@ -91,6 +97,12 @@
+     IOReturn unmapBuffer(IOExternalMethodArguments *args);
+     IOReturn submitAfter(IOExternalMethodArguments *args);
+     IOReturn queryFence(IOExternalMethodArguments *args);
++    IOReturn nativeQuery(IOExternalMethodArguments *args);
++    IOReturn nativeBulkWrite(IOExternalMethodArguments *args);
++    IOReturn nativeSubmit(IOExternalMethodArguments *args);
++    IOReturn nativeTokensLocked(const uint64_t *,const uint64_t *,
++        A5NativeQueryResult *,uint32_t,uint32_t,uint32_t,
++        uint32_t *,uint32_t *,uint32_t *);
+     IOReturn transferBuffer(IOExternalMethodArguments *args, bool write);
+     IOReturn submitOneLocked(const A5GPUClientBatchCommand &,
+         A5GPUClientBatchItemResult *);
+@@ -297,9 +309,11 @@
+     result.header.version = kA5GPUClientVersion;
+     result.header.size = sizeof(result);
+     result.maxResources = kA5GPUClientMaxResources;
+-    result.supportedOperations = (1u << 15) - 1u; /* selectors 1..15 */
++    result.supportedOperations = ((1u << 15) - 1u) |
++        (a5g3d_as1_native_available() ? ((1u<<16)|(1u<<17)|(1u<<18)) : 0);
+     result.gpuCommandsSupported = 15 |
+-        (a5g3d_as1_read_surf_available() ? 16 : 0);
++        (a5g3d_as1_read_surf_available() ? 16 : 0) |
++        (a5g3d_as1_native_available() ? A5NativeCapability : 0);
+     memcpy(args->structureOutput, &result, sizeof(result));
+     args->structureOutputSize = sizeof(result);
+     return kIOReturnSuccess;
+@@ -353,7 +367,7 @@
+     result.width = imported.width;
+     result.height = imported.height;
+     result.bytesPerRow = imported.bytesPerRow;
+-    result.pixelFormat = 0x42475241; /* BGRA */
++    result.pixelFormat = imported.surface->pixelFormat;
+     memcpy(args->structureOutput, &result, sizeof(result));
+     args->structureOutputSize = sizeof(result);
+     return kIOReturnSuccess;
+@@ -380,10 +394,11 @@
+     if (!fClosed && entry.generation == generation &&
+         entry.surface.surface != nullptr) {
+         if (entry.mapped && (!fAS1 ||
+-            !a5g3d_as1_unmap(fAS1, slot - 1))) {
++            !a5g3d_as1_unmap(fAS1, entry.mappingSlot))) {
+             IOLockUnlock(fLock);
+             return kIOReturnError;
+         }
++        if (entry.mapped && ++fMappingEpoch==0) fMappingEpoch=1;
+         retained = entry.surface;
+         bzero(&entry.surface, sizeof(entry.surface));
+         entry.mapped = false;
+@@ -398,48 +413,61 @@
+     return kIOReturnSuccess;
+ }
+ 
++bool A5XELTEGPUUserClient::ensureSurfaceMappingLocked(uint32_t index,uint32_t protectedSlots)
++{
++    if (fClosed || index>=kA5GPUClientMaxResources || !fSlots[index].surface.surface)
++        return false;
++    if (fSlots[index].mapped) return true;
++    if (!fAS1) fAS1=a5g3d_as1_create();
++    if (!fAS1) return false;
++    uint32_t occupied=0;
++    for (uint32_t i=0;i<kA5GPUClientMaxResources;i++)
++        if (fSlots[i].mapped) occupied|=1u<<fSlots[i].mappingSlot;
++    uint32_t physical=4;
++    for (uint32_t i=0;i<4;i++) if (!(occupied&(1u<<i))) { physical=i;break; }
++    if (physical==4) {
++        for (uint32_t i=0;i<kA5GPUClientMaxResources;i++) {
++            ResourceSlot &victim=fSlots[i];
++            if (victim.mapped && !(protectedSlots&(1u<<i))) {
++                if (!a5g3d_as1_unmap(fAS1,victim.mappingSlot)) return false;
++                physical=victim.mappingSlot;victim.mapped=false;
++                if (++fMappingEpoch==0) fMappingEpoch=1;
++                break;
++            }
++        }
++    }
++    if (physical==4) return false;
++    uint32_t bytes=0;
++    if (!a5g3d_as1_map(fAS1,physical,fSlots[index].surface.surface,&bytes)) return false;
++    fSlots[index].mapped=true;fSlots[index].mappingSlot=physical;
++    if (++fMappingEpoch==0) fMappingEpoch=1;
++    return true;
++}
++
+ IOReturn
+ A5XELTEGPUUserClient::mapSurface(IOExternalMethodArguments *args)
+ {
+-    if (!a5gpu_valid_input(args, sizeof(A5GPUClientMapRequest)) ||
+-        !args->structureOutput ||
+-        args->structureOutputSize < sizeof(A5GPUClientMapResult))
+-        return kIOReturnBadArgument;
+-    A5GPUClientMapRequest request = {};
+-    memcpy(&request, args->structureInput, sizeof(request));
+-    if (!a5gpu_valid_header(&request.header, sizeof(request)))
+-        return kIOReturnUnsupported;
+-    const uint32_t slot = static_cast<uint32_t>(request.handle);
+-    const uint32_t generation = static_cast<uint32_t>(request.handle >> 32);
+-    /* AS1 deliberately has four fixed 8-MiB windows. No caller-selected VA. */
+-    if (!slot || slot > 4 || !generation)
+-        return kIOReturnBadArgument;
+-    uint32_t mappedBytes = 0;
+-    IOLockLock(fLock);
+-    ResourceSlot &entry = fSlots[slot - 1];
+-    if (fClosed || entry.generation != generation ||
+-        !entry.surface.surface || entry.mapped) {
+-        IOLockUnlock(fLock);
+-        return kIOReturnNotFound;
+-    }
+-    if (!fAS1)
+-        fAS1 = a5g3d_as1_create();
+-    const bool ok = fAS1 && a5g3d_as1_map(fAS1, slot - 1,
+-        entry.surface.surface, &mappedBytes);
+-    const uint32_t usage = entry.usage;
+-    if (ok)
+-        entry.mapped = true;
+-    IOLockUnlock(fLock);
+-    if (!ok)
+-        return kIOReturnNoResources;
+-    A5GPUClientMapResult result = {};
+-    result.header.version = kA5GPUClientVersion;
+-    result.header.size = sizeof(result);
+-    result.mappingToken = request.handle;
+-    result.mappedBytes = mappedBytes;
+-    result.flags = usage;
+-    memcpy(args->structureOutput, &result, sizeof(result));
+-    args->structureOutputSize = sizeof(result);
++    if (!a5gpu_valid_input(args,sizeof(A5GPUClientMapRequest)) ||
++        !args->structureOutput || args->structureOutputSize<sizeof(A5GPUClientMapResult))
++        return kIOReturnBadArgument;
++    A5GPUClientMapRequest request={};memcpy(&request,args->structureInput,sizeof(request));
++    if (!a5gpu_valid_header(&request.header,sizeof(request))) return kIOReturnUnsupported;
++    uint32_t slot=static_cast<uint32_t>(request.handle);
++    uint32_t generation=static_cast<uint32_t>(request.handle>>32);
++    if (!slot || slot>kA5GPUClientMaxResources || !generation) return kIOReturnBadArgument;
++    IOLockLock(fLock);ResourceSlot &entry=fSlots[slot-1];
++    bool ok=!fClosed && entry.generation==generation &&
++        ensureSurfaceMappingLocked(slot-1,1u<<(slot-1));
++    A5NativeSpan span={};
++    if (ok) ok=a5g3d_as1_native_available() ?
++        a5g3d_as1_native_span(fAS1,entry.mappingSlot,false,&span) : true;
++    uint32_t mappedBytes=ok ? static_cast<uint32_t>(
++        (static_cast<uint64_t>(entry.surface.surface->bytesPerRow)*entry.surface.surface->height+4095)&~4095ULL) : 0;
++    uint32_t usage=entry.usage;IOLockUnlock(fLock);
++    if (!ok) return kIOReturnNoResources;
++    A5GPUClientMapResult result={};result.header={1,sizeof(result),0,0};
++    result.mappingToken=request.handle;result.mappedBytes=mappedBytes;result.flags=usage;
++    memcpy(args->structureOutput,&result,sizeof(result));args->structureOutputSize=sizeof(result);
+     return kIOReturnSuccess;
+ }
+ 
+@@ -456,7 +484,7 @@
+     const uint32_t slot = static_cast<uint32_t>(request.mappingToken);
+     const uint32_t generation =
+         static_cast<uint32_t>(request.mappingToken >> 32);
+-    if (!slot || slot > 4 || !generation)
++    if (!slot || slot > kA5GPUClientMaxResources || !generation)
+         return kIOReturnBadArgument;
+     IOLockLock(fLock);
+     ResourceSlot &entry = fSlots[slot - 1];
+@@ -465,9 +493,8 @@
+         IOLockUnlock(fLock);
+         return kIOReturnNotFound;
+     }
+-    const bool ok = a5g3d_as1_unmap(fAS1, slot - 1);
+-    if (ok)
+-        entry.mapped = false;
++    const bool ok = a5g3d_as1_unmap(fAS1, entry.mappingSlot);
++    if (ok) { entry.mapped=false; if (++fMappingEpoch==0) fMappingEpoch=1; }
+     IOLockUnlock(fLock);
+     return ok ? kIOReturnSuccess : kIOReturnError;
+ }
+@@ -545,6 +572,10 @@
+     const bool samples = request.operation == kA5GPUClientCopyBGRA ||
+         request.operation == kA5GPUClientDrawTexturedQuadBGRA ||
+         request.operation == kA5GPUClientReadSurfBGRA;
++    uint32_t protectedSlots=(1u<<(dst-1))|(samples ? 1u<<(src-1) : 0);
++    if (!ensureSurfaceMappingLocked(dst-1,protectedSlots) ||
++        (samples && !ensureSurfaceMappingLocked(src-1,protectedSlots)))
++        return kIOReturnNoResources;
+     const ResourceSlot &target = fSlots[dst - 1];
+     const bool sourceReady = !samples ||
+         a5gpu_mapped_token_matches(request.sourceToken, src,
+@@ -561,8 +592,8 @@
+         kA5GPUClientDrawTexturedQuadBGRA ?
+         kAS1DrawTexturedQuadBGRA : request.operation ==
+         kA5GPUClientReadSurfBGRA ? kAS1ReadSurfBGRA : kAS1ClearBGRA;
+-    work.sourceSlot = src ? src - 1 : 0;
+-    work.destinationSlot = dst - 1;
++    work.sourceSlot = samples ? fSlots[src-1].mappingSlot : 0;
++    work.destinationSlot = target.mappingSlot;
+     work.source = {request.sourceRect.x, request.sourceRect.y,
+         request.sourceRect.width, request.sourceRect.height};
+     work.destination = {request.destinationRect.x, request.destinationRect.y,
+@@ -943,6 +974,8 @@
+     IOLockUnlock(fLock);
+     return result;
+ }
++
++#include "A5XELTENativeClient.inc"
+ 
+ IOReturn
+ A5XELTEGPUUserClient::externalMethod(uint32_t selector,
+@@ -987,6 +1020,12 @@
+         return transferBuffer(args, true);
+     case kA5GPUClientReadBuffer:
+         return transferBuffer(args, false);
++    case A5NativeQuerySelector:
++        return nativeQuery(args);
++    case A5NativeSubmitSelector:
++        return nativeSubmit(args);
++    case A5NativeBulkWriteSelector:
++        return nativeBulkWrite(args);
+     default:
+         return kIOReturnUnsupported;
+     }
+--- a/iokit/Kernel/arm/A5XELTEGPUUserClientBatch.h
++++ b/iokit/Kernel/arm/A5XELTEGPUUserClientBatch.h
+@@ -18,14 +18,14 @@
+     const bool samples = request.operation == kA5GPUClientCopyBGRA ||
+         request.operation == kA5GPUClientDrawTexturedQuadBGRA ||
+         request.operation == kA5GPUClientReadSurfBGRA;
+-    return dst && dst <= 4 && (request.destinationToken >> 32) &&
++    return dst && dst <= kA5GPUClientMaxResources && (request.destinationToken >> 32) &&
+         (request.operation == kA5GPUClientClearBGRA || samples) &&
+         (request.operation != kA5GPUClientClearBGRA ||
+          (!request.sourceToken && !request.sourceRect.x &&
+           !request.sourceRect.y && !request.sourceRect.width &&
+           !request.sourceRect.height)) &&
+         (!samples ||
+-         (src && src <= 4 && (request.sourceToken >> 32) &&
++         (src && src <= kA5GPUClientMaxResources && (request.sourceToken >> 32) &&
+           src != dst && !request.clearColor)) &&
+         (request.operation != kA5GPUClientCopyBGRA ||
+          (request.sourceRect.width == request.destinationRect.width &&
+--- a/iokit/Kernel/arm/A5XELTEGPUResources.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUResources.cpp
+@@ -44,12 +44,15 @@
+      * The backing geometry is checked again at staging time because callers
+      * must not pass a stale or hand-crafted A5G3DImportedSurface.
+      */
+-    if (surface->pixelFormat != kA5G3DResourceBGRA ||
+-        surface->bytesPerElement != 4 || surface->elementWidth != 1 ||
++    const bool bgra=surface->pixelFormat==kA5G3DResourceBGRA && surface->bytesPerElement==4;
++    const bool halfRGBA=surface->pixelFormat==0x52476841 && surface->bytesPerElement==8;
++    const bool small=(surface->pixelFormat==0x4c303038 && surface->bytesPerElement==1) ||
++        (surface->pixelFormat==0x32433038 && surface->bytesPerElement==2) ||
++        (surface->pixelFormat==0x4c303066 && surface->bytesPerElement==4);
++    if ((!bgra && !halfRGBA && !small) || surface->elementWidth != 1 ||
+         surface->elementHeight != 1 || surface->planeCount != 0 ||
+-        surface->width < kA5G3DTileWidth ||
+-        surface->height < kA5G3DTileHeight ||
+-        surface->bytesPerRow < surface->width * 4ULL ||
++        !surface->width || !surface->height ||
++        surface->bytesPerRow < surface->width * static_cast<uint64_t>(surface->bytesPerElement) ||
+         !surface->memory || surface->allocSize > surface->memory->getLength()) {
+         return kA5G3DResourceUnsupported;
+     }
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTENativeABI.h
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: MIT
++ * Privileged experimental T720 native queue. Addresses are selected by the
++ * kernel and name only this client's AS1 mappings, never physical memory.
++ */
++#ifndef A5_MALI_NATIVE_ABI_H
++#define A5_MALI_NATIVE_ABI_H
++#include <stdint.h>
++enum { A5NativeQuerySelector=17, A5NativeSubmitSelector=18,
++       A5NativeCapability=32, A5NativeSlots=4, A5NativeJobBytes=0x40000,
++       A5NativeJobVA=0x12000000, A5NativeBulkWriteSelector=19,
++       A5NativeBulkWriteMax=0x100000, A5NativeBufferMax=0x800000 };
++typedef struct { uint32_t version,size,reserved0,reserved1; } A5NativeHeader;
++typedef struct {
++    A5NativeHeader header;
++    uint64_t surfaces[A5NativeSlots], buffers[A5NativeSlots];
++} A5NativeQueryRequest;
++typedef struct {
++    uint64_t token, gpuVA;
++    uint32_t bytes,width,height,rowBytes,pixelFormat,usage;
++} A5NativeSpan;
++typedef struct {
++    A5NativeHeader header;
++    uint64_t jobVA;
++    uint32_t jobBytes, flags; /* flags is the nonzero AS1 mapping epoch */
++    A5NativeSpan surfaces[A5NativeSlots], buffers[A5NativeSlots];
++} A5NativeQueryResult;
++typedef struct {
++    A5NativeHeader header;
++    uint32_t jobBytes,vertexOffset,tilerOffset,fragmentOffset;
++    uint32_t readSurfaces,writeSurfaces,readBuffers,reserved;
++    uint32_t profileID,mappingEpoch;
++    uint64_t surfaces[A5NativeSlots], buffers[A5NativeSlots];
++    /* Exactly jobBytes encoded bytes follow this fixed structure. */
++} A5NativeSubmitRequest;
++typedef struct {
++    A5NativeHeader header; /* size is fixed header + actual chunk length */
++    uint64_t handle;
++    uint32_t offset,length;
++} A5NativeBulkWriteRequest;
++typedef struct {
++    A5NativeHeader header;
++    uint32_t status,reserved;
++    uint64_t tilerFence,fragmentFence;
++} A5NativeSubmitResult;
++#endif
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTENativeClient.inc
+@@ -0,0 +1,162 @@
++/* All methods run on the opening task's entitlement-gated GPU connection. */
++IOReturn A5XELTEGPUUserClient::nativeTokensLocked(const uint64_t *surfaces,
++    const uint64_t *buffers,A5NativeQueryResult *result,
++    uint32_t readMask,uint32_t writeMask,uint32_t bufferMask,
++    uint32_t *physicalReads,uint32_t *physicalWrites,uint32_t *physicalBuffers)
++{
++    if (fClosed || !fAS1) return kIOReturnNotOpen;
++    if (physicalReads) *physicalReads=0;
++    if (physicalWrites) *physicalWrites=0;
++    if (physicalBuffers) *physicalBuffers=0;
++    uint32_t protectedSlots=0;
++    for (uint32_t i=0;i<4;i++) if (surfaces[i]) {
++        uint32_t slot=static_cast<uint32_t>(surfaces[i]);
++        if (!slot || slot>kA5GPUClientMaxResources ||
++            fSlots[slot-1].generation!=static_cast<uint32_t>(surfaces[i]>>32))
++            return kIOReturnNotFound;
++        protectedSlots|=1u<<(slot-1);
++    }
++    if (result) for (uint32_t i=0;i<4;i++) if (surfaces[i] &&
++        !ensureSurfaceMappingLocked(static_cast<uint32_t>(surfaces[i])-1,protectedSlots))
++        return kIOReturnNoResources;
++    for (uint32_t i=0;i<4;i++) {
++        uint32_t bit=1u<<i;
++        if (!surfaces[i]) {
++            if ((readMask|writeMask)&bit) return kIOReturnBadArgument;
++        } else {
++            uint32_t slot=static_cast<uint32_t>(surfaces[i]);
++            if (!slot || slot>kA5GPUClientMaxResources) return kIOReturnBadArgument;
++            ResourceSlot &entry=fSlots[slot-1];
++            if (!entry.surface.surface || !entry.mapped ||
++                entry.generation!=static_cast<uint32_t>(surfaces[i]>>32) ||
++                ((readMask&bit) && !(entry.usage&kA5GPUClientRead)) ||
++                ((writeMask&bit) && !(entry.usage&kA5GPUClientWrite)))
++                return kIOReturnNotFound;
++            A5NativeSpan span={};span.token=surfaces[i];span.usage=entry.usage;
++            if (!a5g3d_as1_native_span(fAS1,entry.mappingSlot,false,&span))
++                return kIOReturnNotReady;
++            if (result) result->surfaces[i]=span;
++            if (physicalReads && (readMask&bit)) *physicalReads|=1u<<entry.mappingSlot;
++            if (physicalWrites && (writeMask&bit)) *physicalWrites|=1u<<entry.mappingSlot;
++        }
++        if (!buffers[i]) {
++            if (bufferMask&bit) return kIOReturnBadArgument;
++        } else {
++            uint32_t slot=0;
++            if (!a5gpu_buffer_token_slot(buffers[i],&slot))
++                return kIOReturnBadArgument;
++            BufferSlot &entry=fBuffers[slot];
++            if (!entry.buffer || entry.generation!=static_cast<uint32_t>(buffers[i]>>32) ||
++                ((bufferMask&bit) && !(entry.usage&kA5GPUClientRead)))
++                return kIOReturnNotFound;
++            if (result && !entry.mapped) {
++                if (!a5g3d_as1_map_buffer(fAS1,slot,entry.buffer,entry.bytes))
++                    return kIOReturnNoResources;
++                entry.mapped=true;if (++fMappingEpoch==0) fMappingEpoch=1;
++            }
++            if (!entry.mapped) return kIOReturnNotFound;
++            A5NativeSpan span={};span.token=buffers[i];span.usage=entry.usage;
++            if (!a5g3d_as1_native_span(fAS1,slot,true,&span))
++                return kIOReturnNotReady;
++            if (result) result->buffers[i]=span;
++            if (physicalBuffers && (bufferMask&bit)) *physicalBuffers|=1u<<slot;
++        }
++    }
++    return kIOReturnSuccess;
++}
++
++IOReturn A5XELTEGPUUserClient::nativeQuery(IOExternalMethodArguments *args)
++{
++    if (!a5g3d_as1_native_available()) return kIOReturnUnsupported;
++    if (!a5gpu_valid_input(args,sizeof(A5NativeQueryRequest)) ||
++        !args->structureOutput || args->structureOutputSize<sizeof(A5NativeQueryResult))
++        return kIOReturnBadArgument;
++    A5NativeQueryRequest r={};memcpy(&r,args->structureInput,sizeof(r));
++    if (!a5gpu_valid_header(reinterpret_cast<A5GPUClientHeader *>(&r.header),sizeof(r)))
++        return kIOReturnBadArgument;
++    A5NativeQueryResult out={};out.header={1,sizeof(out),0,0};
++    out.jobVA=A5NativeJobVA;out.jobBytes=A5NativeJobBytes;
++    IOLockLock(fLock);
++    IOReturn kr=nativeTokensLocked(r.surfaces,r.buffers,&out,0,0,0,
++        nullptr,nullptr,nullptr);
++    out.flags=fMappingEpoch;
++    IOLockUnlock(fLock);
++    if (kr!=kIOReturnSuccess) return kr;
++    memcpy(args->structureOutput,&out,sizeof(out));args->structureOutputSize=sizeof(out);
++    return kIOReturnSuccess;
++}
++
++IOReturn A5XELTEGPUUserClient::nativeSubmit(IOExternalMethodArguments *args)
++{
++    if (!a5g3d_as1_native_available()) return kIOReturnUnsupported;
++    const uint32_t bytes=sizeof(A5NativeSubmitRequest)+A5NativeJobBytes;
++    if (!args || args->scalarInputCount || args->scalarOutputCount ||
++        !args->structureOutput || args->structureOutputSize<sizeof(A5NativeSubmitResult))
++        return kIOReturnBadArgument;
++    IOMemoryDescriptor *descriptor=args->structureInputDescriptor;
++    if (descriptor ? descriptor->getLength()!=bytes :
++        (!args->structureInput || args->structureInputSize!=bytes))
++        return kIOReturnBadArgument;
++    uint8_t *copy=static_cast<uint8_t *>(IOMallocData(bytes));
++    if (!copy) return kIOReturnNoMemory;
++    if (descriptor) {
++        if (descriptor->readBytes(0,copy,bytes)!=bytes) {
++            IOFreeData(copy,bytes);return kIOReturnBadArgument;
++        }
++    } else memcpy(copy,args->structureInput,bytes);
++    A5NativeSubmitRequest r={};memcpy(&r,copy,sizeof(r));
++    if (!a5gpu_valid_header(reinterpret_cast<A5GPUClientHeader *>(&r.header),sizeof(r)) ||
++        r.jobBytes!=A5NativeJobBytes || r.reserved || !r.mappingEpoch ||
++        (r.readSurfaces|r.writeSurfaces|r.readBuffers)&~15u || !r.writeSurfaces) {
++        IOFreeData(copy,bytes);return kIOReturnBadArgument;
++    }
++    A5NativeSubmitResult out={};out.header={1,sizeof(out),0,0};
++    uint32_t reads=0,writes=0,buffers=0;
++    IOLockLock(fLock);
++    IOReturn kr=r.mappingEpoch!=fMappingEpoch ? kIOReturnNotReady :
++        nativeTokensLocked(r.surfaces,r.buffers,nullptr,
++        r.readSurfaces,r.writeSurfaces,r.readBuffers,&reads,&writes,&buffers);
++    if (kr==kIOReturnSuccess) {
++        A5G3DAS1Completion completion={};
++        out.status=a5g3d_as1_submit_native(fAS1,r,copy+sizeof(r),reads,writes,buffers,&completion);
++        out.tilerFence=completion.tilerFence;out.fragmentFence=completion.fragmentFence;
++    }
++    IOLockUnlock(fLock);IOFreeData(copy,bytes);
++    if (kr!=kIOReturnSuccess) return kr;
++    memcpy(args->structureOutput,&out,sizeof(out));args->structureOutputSize=sizeof(out);
++    return kIOReturnSuccess;
++}
++
++IOReturn A5XELTEGPUUserClient::nativeBulkWrite(IOExternalMethodArguments *args)
++{
++    if (!a5g3d_as1_native_available()) return kIOReturnUnsupported;
++    if (!args || args->scalarInputCount || args->scalarOutputCount ||
++        args->structureOutputSize || args->structureOutputDescriptor)
++        return kIOReturnBadArgument;
++    IOMemoryDescriptor *desc=args->structureInputDescriptor;
++    uint64_t bytes=desc ? desc->getLength() : args->structureInputSize;
++    if (bytes<=sizeof(A5NativeBulkWriteRequest) ||
++        bytes>sizeof(A5NativeBulkWriteRequest)+A5NativeBulkWriteMax ||
++        (!desc && !args->structureInput)) return kIOReturnBadArgument;
++    uint8_t *copy=static_cast<uint8_t *>(IOMallocData(bytes));
++    if (!copy) return kIOReturnNoMemory;
++    if (desc ? desc->readBytes(0,copy,bytes)!=bytes : false) {
++        IOFreeData(copy,bytes);return kIOReturnBadArgument;
++    }
++    if (!desc) memcpy(copy,args->structureInput,bytes);
++    A5NativeBulkWriteRequest r={};memcpy(&r,copy,sizeof(r));
++    uint32_t slot=0;
++    if (!a5gpu_valid_header(reinterpret_cast<A5GPUClientHeader *>(&r.header),bytes) ||
++        !r.length || r.length>A5NativeBulkWriteMax || r.length!=bytes-sizeof(r) ||
++        !a5gpu_buffer_token_slot(r.handle,&slot)) {
++        IOFreeData(copy,bytes);return kIOReturnBadArgument;
++    }
++    IOReturn kr=kIOReturnNotFound;IOLockLock(fLock);
++    BufferSlot &entry=fBuffers[slot];
++    if (!fClosed && entry.buffer && entry.generation==static_cast<uint32_t>(r.handle>>32) &&
++        (entry.usage&kA5GPUClientWrite) && r.offset<=entry.bytes && r.length<=entry.bytes-r.offset) {
++        kr=entry.buffer->writeBytes(r.offset,copy+sizeof(r),r.length)==r.length ?
++            entry.buffer->performOperation(kIOMemoryIncoherentIOStore,r.offset,r.length) : kIOReturnIOError;
++    }
++    IOLockUnlock(fLock);IOFreeData(copy,bytes);return kr;
++}
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTENativeQueue.inc
+@@ -0,0 +1,128 @@
++/* Privileged opt-in native graphics jobs. The signed provider constructs v4
++ * descriptors from its authenticated shader registry and actual Metal binds.
++ * GPU virtual addresses refer only to this client's pinned AS1 windows.
++ * This path is not safe for untrusted shader clients; a5native=1 is lab-only.
++ */
++bool a5g3d_as1_native_available()
++{
++    int enabled=0;
++    return PE_parse_boot_argn("a5native",&enabled,sizeof(enabled)) && enabled==1;
++}
++
++bool a5g3d_as1_native_span(A5G3DAS1Context *ctx,uint32_t slot,bool buffer,
++    A5NativeSpan *out)
++{
++    if (!ctx || !out || slot>=4 || !a5g3d_as1_native_available()) return false;
++    IOLock *lock=a5g3d_as1_lock(); IOLockLock(lock);
++    bool ok=gAS1Owner==ctx && !ctx->poisoned && ctx->installed;
++    if (buffer) {
++        ok=ok && ctx->buffer[slot] && ctx->bufferBytes[slot];
++        if (ok) { out->gpuVA=kAS1BufferBase+slot*kAS1BufferWindow;
++            out->bytes=ctx->bufferBytes[slot]; }
++    } else {
++        ok=ok && ctx->surface[slot] && ctx->mappedBytes[slot];
++        if (ok) { SweetSurface *s=ctx->surface[slot];
++            out->gpuVA=kAS1Base+slot*kAS1Window;
++            out->bytes=ctx->mappedBytes[slot];out->width=s->width;
++            out->height=s->height;out->rowBytes=s->bytesPerRow;
++            out->pixelFormat=s->pixelFormat; }
++    }
++    IOLockUnlock(lock); return ok;
++}
++
++static uint32_t a5native_word(const uint8_t *p,uint32_t offset)
++{ uint32_t v=0;memcpy(&v,p+offset,4);return v; }
++static uint64_t a5native_pointer(const uint8_t *p,uint32_t offset)
++{ uint64_t v=0;memcpy(&v,p+offset,8);return v; }
++static bool a5native_header(const uint8_t *p,uint32_t offset,unsigned type,
++    uint64_t next)
++{
++    return !a5native_word(p,offset) && !a5native_word(p,offset+4) &&
++        !a5native_pointer(p,offset+8) &&
++        ((a5native_word(p,offset+16)>>1)&127)==type &&
++        a5native_pointer(p,offset+24)==next;
++}
++
++A5G3DAS1SubmitStatus a5g3d_as1_submit_native(A5G3DAS1Context *ctx,
++    const A5NativeSubmitRequest &r,const uint8_t *input,
++    uint32_t reads,uint32_t writes,uint32_t buffers,
++    A5G3DAS1Completion *out)
++{
++    if (out) bzero(out,sizeof(*out));
++    bool clear=r.profileID==0;
++    bool profile=clear || (r.profileID>=99 && r.profileID<=108) ||
++        (r.profileID>=200 && r.profileID<=208) || (r.profileID>=300 && r.profileID<=302);
++    if (!ctx || !input || !out || !a5g3d_as1_native_available() || !profile ||
++        r.jobBytes!=A5NativeJobBytes || (reads|writes|buffers)&~15u || !writes ||
++        r.fragmentOffset>=r.jobBytes-256 || (r.fragmentOffset&15u) ||
++        !a5native_header(input,r.fragmentOffset,9,0)) return kAS1SubmitInvalid;
++    if (clear) {
++        if (r.vertexOffset!=UINT32_MAX || r.tilerOffset!=UINT32_MAX)
++            return kAS1SubmitInvalid;
++    } else if ((r.vertexOffset|r.tilerOffset)&15u ||
++        r.vertexOffset>=r.jobBytes-256 || r.tilerOffset>=r.jobBytes-256 ||
++        r.vertexOffset==r.tilerOffset || r.vertexOffset==r.fragmentOffset ||
++        r.tilerOffset==r.fragmentOffset ||
++        !a5native_header(input,r.vertexOffset,5,kAS1JobVA+r.tilerOffset) ||
++        !a5native_header(input,r.tilerOffset,7,0)) return kAS1SubmitInvalid;
++    IOLock *lock=a5g3d_as1_lock();IOLockLock(lock);
++    if (gAS1Owner!=ctx || ctx->poisoned || !ctx->installed) {
++        IOLockUnlock(lock);return kAS1SubmitInvalid;
++    }
++    for (uint32_t i=0;i<4;i++) {
++        if ((((reads|writes)&(1u<<i)) && !ctx->surface[i]) ||
++            ((buffers&(1u<<i)) && !ctx->buffer[i])) {
++            IOLockUnlock(lock);return kAS1SubmitInvalid;
++        }
++    }
++    /* The context lease prevents descriptor replacement until terminal idle.
++     * Inputs remain retained in the caller's resource table for this whole call.
++     */
++    memcpy(ctx->jobs->getBytesNoCopy(),input,r.jobBytes);
++    for (uint32_t i=0;i<4;i++) {
++        if (((reads|writes)&(1u<<i)) &&
++            ctx->surface[i]->memory->performOperation(kIOMemoryIncoherentIOStore,
++                0,ctx->mappedBytes[i])!=kIOReturnSuccess) {
++            IOLockUnlock(lock);return kAS1SubmitIOError;
++        }
++        if ((buffers&(1u<<i)) && ctx->buffer[i]->performOperation(
++            kIOMemoryIncoherentIOStore,0,ctx->bufferBytes[i])!=kIOReturnSuccess) {
++            IOLockUnlock(lock);return kAS1SubmitIOError;
++        }
++    }
++    IOService *owner=nullptr; IOBufferMemoryDescriptor *as0=nullptr;
++    vm_offset_t gpu=0;uint64_t token=0;
++    if (!a5g3d_queue_acquire_runtime(&owner,&token,&as0,&gpu)) {
++        IOLockUnlock(lock);return kAS1SubmitBusy;
++    }
++    bool started=false;
++    if (a5g3d_as1_read(gpu,0x100)!=3 || a5g3d_as1_read(gpu,0x104)!=0 ||
++        (a5g3d_as1_read(gpu,0x140)&~3u) || a5g3d_as1_read(gpu,0x144)) {
++        a5g3d_queue_release(owner,token);owner->release();IOLockUnlock(lock);
++        return kAS1SubmitInvalid;
++    }
++    A5G3DAS1SubmitStatus status=kAS1SubmitCompleted;
++    if (!clear) status=a5g3d_as1_run_job(ctx,gpu,1,
++        r.vertexOffset,out,&out->tilerFence,&started,r.tilerOffset);
++    if (status==kAS1SubmitCompleted)
++        status=a5g3d_as1_run_job(ctx,gpu,0,r.fragmentOffset,out,
++            &out->fragmentFence,&started,0);
++    if (status==kAS1SubmitCompleted)
++        for (uint32_t i=0;i<4;i++)
++            if ((writes&(1u<<i)) && ctx->surface[i]->memory->performOperation(
++                kIOMemoryIncoherentIOFlush,0,ctx->mappedBytes[i])!=kIOReturnSuccess)
++                status=kAS1SubmitIOError;
++    if (status==kAS1SubmitCompleted) ctx->completedFence=out->fragmentFence;
++    if (started || status==kAS1SubmitFault || status==kAS1SubmitTimeout) {
++        ctx->poisoned=true;a5g3d_queue_poison(owner,token);
++        IOLog("A5XELTE G3D native: uncertain job; AS1 resources pinned until reboot\n");
++    } else if (!a5g3d_queue_release(owner,token)) {
++        ctx->poisoned=true; status=kAS1SubmitFault;
++    }
++    static unsigned reports=0;
++    if (reports++<32 || status!=kAS1SubmitCompleted)
++        IOLog("A5XELTE G3D native: profile=%u status=%u vertex=%llu fragment=%llu header=%08x mmu=%08x\n",
++            r.profileID,status,out->tilerFence,out->fragmentFence,
++            out->headerStatus,out->mmuIRQ);
++    owner->release();IOLockUnlock(lock);return status;
++}

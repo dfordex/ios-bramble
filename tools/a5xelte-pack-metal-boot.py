@@ -27,6 +27,8 @@ def main():
                     help='enable signed on-device compiler helpers embedded by patches0172/0173')
     ap.add_argument('--test-shader-suite', action='store_true',
                     help='run the locally embedded Mac shader GPU fixture suite')
+    ap.add_argument('--native-rendering', action='store_true',
+                    help='enable the privileged local Metal native queue; requires a compiled registry bundle')
     args = ap.parse_args()
     if args.output_boot.exists():
         ap.error('output exists; choose a new private output path')
@@ -47,6 +49,12 @@ def main():
         ap.error('reference ADT is truncated')
     words = payload[0x48:0x2a8].split(b'\0', 1)[0].decode('ascii').split()
     required = {'a5gpu': '8', 'a5gpuclient': '1', 'a5metal': '1'}
+    if args.native_rendering:
+        if not args.install_bundle:
+            ap.error('--native-rendering requires --install-bundle')
+        if b'A5XELTE G3D native: profile=' not in args.kernel.read_bytes():
+            ap.error('kernel lacks the native terminal-fence queue')
+        required['a5native'] = '1'
     if args.test_shader_suite:
         if b'A5XELTE G3D SUITE: completed passed=' not in args.kernel.read_bytes():
             ap.error('kernel lacks the generated Mac shader suite')

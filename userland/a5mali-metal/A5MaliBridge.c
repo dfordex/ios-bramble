@@ -180,8 +180,12 @@ kern_return_t A5MaliImportSurface(A5MaliClient *client,
         return kIOReturnBadArgument;
     }
     HandleRequest map = { header(sizeof(map)), reply.handle };
-    if (reply.format != 0x42475241 || !reply.width || !reply.height ||
-        reply.width > UINT32_MAX / 4 || reply.rowBytes < reply.width * 4) {
+    uint32_t elementBytes = reply.format==0x42475241 ? 4 :
+        reply.format==0x52476841 ? 8 : reply.format==0x4c303038 ? 1 :
+        reply.format==0x32433038 ? 2 : reply.format==0x4c303066 ? 4 : 0;
+    if (!elementBytes || !reply.width || !reply.height ||
+        reply.width > UINT32_MAX / elementBytes ||
+        reply.rowBytes < reply.width * elementBytes) {
         call(client, A5MaliRelease, &map, sizeof(map), NULL, NULL);
         return kIOReturnBadArgument;
     }
