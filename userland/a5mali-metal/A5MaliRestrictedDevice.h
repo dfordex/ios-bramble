@@ -161,7 +161,32 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 - (void)endEncoding;
 @end
 
+/* GPU work is limited to validated BGRA texture copies. Mipmap generation
+ * does no work only for a genuine same-device single-level texture; rejected
+ * nil/multilevel resources fail the command buffer. Fixed-layout optimization
+ * hints preserve the IOSurface layout. Buffer/fill/fence/indirect/counter and
+ * managed-storage synchronization APIs set an explicit command-buffer error.
+ * Required selector availability does not imply general blit/GPU support. */
 @interface A5MaliMetalBlitEncoder : NSObject
+@property (nonatomic, readonly) A5MaliRestrictedDevice *device;
+@property (nullable, copy, atomic) NSString *label;
+- (void)generateMipmapsForTexture:(A5MaliMetalTexture *)texture;
+- (void)copyFromTexture:(A5MaliMetalTexture *)sourceTexture
+              toTexture:(A5MaliMetalTexture *)destinationTexture;
+- (void)copyFromTexture:(A5MaliMetalTexture *)sourceTexture
+            sourceSlice:(NSUInteger)sourceSlice sourceLevel:(NSUInteger)sourceLevel
+              toTexture:(A5MaliMetalTexture *)destinationTexture
+       destinationSlice:(NSUInteger)destinationSlice destinationLevel:(NSUInteger)destinationLevel
+             sliceCount:(NSUInteger)sliceCount levelCount:(NSUInteger)levelCount;
+- (void)optimizeContentsForGPUAccess:(A5MaliMetalTexture *)texture;
+- (void)optimizeContentsForGPUAccess:(A5MaliMetalTexture *)texture
+                              slice:(NSUInteger)slice level:(NSUInteger)level;
+- (void)optimizeContentsForCPUAccess:(A5MaliMetalTexture *)texture;
+- (void)optimizeContentsForCPUAccess:(A5MaliMetalTexture *)texture
+                              slice:(NSUInteger)slice level:(NSUInteger)level;
+- (void)insertDebugSignpost:(NSString *)string;
+- (void)pushDebugGroup:(NSString *)string;
+- (void)popDebugGroup;
 - (void)copyFromTexture:(A5MaliMetalTexture *)sourceTexture
             sourceSlice:(NSUInteger)sourceSlice
             sourceLevel:(NSUInteger)sourceLevel

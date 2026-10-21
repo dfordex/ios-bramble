@@ -22,6 +22,22 @@ typedef struct { uint32_t batches, releases, expectedOperation; } Fake;
 @implementation NamedFunctionFixture
 @end
 
+@interface A5MaliMetalTexture (TestBacking)
+- (A5MaliSurface *)privateSurface;
+@end
+@interface TextureShapeFixture : A5MaliMetalTexture
+@property (nonatomic, strong) A5MaliMetalTexture *backing;
+@property (nonatomic, strong) A5MaliRestrictedDevice *fixtureDevice;
+@property (nonatomic) NSUInteger fixtureLevels;
+@end
+@implementation TextureShapeFixture
+- (A5MaliRestrictedDevice *)device { return self.fixtureDevice ?: self.backing.device; }
+- (A5MaliSurface *)privateSurface { return [self.backing privateSurface]; }
+- (NSUInteger)width { return self.backing.width; }
+- (NSUInteger)height { return self.backing.height; }
+- (NSUInteger)mipmapLevelCount { return self.fixtureLevels; }
+@end
+
 static kern_return_t mock(void *opaque, uint32_t selector, const void *input,
     size_t inputSize, void *output, size_t *outputSize)
 {
@@ -228,6 +244,137 @@ static void configuredDispatchQueue(A5MaliRestrictedDevice *device,
     dispatch_sync(queue.completionQueue, ^{});
 }
 
+static void failedBlit(A5MaliRestrictedDevice *device, Fake *fake,
+    void (^operation)(id<MTLBlitCommandEncoder>))
+{
+    uint32_t before = fake->batches;
+    A5MaliMetalBuffer *buffer = [[device newCommandQueue] commandBuffer];
+    id<MTLBlitCommandEncoder> encoder = (id)[buffer blitCommandEncoder];
+    operation(encoder);
+    [encoder endEncoding];
+    [buffer commit];
+    assert(buffer.status == MTLCommandBufferStatusError && buffer.error);
+    assert(fake->batches == before);
+}
+static void blitFamily(A5MaliRestrictedDevice *device, A5MaliMetalTexture *source,
+    A5MaliMetalTexture *destination, Fake *fake)
+{
+    uint32_t before = fake->batches;
+    A5MaliMetalBuffer *buffer = [[device newCommandQueue] commandBuffer];
+    id<MTLBlitCommandEncoder> encoder = (id)[buffer blitCommandEncoder];
+    assert(encoder.device == (id)device);
+    encoder.label = @"one-level texture initialization";
+    assert([encoder.label isEqualToString:@"one-level texture initialization"]);
+    [encoder pushDebugGroup:@"one-level group"];
+    [encoder insertDebugSignpost:@"mipmap has no destination level"];
+    [encoder generateMipmapsForTexture:(id)source];
+    [encoder optimizeContentsForGPUAccess:(id)source];
+    [encoder optimizeContentsForCPUAccess:(id)source slice:0 level:0];
+    [encoder popDebugGroup];
+    [encoder endEncoding];
+    [buffer commit];
+    assert(buffer.status == MTLCommandBufferStatusCompleted && !buffer.error);
+    assert(fake->batches == before); /* no fake GPU mipmap or optimization job */
+
+    id absentTexture = nil;
+    id unsupportedResource = [NSObject new];
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e generateMipmapsForTexture:absentTexture];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e generateMipmapsForTexture:(id)[NSObject new]];
+    });
+    TextureShapeFixture *multiple = [TextureShapeFixture new];
+    multiple.backing = source;
+    multiple.fixtureLevels = 2;
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e generateMipmapsForTexture:(id)multiple];
+    });
+    TextureShapeFixture *foreign = [TextureShapeFixture new];
+    foreign.backing = source;
+    foreign.fixtureLevels = 1;
+    foreign.fixtureDevice = [A5MaliRestrictedDevice new];
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e generateMipmapsForTexture:(id)foreign];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e endEncoding];
+        [e generateMipmapsForTexture:(id)source];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e optimizeContentsForGPUAccess:(id)source slice:1 level:0];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e copyFromTexture:(id)source sourceSlice:0 sourceLevel:0
+            toTexture:(id)destination destinationSlice:0 destinationLevel:0
+            sliceCount:1 levelCount:2];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) { [e popDebugGroup]; });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e copyFromTexture:(id)source toTexture:(id)destination];
+        [e fillBuffer:unsupportedResource range:NSMakeRange(NSUIntegerMax, NSUIntegerMax) value:42];
+    }); /* An unsupported operation prevents submission of earlier recorded work. */
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e copyFromBuffer:unsupportedResource sourceOffset:0
+            toBuffer:unsupportedResource destinationOffset:0 size:16];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e updateFence:unsupportedResource];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e waitForFence:unsupportedResource];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e copyFromBuffer:unsupportedResource sourceOffset:0 sourceBytesPerRow:4 sourceBytesPerImage:4
+            sourceSize:MTLSizeMake(1, 1, 1) toTexture:(id)destination
+            destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)
+            options:MTLBlitOptionNone];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e copyFromTexture:(id)source sourceSlice:0 sourceLevel:0
+            sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(1, 1, 1)
+            toBuffer:unsupportedResource destinationOffset:0 destinationBytesPerRow:4
+            destinationBytesPerImage:4 options:MTLBlitOptionNone];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e resetCommandsInBuffer:unsupportedResource withRange:NSMakeRange(0, 1)];
+    });
+    failedBlit(device, fake, ^(id<MTLBlitCommandEncoder> e) {
+        [e sampleCountersInBuffer:unsupportedResource atSampleIndex:0 withBarrier:YES];
+    });
+    assert(fake->batches == before);
+    for (NSUInteger variant = 0; variant < 2; ++variant) {
+        buffer = [[device newCommandQueue] commandBuffer];
+        encoder = (id)[buffer blitCommandEncoder];
+        if (variant)
+            [encoder copyFromTexture:(id)source sourceSlice:0 sourceLevel:0
+                toTexture:(id)destination destinationSlice:0 destinationLevel:0
+                sliceCount:1 levelCount:1];
+        else [encoder copyFromTexture:(id)source toTexture:(id)destination];
+        [encoder endEncoding];
+        [buffer commit];
+        assert(buffer.status == MTLCommandBufferStatusCompleted && !buffer.error);
+    }
+    assert(fake->batches == before + 2);
+
+    /* iOS16 encoder entry points must reject unsupported work through the
+     * command-buffer error channel rather than abort on a missing selector. */
+    NSArray<NSString *> *selectors = @[
+        @"copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
+        @"copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:options:",
+        @"copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+        @"copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:options:",
+        @"synchronizeResource:", @"synchronizeTexture:slice:level:",
+        @"getTextureAccessCounters:region:mipLevel:slice:resetCounters:countersBuffer:countersBufferOffset:",
+        @"resetTextureAccessCounters:region:mipLevel:slice:",
+        @"copyIndirectCommandBuffer:sourceRange:destination:destinationIndex:",
+        @"optimizeIndirectCommandBuffer:withRange:",
+        @"resolveCounters:inRange:destinationBuffer:destinationOffset:"
+    ];
+    for (NSString *selector in selectors)
+        assert([(id)encoder respondsToSelector:NSSelectorFromString(selector)]);
+}
+
 int main(void)
 {
         Fake fake = {.expectedOperation = A5MaliCopyBGRA};
@@ -249,6 +396,8 @@ int main(void)
         assert(fake.batches == 1);
         configuredDispatchQueue(device, source, destination, &fake);
         assert(fake.batches == 3);
+        blitFamily(device, source, destination, &fake);
+        assert(fake.batches == 5);
         source = nil;
         destination = nil;
         device = nil;

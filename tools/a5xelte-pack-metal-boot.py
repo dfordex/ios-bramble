@@ -75,7 +75,7 @@ def main():
     print('Companion: /System/Library/Extensions/A5MaliMetal.bundle (' +
           ('installed from embedded payload before launchd' if args.install_bundle
            else 'separate installation required') + ').')
-    print('Discovery enabled; stock Metal device acceptance/rendering is not established.')
+    print('Candidate prepared; verify its stock Metal acceptance and rendering on the device.')
 
 
 if __name__ == '__main__':
