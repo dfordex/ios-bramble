@@ -22,6 +22,9 @@ enum { SIZE=0x40000, W=32,H=32, FB=0x300,VS_RSD=0x500,FS_RSD=0x540,
 enum { RG_SWIZZLE=MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9),
  R_SWIZZLE=MALI_CHANNEL_R|(MALI_CHANNEL_0<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9) };
 static const uint64_t VA=0x02000000;
+_Static_assert(MALI_ATTRIBUTE_BUFFER_LENGTH == 16, "v4 attribute table stride");
+/* ATTRIBUTE buffer_index counts 16-byte descriptors, not 32-byte allocations.
+ * Keep the deliberately padded special InstanceID at physical slot2. */
 static void u32(uint8_t*d,unsigned o,uint32_t v){memcpy(d+o,&v,4);}
 static void u64(uint8_t*d,unsigned o,uint64_t v){memcpy(d+o,&v,8);}
 static void f32(uint8_t*d,unsigned o,float v){memcpy(d+o,&v,4);}
@@ -161,21 +164,21 @@ static void resources(uint8_t*d,int home,int clear,unsigned rule,unsigned target
   pan_pack((struct mali_attribute_vertex_id_packed*)(d+ATTR_BUFS),ATTRIBUTE_VERTEX_ID,c){c.divisor_r=31;c.divisor_p=4;}
   pan_pack((struct mali_attribute_instance_id_packed*)(d+ATTR_BUFS+32),ATTRIBUTE_INSTANCE_ID,c){c.divisor_p=0x7fffffff;c.divisor_r=31;c.divisor_e=1;}
   attr(d,ATTRS+16*8,0,MALI_R32UI,R_SWIZZLE,0);
-  attr(d,ATTRS+17*8,1,MALI_R32UI,R_SWIZZLE,0);
+  attr(d,ATTRS+17*8,2,MALI_R32UI,R_SWIZZLE,0);
  }
  /* Actual stage-specific varying formats: VSrawU32, FSsmoothfloat32. */
  attr(d,VS_VARY,0,MALI_SNAP_4,0x688,0);buf(d,VS_VARY_BUFS,POS,16,64);
- attr(d,VS_VARY+8,1,MALI_R16F,R_SWIZZLE,0);buf(d,VS_VARY_BUFS+32,PSIZ,2,8);
+ attr(d,VS_VARY+8,1,MALI_R16F,R_SWIZZLE,0);buf(d,VS_VARY_BUFS+pan_size(ATTRIBUTE_BUFFER),PSIZ,2,8);
  if(home){
-  attr(d,VS_VARY+16,2,MALI_RGBA32UI,0x688,0);buf(d,VS_VARY_BUFS+64,VARY_DATA,16,64);
-  attr(d,VS_VARY+24,3,MALI_RG32UI,RG_SWIZZLE,0);buf(d,VS_VARY_BUFS+96,VARY_DATA+128,8,32);
+  attr(d,VS_VARY+16,2,MALI_RGBA32UI,0x688,0);buf(d,VS_VARY_BUFS+2*pan_size(ATTRIBUTE_BUFFER),VARY_DATA,16,64);
+  attr(d,VS_VARY+24,3,MALI_RG32UI,RG_SWIZZLE,0);buf(d,VS_VARY_BUFS+3*pan_size(ATTRIBUTE_BUFFER),VARY_DATA+128,8,32);
   attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);buf(d,FS_VARY_BUFS,VARY_DATA+128,8,32);
  }else if(!clear){
   for(unsigned i=0;i<5;++i){unsigned off=VARY_DATA+i*128;
    attr(d,VS_VARY+(i+2)*8,i+2,i?MALI_R32UI:MALI_RG32UI,i?R_SWIZZLE:RG_SWIZZLE,0);
-   buf(d,VS_VARY_BUFS+(i+2)*32,off,i?4:8,i?16:32);
+   buf(d,VS_VARY_BUFS+(i+2)*pan_size(ATTRIBUTE_BUFFER),off,i?4:8,i?16:32);
    attr(d,FS_VARY+i*8,i,i?MALI_R32UI:MALI_RG32F,i?R_SWIZZLE:RG_SWIZZLE,0);
-   buf(d,FS_VARY_BUFS+i*32,off,i?4:8,i?16:32);
+   buf(d,FS_VARY_BUFS+i*pan_size(ATTRIBUTE_BUFFER),off,i?4:8,i?16:32);
   }
  }
 }
@@ -193,6 +196,12 @@ static void jobs(uint8_t*d){
  pan_pack((struct mali_job_header_packed*)(d+0x200),JOB_HEADER,c){c.type=MALI_JOB_TYPE_FRAGMENT;c.index=3;c.enable_texture_mapper=true;}
  pan_pack((struct mali_fragment_job_payload_packed*)(d+0x220),FRAGMENT_JOB_PAYLOAD,c){c.bound_max_x=1;c.bound_max_y=1;c.framebuffer=VA+FB;}
 }
+static int referenced_buffer(uint8_t*d,unsigned attrs,unsigned index,unsigned table,
+                             unsigned buffer,unsigned off,unsigned stride,unsigned bytes){
+ pan_unpack((struct mali_attribute_packed*)(d+attrs+index*pan_size(ATTRIBUTE)),ATTRIBUTE,a);
+ pan_unpack((struct mali_attribute_buffer_packed*)(d+table+buffer*pan_size(ATTRIBUTE_BUFFER)),ATTRIBUTE_BUFFER,b);
+ return a.buffer_index==buffer&&b.pointer==VA+off&&b.stride==stride&&b.size==bytes;
+}
 static int validate(uint8_t*d,int home,int clear,unsigned fmt){
  pan_unpack((struct mali_job_header_packed*)d,JOB_HEADER,v);
  pan_unpack((struct mali_job_header_packed*)(d+0x100),JOB_HEADER,t);
@@ -207,14 +216,27 @@ static int validate(uint8_t*d,int home,int clear,unsigned fmt){
  if(p.color_writeback_format!=want||p.internal_format!=(fmt==2?MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW_VALUE:MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8))return 0;
  if(h.heap_start!=VA+HEAP||h.heap_end!=VA+HEAP+HEAP_SIZE||h.polygon_list!=VA+POLY||h.polygon_list_size>0xa00)return 0;
  if(vs.shader.shader!=VA+VS_CODE+5||fs.shader.shader!=VA+FS_CODE+5||vs.shader.attribute_count!=(home?3:18)||vs.properties.uniform_buffer_count!=3||fs.properties.uniform_buffer_count!=(clear?1:4))return 0;
+ if(!referenced_buffer(d,VS_VARY,0,VS_VARY_BUFS,0,POS,16,64)||
+    !referenced_buffer(d,VS_VARY,1,VS_VARY_BUFS,1,PSIZ,2,8))return 0;
  if(home){
+  if(!referenced_buffer(d,VS_VARY,2,VS_VARY_BUFS,2,VARY_DATA,16,64)||
+     !referenced_buffer(d,VS_VARY,3,VS_VARY_BUFS,3,VARY_DATA+128,8,32)||
+     !referenced_buffer(d,FS_VARY,0,FS_VARY_BUFS,0,VARY_DATA+128,8,32))return 0;
   if(fs.shader.texture_count!=2||fs.shader.sampler_count!=2)return 0;
   pan_unpack((struct mali_attribute_packed*)(d+ATTRS+8),ATTRIBUTE,a);
   if(a.format!=((MALI_RG32F<<12)|RG_SWIZZLE)||a.offset!=16)return 0;
  }else{
   pan_unpack((struct mali_attribute_vertex_id_packed*)(d+ATTR_BUFS),ATTRIBUTE_VERTEX_ID,a);
   pan_unpack((struct mali_attribute_instance_id_packed*)(d+ATTR_BUFS+32),ATTRIBUTE_INSTANCE_ID,b);
+  pan_unpack((struct mali_attribute_packed*)(d+ATTRS+16*8),ATTRIBUTE,vertex);
+  pan_unpack((struct mali_attribute_packed*)(d+ATTRS+17*8),ATTRIBUTE,instance);
+  if(vertex.buffer_index!=0||instance.buffer_index!=2)return 0;
   if(a.type!=MALI_ATTRIBUTE_SPECIAL_VERTEX_ID||a.divisor_r!=31||a.divisor_p!=4||b.type!=MALI_ATTRIBUTE_SPECIAL_INSTANCE_ID||b.divisor_p!=0x7fffffff||b.divisor_e!=1||b.divisor_r!=31)return 0;
+ }
+ if(!home&&!clear)for(unsigned i=0;i<5;++i){
+  unsigned off=VARY_DATA+i*128,stride=i?4:8,bytes=i?16:32;
+  if(!referenced_buffer(d,VS_VARY,i+2,VS_VARY_BUFS,i+2,off,stride,bytes)||
+     !referenced_buffer(d,FS_VARY,i,FS_VARY_BUFS,i,off,stride,bytes))return 0;
  }
  return 1;
 }

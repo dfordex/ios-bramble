@@ -106,3 +106,10 @@ LOCAL_STORAGE descriptor (shift1 for32B,2 for64B). Source data and guards remain
 separate from shader code, tiler lists/heap, output and TLS. Payload creation and
 packed readback establish a runnable input contract; device execution and pixel
 comparison remain separate evidence.
+
+## Measured phone result
+
+0174 executes all nine fixtures successfully on T720: complete vertex/tiler
+and fragment fences, MMU IRQ0, full output reference matches and intact immutable
+regions. This includes native TLS32/64 and RGBA16 half packing. See
+`docs/a5xelte-shader-suite-results.md` for scope and remaining other-family failures.

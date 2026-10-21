@@ -175,8 +175,9 @@ static void a5g3d_shader_suite(IOService *service, vm_offset_t gpu,
         }
         bool visible = fs == kA5G3DQueueCompleted &&
             storage->performOperation(kIOMemoryIncoherentIOFlush, kA5G3DDataOffset, kA5SuiteBytes) == kIOReturnSuccess;
-        bool clean = true, correct = false;
+        bool clean = false, correct = false;
         if (visible) {
+            clean = true;
             __sync_synchronize();
             for (uint32_t i = 0; i < test.immutableCount; ++i)
                 clean &= hashes[i] == a5suite_hash(data + test.immutable[i].offset, test.immutable[i].bytes);
@@ -185,8 +186,8 @@ static void a5g3d_shader_suite(IOService *service, vm_offset_t gpu,
         }
         bool pass = visible && correct && clean && fd.headerStatus == 1 && !fd.mmuIRQ && !vd.mmuIRQ;
         passed += pass;
-        IOLog("A5XELTE G3D SUITE: case=%s vertex_fence=%llu status=%u fragment_fence=%llu status=%u header=%08x mmu=%08x immutable=%u pass=%u\n",
-            test.name, vd.fence, vs, fd.fence, fs, fd.headerStatus, vd.mmuIRQ | fd.mmuIRQ, clean, pass);
+        IOLog("A5XELTE G3D SUITE: case=%s vertex_fence=%llu status=%u fragment_fence=%llu status=%u header=%08x mmu=%08x evaluated=%u immutable=%u pass=%u\n",
+            test.name, vd.fence, vs, fd.fence, fs, fd.headerStatus, vd.mmuIRQ | fd.mmuIRQ, visible, clean, pass);
         if (gA5G3DQueueState != 0) break;
     }
     service->setProperty("A5G3DShaderSuitePassed", passed, 32);

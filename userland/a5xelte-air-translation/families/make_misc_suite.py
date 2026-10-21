@@ -52,7 +52,9 @@ def main():
     if Path(__file__).resolve().parents[1] in out.parents:parser.error('private output must stay outside source')
     manifest=json.loads(args.compiled_manifest.read_text());compiler_dir=args.compiled_manifest.resolve().parent
     builder=out/'build-misc-suite';compile_builder(args.mesa_build.resolve(),builder)
-    result={'gpu_va':0x02000000,'payload_bytes':0x40000,'device_runtime_verified':False,'cases':[]}
+    result={'gpu_va':0x02000000,'payload_bytes':0x40000,'device_runtime_verified':False,
+            'fixture_builder_sha256':hashlib.sha256(Path(__file__).with_name('build_misc_suite.c').read_bytes()).hexdigest(),
+            'attribute_buffer_descriptor_bytes':16,'instance_id_buffer_index':2,'cases':[]}
     for profile in manifest['profiles']:
         if profile['status']!='compiled':raise ValueError('incomplete shader profile')
         family,variant,target=profile['family'],profile['variant'],profile['render_target']
