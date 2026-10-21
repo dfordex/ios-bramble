@@ -1,0 +1,105 @@
+--- a/iokit/Kernel/arm/A5XELTEDownsampleSelftest.inc
++++ b/iokit/Kernel/arm/A5XELTEDownsampleSelftest.inc
+@@ -44,6 +44,86 @@
+     return a5g3d_downsample_mmu_ready(gpu) &&
+         !a5g3d_read32(gpu, 0x2000) && !a5g3d_read32(gpu, 0x241c);
+ }
++
++#if A5_DOWNSAMPLE_FIXTURE_AVAILABLE
++/* Call only after the submitting slot is terminal and its cache range was
++ * invalidated. Raw words preserve SNAP/half formats without kernel FP use. */
++static void
++a5g3d_downsample_dump_geometry(const uint8_t *data)
++{
++    for (unsigned vertex = 0; vertex < 4; ++vertex) {
++        uint32_t p[4], uv[2];
++        memcpy(p, data + 0xd00 + vertex * 16, sizeof(p));
++        memcpy(uv, data + 0xd80 + vertex * 8, sizeof(uv));
++        IOLog("A5XELTE G3D DS4 diag: vertex=%u pos_raw=%08x,%08x,%08x,%08x uv_raw=%08x,%08x\n",
++            vertex, p[0], p[1], p[2], p[3], uv[0], uv[1]);
++    }
++    uint32_t ps[4];
++    memcpy(ps, data + 0xd40, sizeof(ps));
++    IOLog("A5XELTE G3D DS4 diag: psiz_raw=%08x,%08x,%08x,%08x\n",
++        ps[0], ps[1], ps[2], ps[3]);
++    for (unsigned entry = 0; entry < 5; ++entry) {
++        uint32_t words[4];
++        memcpy(words, data + 0x800 + entry * 16, sizeof(words));
++        IOLog("A5XELTE G3D DS4 diag: vary_buf=%u words=%08x,%08x,%08x,%08x\n",
++            entry, words[0], words[1], words[2], words[3]);
++    }
++    for (unsigned column = 0; column < 4; ++column) {
++        uint32_t words[4];
++        memcpy(words, data + 0xa00 + column * 16, sizeof(words));
++        IOLog("A5XELTE G3D DS4 diag: mvp_col=%u raw=%08x,%08x,%08x,%08x\n",
++            column, words[0], words[1], words[2], words[3]);
++    }
++    uint32_t texmat[4], meta[3], bounds[2], fbBounds[2];
++    memcpy(texmat, data + 0xa40, sizeof(texmat));
++    memcpy(meta, data + 0x900, sizeof(meta));
++    memcpy(bounds, data + 0x220, sizeof(bounds));
++    memcpy(fbBounds, data + 0x328, sizeof(fbBounds));
++    IOLog("A5XELTE G3D DS4 diag: texmat=%08x,%08x,%08x,%08x tex_meta=%u,%u,%u fragment_bounds=%08x/%08x fb_bounds=%08x/%08x\n",
++        texmat[0], texmat[1], texmat[2], texmat[3],
++        meta[0], meta[1], meta[2], bounds[0], bounds[1],
++        fbBounds[0], fbBounds[1]);
++    const uint32_t *source = reinterpret_cast<const uint32_t *>(data + 0x4000);
++    IOLog("A5XELTE G3D DS4 diag: source_taps_for_3_0=%08x,%08x,%08x,%08x\n",
++        source[6], source[7], source[64 + 6], source[64 + 7]);
++}
++
++static void
++a5g3d_downsample_dump_pixels(const uint32_t *destination)
++{
++    const uint32_t poison = 0x5a5a5a5a;
++    uint32_t colors[16] = {}, counts[16] = {};
++    unsigned used = 0, overflow = 0, badShown = 0;
++    for (uint32_t y = 0; y < 32; ++y) {
++        uint32_t touched = 0, matched = 0;
++        for (uint32_t x = 0; x < 32; ++x) {
++            const uint32_t actual = destination[y * 32 + x];
++            const uint32_t expected = a5_downsample_expected_pixel(x, y);
++            const bool good = a5_downsample_pixel_matches(actual, expected);
++            if (actual != poison) touched |= 1u << x;
++            if (good) matched |= 1u << x;
++            if (!good && badShown < 12) {
++                IOLog("A5XELTE G3D DS4 diag: mismatch=%u,%u actual=%08x expected=%08x touched=%u\n",
++                    x, y, actual, expected, actual != poison);
++                ++badShown;
++            }
++            unsigned color;
++            for (color = 0; color < used; ++color)
++                if (colors[color] == actual) break;
++            if (color < used) ++counts[color];
++            else if (used < 16) {
++                colors[used] = actual; counts[used] = 1; ++used;
++            } else ++overflow;
++        }
++        IOLog("A5XELTE G3D DS4 diag: row=%u touched=%08x matched=%08x\n",
++            y, touched, matched);
++    }
++    for (unsigned color = 0; color < used; ++color)
++        IOLog("A5XELTE G3D DS4 diag: color=%08x count=%u\n",
++            colors[color], counts[color]);
++    IOLog("A5XELTE G3D DS4 diag: histogram_other=%u\n", overflow);
++}
++#endif
+ 
+ static void
+ a5g3d_downsample4_selftest(IOService *service, vm_offset_t gpu,
+@@ -173,6 +253,7 @@
+             __sync_synchronize();
+             memcpy(&vertexHeader, data, 4);
+             memcpy(&tilerHeader, data + 0x100, 4);
++            a5g3d_downsample_dump_geometry(data);
+         }
+     }
+     IOLog("A5XELTE G3D DS4: vertex-tiler fence=%llu status=%u headers=%08x/%08x irq=%08x mmu=%08x gpu=%08x\n",
+@@ -201,6 +282,7 @@
+     uint32_t firstActual = 0, firstExpected = 0;
+     if (outputFlushed) {
+         __sync_synchronize();
++        a5g3d_downsample_dump_pixels(destination);
+         for (uint32_t y = 0; y < 32; ++y) {
+             for (uint32_t x = 0; x < 32; ++x) {
+                 uint32_t actual = destination[y * 32 + x];

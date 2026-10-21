@@ -48,6 +48,8 @@ def main():
             ap.error('kernel lacks the actual translated downsample4 fixture/test')
         if b'A5XELTE G3D DS4: AS0 LOCK/FLUSH_PT complete' not in args.kernel.read_bytes():
             ap.error('kernel lacks the corrected downsample4 page-table flush')
+        if b'A5XELTE G3D DS4 diag: row=' not in args.kernel.read_bytes():
+            ap.error('kernel lacks the downsample4 geometry/pixel diagnostics')
         required['a5downsampletest'] = '1'
     if args.install_bundle:
         if b'A5XELTE Metal install:' not in args.kernel.read_bytes():

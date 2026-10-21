@@ -18,6 +18,8 @@ enum {
    SOURCE = 0x4000, DESTINATION = 0x8000,
    HEAP = 0x9000, HEAP_BYTES = 0x1000, GUARDS = 0xa000,
    PRIVATE_BYTES = 0xc000,
+   PSIZ_SWIZZLE = MALI_CHANNEL_R | (MALI_CHANNEL_0 << 3) |
+      (MALI_CHANNEL_0 << 6) | (MALI_CHANNEL_1 << 9),
    VERTEX_JOB = 0, TILER_JOB = 0x100, FRAGMENT_JOB = 0x200,
    FB = 0x300, VS_RSD = 0x500, FS_RSD = 0x540,
    TEXTURE = 0x600, SURFACE = 0x620, TEX_TABLE = 0x660,
@@ -102,7 +104,7 @@ static int validate_layout(void)
       {"vs_attrs", VS_ATTRS, 4 * pan_size(ATTRIBUTE)},
       {"vs_attr_buffer", VS_ATTR_BUFS, 32},
       {"vs_varyings", VS_VARYINGS, 3 * pan_size(ATTRIBUTE)},
-      {"vs_varying_buffers", VS_VARY_BUFS, 3 * 32},
+      {"vs_varying_buffers", VS_VARY_BUFS, 3 * pan_size(ATTRIBUTE_BUFFER)},
       {"fs_varyings", FS_VARYINGS, pan_size(ATTRIBUTE)},
       {"fs_varying_buffer", FS_VARY_BUFS, 32},
       {"viewport", VIEWPORT, pan_size(VIEWPORT)},
@@ -314,12 +316,16 @@ static void resources(uint8_t *d, uint64_t va, uint64_t src)
    attribute(d, VS_ATTRS + 16, 0, MALI_RG32F, 24);
    attribute(d, VS_ATTRS + 24, 0, MALI_RGBA16F, 32);
    attr_buffer(d, VS_ATTR_BUFS, va + VERTEX_DATA, 48, 192);
-   attribute(d, VS_VARYINGS, 0, MALI_RGBA32F, 0);
-   attribute(d, VS_VARYINGS + 8, 1, MALI_R32F, 0);
+   attribute(d, VS_VARYINGS, 0, MALI_SNAP_4, 0);
+   pan_pack((struct mali_attribute_packed *)(d + VS_VARYINGS + 8), ATTRIBUTE, cfg) {
+      cfg.buffer_index = 1;
+      cfg.offset_enable = true;
+      cfg.format = (MALI_R16F << 12) | PSIZ_SWIZZLE;
+   }
    attribute(d, VS_VARYINGS + 16, 2, MALI_RG32F, 0);
    attr_buffer(d, VS_VARY_BUFS, va + POS_BUF, 16, 64);
-   attr_buffer(d, VS_VARY_BUFS + 32, va + PSIZ_BUF, 4, 16);
-   attr_buffer(d, VS_VARY_BUFS + 64, va + UV_BUF, 8, 32);
+   attr_buffer(d, VS_VARY_BUFS + pan_size(ATTRIBUTE_BUFFER), va + PSIZ_BUF, 2, 8);
+   attr_buffer(d, VS_VARY_BUFS + 2 * pan_size(ATTRIBUTE_BUFFER), va + UV_BUF, 8, 32);
    attribute(d, FS_VARYINGS, 0, MALI_RG32F, 0);
    attr_buffer(d, FS_VARY_BUFS, va + UV_BUF, 8, 32);
 }
@@ -410,7 +416,10 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
    pan_unpack((const struct mali_renderer_state_packed *)(d + VS_RSD), RENDERER_STATE, vs);
    pan_unpack((const struct mali_renderer_state_packed *)(d + FS_RSD), RENDERER_STATE, fs);
    pan_unpack((const struct mali_attribute_buffer_packed *)(d + VS_ATTR_BUFS), ATTRIBUTE_BUFFER, ab);
-   pan_unpack((const struct mali_attribute_buffer_packed *)(d + VS_VARY_BUFS + 64), ATTRIBUTE_BUFFER, uv);
+   pan_unpack((const struct mali_attribute_buffer_packed *)(d + VS_VARY_BUFS + pan_size(ATTRIBUTE_BUFFER)), ATTRIBUTE_BUFFER, ps);
+   pan_unpack((const struct mali_attribute_buffer_packed *)(d + VS_VARY_BUFS + 2 * pan_size(ATTRIBUTE_BUFFER)), ATTRIBUTE_BUFFER, uv);
+   pan_unpack((const struct mali_attribute_packed *)(d + VS_VARYINGS), ATTRIBUTE, pos_attr);
+   pan_unpack((const struct mali_attribute_packed *)(d + VS_VARYINGS + 8), ATTRIBUTE, ps_attr);
    pan_unpack((const struct mali_attribute_buffer_packed *)(d + FS_VARY_BUFS), ATTRIBUTE_BUFFER, fi);
    pan_unpack((const struct mali_uniform_buffer_packed *)(d + VS_UBO_DESC + 8), UNIFORM_BUFFER, matrix);
    pan_unpack((const struct mali_uniform_buffer_packed *)(d + FS_UBO_DESC + 24), UNIFORM_BUFFER, filter);
@@ -466,6 +475,9 @@ static int validate_descriptor(const uint8_t *d, uint64_t va)
       filter.pointer == va + FILTER_DATA && filter.entries == 5 &&
       edr.pointer == va + EDR_DATA && edr.entries == 1 &&
       ab.pointer == va + VERTEX_DATA && ab.stride == 48 && ab.size == 192 &&
+      pos_attr.buffer_index == 0 && pos_attr.format == ((MALI_SNAP_4 << 12) | 0x688) &&
+      ps_attr.buffer_index == 1 && ps_attr.format == ((MALI_R16F << 12) | PSIZ_SWIZZLE) &&
+      ps.pointer == va + PSIZ_BUF && ps.stride == 2 && ps.size == 8 &&
       uv.pointer == va + UV_BUF && uv.stride == 8 && fi.pointer == uv.pointer &&
       surface.pointer == va + SOURCE && surface.row_stride == 256 &&
       tex.width == SRC_WIDTH && tex.height == SRC_HEIGHT && tex.levels == 1 &&
