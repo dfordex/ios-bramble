@@ -30,7 +30,8 @@ xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 \
     -fobjc-arc -fblocks -Wall -Wextra -Werror \
     "$plugin_dir/acceptance_probe.m" -framework Foundation -framework Metal \
     -framework IOKit -o "$out_dir/a5mali-metal-probe"
-codesign --force --sign - --entitlements "$plugin_dir/probe-entitlements.plist" \
+codesign --force --sign - --identifier com.orhunnx.a5mali-metal-probe \
+    --entitlements "$plugin_dir/probe-entitlements.plist" \
     "$out_dir/a5mali-metal-probe"
 codesign --verify --strict "$out_dir/a5mali-metal-probe"
 cp "$plugin_dir/probe-launchdaemon.plist" "$out_dir/com.orhunnx.a5mali-metal-probe.plist"

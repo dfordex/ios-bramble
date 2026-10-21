@@ -86,3 +86,10 @@ checks the returned Mali object's protocols and completed init methods.
 selector-presence and host mock tests are not that runtime result. Unsupported
 shader families, compute, heaps, GPU-address reservations and other unimplemented
 features explicitly fail; full SpringBoard rendering remains separate.
+
+Patch0161 handles the acceptance helper as an explicitly signed local platform
+process: fixed CodeDirectory identity, fixed vnode path, platform-application
+and private GPU entitlements, and the a5metal opt-in are all required. Merely
+adding an entitlement does not set csb_platform_binary; the MAC signature hook
+sets the writable code-sign flags before normal ubc finalization. The0160
+photo reached the launch job but panicked on its non-platform classification.
