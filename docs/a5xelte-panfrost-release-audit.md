@@ -241,3 +241,20 @@ GPU completion and cache invalidation. It distinguishes omitted stores from
 written zeros without substituting a shader or synthesizing UV output on CPU.
 The original U32-producer/F32-consumer contract remains: it is intentional in
 released Panfrost and matches actual ST_VARY.u32/LD_VARY.f32 instructions.
+
+## 0171 device verification
+
+The same authenticated DS4 shader pair now passes its full1,024/1,024 pixel
+reference on the T720, with RGB tolerance1 and exact alpha255. All32 coverage
+and match masks are0xffffffff. UVs are(0,0),(1,0),(0,1),(1,1), all output
+canaries were overwritten and the adjacent16-byte guard is unchanged. Nine
+colors occur with the expected distribution; source and outer guards are intact.
+Both stages complete with successful headers and MMU IRQ0. This establishes
+correctness of this bounded offscreen pipeline after the native format/count
+correction set; it does not isolate which of those changes caused zero UVs.
+
+The saved window contains no panic or CRASH marker and reaches SpringBoard,
+backboardd and probe execution, but no completed iOS rendering/acceptance result.
+All framebuffer presentation counters remain zero. The next integration work
+is the real iOS pipeline/resource path and required QuartzCore shader coverage;
+this successful test alone does not establish full-panel compositor rendering.
