@@ -16,7 +16,8 @@ import struct
 
 BUNDLE_DEST = "/System/Library/Extensions/A5MaliMetal.bundle"
 PROBE_DEST = "/usr/libexec/a5mali-metal-probe"
-PLIST_DEST = "/Library/LaunchDaemons/com.orhunnx.a5mali-metal-probe.plist"
+PLIST_DEST = "/System/Library/LaunchDaemons/com.orhunnx.a5mali-metal-probe.plist"
+CACHE_DEST = "/System/Library/xpc/launchd.plist"
 MAX_FILE = 2 * 1024 * 1024
 MAX_TOTAL = 4 * 1024 * 1024
 
@@ -40,9 +41,13 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument("--probe", type=Path)
     parser.add_argument("--launch-plist", type=Path)
+    parser.add_argument("--launchd-cache", type=Path,
+                        help="current device launchd cache; only add the probe job")
     args = parser.parse_args()
     if bool(args.probe) != bool(args.launch_plist):
         parser.error("--probe and --launch-plist must be provided together")
+    if args.launchd_cache and not args.launch_plist:
+        parser.error("--launchd-cache requires --probe and --launch-plist")
     if args.bundle.is_symlink() or not args.bundle.is_dir():
         parser.error("bundle must be a regular directory")
     required = {"A5MaliMetal", "Info.plist", "_CodeSignature/CodeResources"}
@@ -67,6 +72,19 @@ def main() -> None:
         if plist.get("ProgramArguments", [None])[0] != PROBE_DEST:
             parser.error(f"launch job must execute {PROBE_DEST}")
         entries.extend(((PROBE_DEST, probe, 0o755), (PLIST_DEST, launch, 0o644)))
+        if args.launchd_cache:
+            cache = plistlib.loads(regular_bytes(args.launchd_cache))
+            jobs = cache.get("LaunchDaemons") if isinstance(cache, dict) else None
+            if not isinstance(jobs, dict):
+                parser.error("launchd cache must contain a LaunchDaemons dictionary")
+            # Preserve every original object, adding exactly this signed probe job.
+            if PLIST_DEST in jobs and jobs[PLIST_DEST] != plist:
+                parser.error("cache already contains a different probe job")
+            jobs[PLIST_DEST] = plist
+            patched_cache = plistlib.dumps(cache, fmt=plistlib.FMT_BINARY, sort_keys=False)
+            if len(patched_cache) > MAX_FILE:
+                parser.error("patched launchd cache exceeds 2 MiB bound")
+            entries.append((CACHE_DEST, patched_cache, 0o644))
     if sum(len(data) for _, data, _ in entries) > MAX_TOTAL:
         parser.error("payload exceeds 4 MiB bound")
     lines = ["/* Generated local artifact: do not commit. */", "#define A5METAL_PAYLOAD_PRESENT 1"]

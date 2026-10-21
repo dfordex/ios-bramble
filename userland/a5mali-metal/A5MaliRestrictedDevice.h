@@ -121,6 +121,13 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 @property (nullable, copy, atomic) NSString *label;
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
 - (A5MaliMetalBuffer *)commandBuffer;
+/* iOS16 QuartzCore configures and then releases both supplied queues. */
+- (void)setSubmissionQueue:(nullable dispatch_queue_t)queue;
+- (void)setCompletionQueue:(nullable dispatch_queue_t)queue;
+- (nullable dispatch_queue_t)submissionQueue;
+- (nullable dispatch_queue_t)completionQueue;
+- (BOOL)setGPUPriority:(NSUInteger)priority;
+- (BOOL)setBackgroundGPUPriority:(NSUInteger)priority;
 - (A5MaliMetalBuffer *)commandBufferWithUnretainedReferences;
 @end
 

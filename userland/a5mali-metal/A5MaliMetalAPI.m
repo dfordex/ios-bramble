@@ -65,7 +65,14 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 
 @interface A5MaliMetalQueue () {
     A5MaliRestrictedDevice *_device;
+    NSLock *_configurationLock;
+    dispatch_queue_t _submissionQueue;
+    dispatch_queue_t _serialSubmissionQueue;
+    dispatch_queue_t _completionQueue;
+    BOOL _workStarted;
 }
+- (void)submitWork:(dispatch_block_t)work;
+- (void)dispatchCompletion:(dispatch_block_t)work;
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device;
 @end
 
@@ -256,11 +263,69 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
 {
-    if ((self = [super init])) _device = device;
+    if ((self = [super init])) {
+        _device = device;
+        _configurationLock = [NSLock new];
+    }
     return self;
 }
 
 - (A5MaliRestrictedDevice *)device { return _device; }
+- (void)setSubmissionQueue:(dispatch_queue_t)queue
+{
+    [_configurationLock lock];
+    if (queue == _submissionQueue) {
+        [_configurationLock unlock];
+        return;
+    }
+    if (_workStarted) {
+        [_configurationLock unlock];
+        [NSException raise:NSInvalidArgumentException
+            format:@"Mali submission target cannot change after work starts"];
+        return;
+    }
+    _submissionQueue = queue;
+    _serialSubmissionQueue = queue ? dispatch_queue_create_with_target(
+        "com.orhunnx.a5xelte.mali.submit", DISPATCH_QUEUE_SERIAL, queue) : nil;
+    [_configurationLock unlock];
+}
+- (dispatch_queue_t)submissionQueue
+{
+    [_configurationLock lock];
+    dispatch_queue_t queue = _submissionQueue;
+    [_configurationLock unlock];
+    return queue;
+}
+- (void)setCompletionQueue:(dispatch_queue_t)queue
+{
+    [_configurationLock lock];
+    _completionQueue = queue;
+    [_configurationLock unlock];
+}
+- (dispatch_queue_t)completionQueue
+{
+    [_configurationLock lock];
+    dispatch_queue_t queue = _completionQueue;
+    [_configurationLock unlock];
+    return queue;
+}
+- (BOOL)setGPUPriority:(NSUInteger)priority { (void)priority; return NO; }
+- (BOOL)setBackgroundGPUPriority:(NSUInteger)priority { (void)priority; return NO; }
+- (void)submitWork:(dispatch_block_t)work
+{
+    [_configurationLock lock];
+    _workStarted = YES;
+    dispatch_queue_t queue = _serialSubmissionQueue;
+    [_configurationLock unlock];
+    if (queue) dispatch_async(queue, work);
+    else work();
+}
+- (void)dispatchCompletion:(dispatch_block_t)work
+{
+    dispatch_queue_t queue = self.completionQueue;
+    if (queue) dispatch_async(queue, work);
+    else work();
+}
 - (A5MaliMetalBuffer *)commandBuffer
 {
     return [[A5MaliMetalBuffer alloc] initWithQueue:self
@@ -379,6 +444,7 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
     _status = MTLCommandBufferStatusCommitted;
     BOOL submit = !_error;
     [_condition unlock];
+    [_queue submitWork:^{
     NSError *submissionError = nil;
     if (submit) {
         if (![_privateBuffer commitAndWait:&submissionError])
@@ -395,12 +461,16 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
     [_completed removeAllObjects];
     [_condition broadcast];
     [_condition unlock];
-    /* Selector 7 is synchronous: callbacks run after terminal completion. */
+    /* The kernel batch is synchronous; software scheduling and callbacks
+     * obey the dispatch queues retained from QuartzCore. */
+    [_queue dispatchCompletion:^{
     if (succeeded)
         for (MTLCommandBufferHandler handler in scheduled)
             handler((id<MTLCommandBuffer>)self);
     for (MTLCommandBufferHandler handler in completed)
         handler((id<MTLCommandBuffer>)self);
+    }];
+    }];
 }
 
 - (void)waitUntilScheduled
@@ -424,7 +494,7 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
     if (_status >= MTLCommandBufferStatusScheduled &&
         _status != MTLCommandBufferStatusError) {
         [_condition unlock];
-        handler((id<MTLCommandBuffer>)self);
+        [_queue dispatchCompletion:^{ handler((id<MTLCommandBuffer>)self); }];
     } else if (_status < MTLCommandBufferStatusCompleted) {
         [_scheduled addObject:[handler copy]];
         [_condition unlock];
@@ -437,7 +507,7 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
     if (_status == MTLCommandBufferStatusCompleted ||
         _status == MTLCommandBufferStatusError) {
         [_condition unlock];
-        handler((id<MTLCommandBuffer>)self);
+        [_queue dispatchCompletion:^{ handler((id<MTLCommandBuffer>)self); }];
     } else {
         [_completed addObject:[handler copy]];
         [_condition unlock];

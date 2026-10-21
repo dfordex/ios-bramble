@@ -180,6 +180,54 @@ static A5MaliReadSurfCandidate *authenticatedCandidate(
     return result;
 }
 
+static void configuredDispatchQueue(A5MaliRestrictedDevice *device,
+    A5MaliMetalTexture *source, A5MaliMetalTexture *destination, Fake *fake)
+{
+    static char completionKey;
+    A5MaliMetalQueue *queue = [device newCommandQueue];
+    dispatch_queue_t submit = dispatch_queue_create("a5.test.submit", DISPATCH_QUEUE_CONCURRENT);
+    dispatch_queue_t completion = dispatch_queue_create("a5.test.complete", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_set_specific(completion, &completionKey, &completionKey, NULL);
+    dispatch_suspend(submit);
+    [queue setSubmissionQueue:submit];
+    [queue setCompletionQueue:completion];
+    assert(queue.submissionQueue == submit && queue.completionQueue == completion);
+    /* QuartzCore releases its references immediately after these setters. */
+    submit = nil;
+    completion = nil;
+    dispatch_semaphore_t callbacks = dispatch_semaphore_create(0);
+    __block NSUInteger completed = 0;
+    uint32_t before = fake->batches;
+    NSMutableArray *buffers = [NSMutableArray new];
+    for (NSUInteger sequence = 0; sequence < 2; ++sequence) {
+        A5MaliMetalBuffer *buffer = [queue commandBuffer];
+        A5MaliMetalBlitEncoder *encoder = [buffer blitCommandEncoder];
+        [encoder copyFromTexture:source sourceSlice:0 sourceLevel:0
+            sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(16, 16, 1)
+            toTexture:destination destinationSlice:0 destinationLevel:0
+            destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [encoder endEncoding];
+        [buffer addCompletedHandler:^(id<MTLCommandBuffer> result) {
+            assert(dispatch_get_specific(&completionKey) == &completionKey);
+            assert(result.status == MTLCommandBufferStatusCompleted);
+            assert(completed == sequence);
+            ++completed;
+            dispatch_semaphore_signal(callbacks);
+        }];
+        [buffer commit];
+        assert(buffer.status == MTLCommandBufferStatusCommitted);
+        [buffers addObject:buffer];
+    }
+    assert(fake->batches == before);
+    dispatch_resume(queue.submissionQueue);
+    for (NSUInteger i = 0; i < 2; ++i)
+        assert(dispatch_semaphore_wait(callbacks,
+            dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0);
+    for (A5MaliMetalBuffer *buffer in buffers) [buffer waitUntilCompleted];
+    assert(fake->batches == before + 2 && completed == 2);
+    dispatch_sync(queue.completionQueue, ^{});
+}
+
 int main(void)
 {
         Fake fake = {.expectedOperation = A5MaliCopyBGRA};
@@ -199,6 +247,8 @@ int main(void)
         unsupportedGeometry((id<MTLDevice>)device, (id<MTLTexture>)source,
             (id<MTLTexture>)destination);
         assert(fake.batches == 1);
+        configuredDispatchQueue(device, source, destination, &fake);
+        assert(fake.batches == 3);
         source = nil;
         destination = nil;
         device = nil;
