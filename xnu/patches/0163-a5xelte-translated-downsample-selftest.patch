@@ -1,0 +1,253 @@
+--- a/iokit/Kernel/arm/A5XELTEGPU.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPU.cpp
+@@ -281,7 +281,9 @@
+     IOBufferMemoryDescriptor *storage, uint8_t *bytes,
+     const A5G3DQueueRequest &request, A5G3DQueueCompletion *completion)
+ {
+-    /* AS0 maps precisely the first four private data pages. No caller may
++    /* AS0 normally maps four private data pages; the opt-in boot self-test
++     * extends this to twelve pinned pages before runtime clients exist.
++     * Job headers remain limited to the first four pages. No caller may
+      * provide a different descriptor or an out-of-window GPU job address.
+      * Hardware owns the pinned pages from START until a verified terminal
+      * fence. A timeout or fault permanently halts this queue for the boot.
+@@ -735,6 +737,8 @@
+     return complete;
+ }
+ 
++#include "A5XELTEDownsampleSelftest.inc"
++
+ static void
+ a5g3d_probe_existing_power(IOService *service, int mode,
+     IOBufferMemoryDescriptor *&storage, vm_offset_t &runtimeGPU)
+@@ -796,6 +800,8 @@
+     if (runJob && product == 0x720)
+         completed = a5g3d_try_private_job(service, gpu, cmu, storage,
+             mode >= 4, mode == 5, mode == 6, mode == 7 || mode == 8);
++    if (mode == 8 && completed)
++        a5g3d_downsample4_selftest(service, gpu, storage);
+     if (mode == 8 && completed && gA5G3DQueueState == 0 &&
+         gA5G3DQueueOwner == service) {
+         /* Keep the GPU register mapping and pinned AS0 backing for
+--- /dev/null
++++ b/iokit/Kernel/arm/A5XELTEDownsampleSelftest.inc
+@@ -0,0 +1,213 @@
++/* One standalone execution of the actual translated QuartzCore downsample4
++ * vertex/fragment shaders. Generated shader/descriptor bytes are local only.
++ * This is a boot self-test, not an iOS render-pipeline implementation.
++ */
++#if __has_include("A5XELTEDownsampleFixture.inc")
++#include "A5XELTEDownsampleFixture.inc"
++#define A5_DOWNSAMPLE_FIXTURE_AVAILABLE 1
++static_assert(sizeof(kA5DownsampleFixture) == 0x4000,
++    "downsample descriptor fixture must be exactly 16 KiB");
++#else
++#define A5_DOWNSAMPLE_FIXTURE_AVAILABLE 0
++#endif
++
++static void
++a5g3d_downsample4_selftest(IOService *service, vm_offset_t gpu,
++    IOBufferMemoryDescriptor *storage)
++{
++    int enabled = 0;
++    if (!PE_parse_boot_argn("a5downsampletest", &enabled, sizeof(enabled)) ||
++        enabled != 1)
++        return;
++#if A5_DOWNSAMPLE_FIXTURE_AVAILABLE
++    const uint32_t descriptorBytes = 0x4000;
++    const uint32_t sourceOffset = 0x4000;
++    const uint32_t destinationOffset = 0x8000;
++    const uint32_t destinationBytes = 32 * 32 * 4;
++    const uint32_t privateBytes = 0xc000;
++    const uint32_t poison = 0x5a5a5a5a;
++    const uint32_t canary = 0xa5a5a5a5;
++    static_assert(kA5G3DDataOffset + 0xc000 == kA5G3DTestBytes,
++        "self-test maps only the existing private allocation");
++    if (!service || !gpu || !storage || storage != gA5G3DQueueBacking ||
++        service != gA5G3DQueueOwner || gpu != gA5G3DQueueGPU ||
++        gA5G3DRuntimeReady || storage->getLength() != kA5G3DTestBytes ||
++        !storage->getBytesNoCopy() ||
++        !__sync_bool_compare_and_swap(&gA5G3DQueueState, 0u, 3u)) {
++        if (service)
++            service->setProperty("A5G3DDownsampleResult", "queue-not-private-idle");
++        IOLog("A5XELTE G3D DS4: private queue not idle; no test submitted\n");
++        return;
++    }
++    uint8_t *bytes = static_cast<uint8_t *>(storage->getBytesNoCopy());
++    uint8_t *data = bytes + kA5G3DDataOffset;
++    IOByteCount span = 0;
++    const uint64_t physical = storage->getPhysicalSegment(0, &span,
++        kIOMemoryMapperNone);
++    const uint64_t transtab = static_cast<uint64_t>(a5g3d_read32(gpu, 0x2404)) << 32 |
++        a5g3d_read32(gpu, 0x2400);
++    const uint32_t shader = a5g3d_read32(gpu, 0x140);
++    if (!physical || (physical & 0xfff) || span < kA5G3DTestBytes ||
++        (transtab & ~0xfffULL) != physical || !shader ||
++        (a5g3d_read32(gpu, 0x2428) & 1u)) {
++        gA5G3DQueueState = 0;
++        service->setProperty("A5G3DDownsampleResult", "mapping-preflight-failed");
++        return;
++    }
++    /* Check the generated chain structure; no previous test shader is used
++     * as a substitute when this local fixture is missing or malformed. */
++    uint32_t vertexType = 0, tilerType = 0, fragmentType = 0;
++    uint64_t next = 0;
++    const uint8_t *fixture = reinterpret_cast<const uint8_t *>(kA5DownsampleFixture);
++    memcpy(&vertexType, fixture + 0x10, 4);
++    memcpy(&tilerType, fixture + 0x110, 4);
++    memcpy(&fragmentType, fixture + 0x210, 4);
++    memcpy(&next, fixture + 0x18, 8);
++    if ((vertexType & 0xffu) != 0x0bu ||
++        (tilerType & 0xffu) != 0x0fu ||
++        (fragmentType & 0xffu) != 0x13u ||
++        next != kA5G3DTestVA + 0x100) {
++        gA5G3DQueueState = 0;
++        service->setProperty("A5G3DDownsampleResult", "fixture-chain-invalid");
++        IOLog("A5XELTE G3D DS4: refusing malformed translated fixture\n");
++        return;
++    }
++    bzero(data, privateBytes);
++    memcpy(data, fixture, descriptorBytes);
++    uint32_t *source = reinterpret_cast<uint32_t *>(data + sourceOffset);
++    uint32_t *destination = reinterpret_cast<uint32_t *>(data + destinationOffset);
++    for (uint32_t y = 0; y < 64; ++y)
++        for (uint32_t x = 0; x < 64; ++x)
++            source[y * 64 + x] = a5_downsample_source_pixel(x, y);
++    for (uint32_t i = 0; i < destinationBytes / 4; ++i)
++        destination[i] = poison;
++    uint32_t *guard = reinterpret_cast<uint32_t *>(data +
++        destinationOffset + destinationBytes);
++    const uint32_t guardWords = (privateBytes - destinationOffset - destinationBytes) / 4;
++    for (uint32_t i = 0; i < guardWords; ++i)
++        guard[i] = canary;
++
++    /* Extend the same AS0 private mapping from four to twelve pinned pages.
++     * No new physical allocation, IOSurface, scanout, or user address enters
++     * this test. The queue is still private and no runtime client can submit. */
++    uint64_t *l3 = reinterpret_cast<uint64_t *>(bytes + 0x3000);
++    for (uint32_t page = 0; page < privateBytes / 4096; ++page)
++        l3[page] = (physical + kA5G3DDataOffset + page * 4096) | 0x2c1;
++    if (storage->performOperation(kIOMemoryIncoherentIOStore, 0,
++        kA5G3DTestBytes) != kIOReturnSuccess) {
++        service->setProperty("A5G3DDownsampleResult", "cache-store-failed");
++        gA5G3DQueueState = 0;
++        (void)a5g3d_reset_private_texture(storage);
++        return;
++    }
++    __sync_synchronize();
++    a5g3d_write32(gpu, 0x2418, 1u);
++    unsigned wait;
++    for (wait = 0; wait < 10000 && (a5g3d_read32(gpu, 0x2428) & 1u); ++wait)
++        IODelay(10);
++    if (wait == 10000) {
++        service->setProperty("A5G3DDownsampleResult", "mmu-update-timeout-pinned");
++        gA5G3DQueueState = 2;
++        IOLog("A5XELTE G3D DS4: AS0 update timeout; all private pages pinned\n");
++        return;
++    }
++    gA5G3DQueueState = 0;
++    service->setProperty("A5G3DDownsampleResult", "running-translated-shaders");
++    IOLog("A5XELTE G3D DS4: actual QuartzCore downsample_blur_vert_lph/downsample_4_frag_lph start src=64x64 dst=32x32 mapped=%u\n",
++        privateBytes);
++    A5G3DQueueRequest vertex = {};
++    vertex.slot = 1;
++    vertex.jobOffset = 0;
++    vertex.shaderMask = shader;
++    A5G3DQueueCompletion vertexDone = {};
++    A5G3DQueueStatus vertexStatus = a5g3d_queue_submit(service, gpu,
++        storage, bytes, vertex, &vertexDone);
++    uint32_t vertexHeader = 0xffffffffu, tilerHeader = 0xffffffffu;
++    bool chainFlushed = false;
++    if (vertexStatus == kA5G3DQueueCompleted) {
++        chainFlushed = storage->performOperation(kIOMemoryIncoherentIOFlush,
++            kA5G3DDataOffset, descriptorBytes) == kIOReturnSuccess;
++        if (chainFlushed) {
++            __sync_synchronize();
++            memcpy(&vertexHeader, data, 4);
++            memcpy(&tilerHeader, data + 0x100, 4);
++        }
++    }
++    IOLog("A5XELTE G3D DS4: vertex-tiler fence=%llu status=%u headers=%08x/%08x irq=%08x mmu=%08x gpu=%08x\n",
++        vertexDone.fence, vertexStatus, vertexHeader, tilerHeader,
++        vertexDone.jobIRQ, vertexDone.mmuIRQ, vertexDone.gpuIRQ);
++    bool chainOK = vertexStatus == kA5G3DQueueCompleted && chainFlushed &&
++        (vertexHeader & 0xffu) == 1u && (tilerHeader & 0xffu) == 1u;
++    A5G3DQueueCompletion fragmentDone = {};
++    A5G3DQueueStatus fragmentStatus = kA5G3DQueueInvalid;
++    if (chainOK) {
++        /* Descriptor invalidation above preserves GPU-written vertex outputs
++         * and tiler scratch before the next submission's CPU cache store. */
++        A5G3DQueueRequest fragment = {};
++        fragment.slot = 0;
++        fragment.jobOffset = 0x200;
++        fragment.shaderMask = shader;
++        fragmentStatus = a5g3d_queue_submit(service, gpu, storage, bytes,
++            fragment, &fragmentDone);
++    }
++    bool outputFlushed = fragmentStatus == kA5G3DQueueCompleted &&
++        storage->performOperation(kIOMemoryIncoherentIOFlush,
++            kA5G3DDataOffset + sourceOffset,
++            privateBytes - sourceOffset) == kIOReturnSuccess;
++    uint32_t matching = 0, unchanged = 0, sourceMatching = 0, guardsMatching = 0;
++    uint32_t firstBadX = 0xffffffffu, firstBadY = 0xffffffffu;
++    uint32_t firstActual = 0, firstExpected = 0;
++    if (outputFlushed) {
++        __sync_synchronize();
++        for (uint32_t y = 0; y < 32; ++y) {
++            for (uint32_t x = 0; x < 32; ++x) {
++                uint32_t actual = destination[y * 32 + x];
++                uint32_t expected = a5_downsample_expected_pixel(x, y);
++                bool match = a5_downsample_pixel_matches(actual, expected);
++                matching += match;
++                unchanged += actual == poison;
++                if (!match && firstBadX == 0xffffffffu) {
++                    firstBadX = x; firstBadY = y;
++                    firstActual = actual; firstExpected = expected;
++                }
++            }
++        }
++        for (uint32_t y = 0; y < 64; ++y)
++            for (uint32_t x = 0; x < 64; ++x)
++                sourceMatching += source[y * 64 + x] == a5_downsample_source_pixel(x, y);
++        for (uint32_t i = 0; i < guardWords; ++i)
++            guardsMatching += guard[i] == canary;
++    }
++    bool passed = chainOK && outputFlushed && matching == 1024 &&
++        !unchanged && sourceMatching == 4096 && guardsMatching == guardWords;
++    service->setProperty("A5G3DDownsamplePixels", matching, 32);
++    service->setProperty("A5G3DDownsampleResult", passed ? "gpu-pixels-pass" :
++        "gpu-pixels-failed-or-job-incomplete");
++    IOLog("A5XELTE G3D DS4: fragment fence=%llu status=%u header=%08x irq=%08x mmu=%08x gpu=%08x pixels=%u/1024 untouched=%u source=%u/4096 guards=%u/%u rgb_tol=1 alpha_exact=255 pass=%u\n",
++        fragmentDone.fence, fragmentStatus, fragmentDone.headerStatus,
++        fragmentDone.jobIRQ, fragmentDone.mmuIRQ, fragmentDone.gpuIRQ,
++        matching, unchanged, sourceMatching, guardsMatching, guardWords,
++        passed);
++    if (outputFlushed) {
++        IOLog("A5XELTE G3D DS4: samples 0,0=%08x/exp%08x 7,3=%08x/exp%08x 31,31=%08x/exp%08x first_bad=%u,%u:%08x/exp%08x\n",
++            destination[0], a5_downsample_expected_pixel(0, 0),
++            destination[3 * 32 + 7], a5_downsample_expected_pixel(7, 3),
++            destination[1023], a5_downsample_expected_pixel(31, 31),
++            firstBadX, firstBadY, firstActual, firstExpected);
++    }
++    /* Hardware ambiguity keeps all mappings and pages pinned. Only a fully
++     * terminal queue may restore the original runtime copy fixture. */
++    if (gA5G3DQueueState == 0) {
++        if (!a5g3d_reset_private_texture(storage)) {
++            gA5G3DQueueState = 2;
++            IOLog("A5XELTE G3D DS4: runtime fixture restore failed; pages pinned\n");
++        }
++    } else {
++        IOLog("A5XELTE G3D DS4: uncertain queue; private backing pinned until reboot\n");
++    }
++#else
++    (void)gpu; (void)storage;
++    service->setProperty("A5G3DDownsampleResult", "translated-fixture-missing");
++    IOLog("A5XELTE G3D DS4: generated translated fixture missing; no test submitted\n");
++#endif
++}
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,2 +1,3 @@
+ /iokit/Kernel/arm/A5XELTEReadSurfFixture.inc
+ /bsd/kern/A5XELTEMetalBundlePayload.inc
++/iokit/Kernel/arm/A5XELTEDownsampleFixture.inc

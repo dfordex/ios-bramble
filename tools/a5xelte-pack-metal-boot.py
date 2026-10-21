@@ -21,6 +21,8 @@ def main():
     ap.add_argument('output_boot', type=Path)
     ap.add_argument('--install-bundle', action='store_true',
                     help='install the locally embedded bundle through the mounted HFS VFS')
+    ap.add_argument('--test-downsample', action='store_true',
+                    help='run the actual translated downsample4 shaders once on private GPU memory')
     args = ap.parse_args()
     if args.output_boot.exists():
         ap.error('output exists; choose a new private output path')
@@ -41,6 +43,10 @@ def main():
         ap.error('reference ADT is truncated')
     words = payload[0x48:0x2a8].split(b'\0', 1)[0].decode('ascii').split()
     required = {'a5gpu': '8', 'a5gpuclient': '1', 'a5metal': '1'}
+    if args.test_downsample:
+        if b'actual QuartzCore downsample_blur_vert_lph/downsample_4_frag_lph start' not in args.kernel.read_bytes():
+            ap.error('kernel lacks the actual translated downsample4 fixture/test')
+        required['a5downsampletest'] = '1'
     if args.install_bundle:
         if b'A5XELTE Metal install:' not in args.kernel.read_bytes():
             ap.error('kernel lacks the embedded bundle installer')
