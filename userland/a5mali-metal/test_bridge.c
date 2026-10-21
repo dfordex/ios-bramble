@@ -16,13 +16,33 @@ typedef struct {
     A5MaliHeader h; uint32_t status, reserved;
     uint64_t tilerFence, fragmentFence;
 } SubmitReply;
+typedef struct {
+    uint32_t operation, color;
+    uint64_t source, destination;
+    A5MaliRect sourceRect, destinationRect;
+} BatchWireCommand;
+typedef struct {
+    A5MaliHeader h; uint32_t count, reserved;
+    BatchWireCommand commands[8];
+} BatchWireRequest;
+typedef struct {
+    uint32_t status, reserved;
+    uint64_t tilerFence, fragmentFence;
+} BatchWireItem;
+typedef struct {
+    A5MaliHeader h;
+    uint32_t count, completedCount, failedIndex, reserved;
+    BatchWireItem items[8];
+} BatchWireReply;
 
 typedef struct {
-    uint32_t imports, maps, submits, unmaps, releases;
+    uint32_t imports, maps, submits, batches, unmaps, releases;
     uint32_t lastOperation, lastColor;
     uint64_t lastSource, lastDestination;
+    A5MaliRect lastSourceRect, lastDestinationRect;
     int failSubmit;
     int malformedImport;
+    uint32_t batchFailIndex;
 } Fake;
 
 static kern_return_t fakeCall(void *opaque, uint32_t selector,
@@ -67,11 +87,36 @@ static kern_return_t fakeCall(void *opaque, uint32_t selector,
         fake->lastColor = request->color;
         fake->lastSource = request->source;
         fake->lastDestination = request->destination;
+        fake->lastSourceRect = request->sourceRect;
+        fake->lastDestinationRect = request->destinationRect;
         fake->submits++;
         SubmitReply reply = {
             {1, sizeof(SubmitReply), 0, 0},
             (uint32_t)fake->failSubmit, 0, 11, 12
         };
+        memcpy(output, &reply, sizeof(reply));
+        *outputSize = sizeof(reply);
+        return KERN_SUCCESS;
+    }
+    if (selector == A5MaliBatchSubmit) {
+        assert(inputSize == 472 && *outputSize == 224 && output);
+        const BatchWireRequest *request = input;
+        assert(request->h.version == 1 && request->h.size == 472);
+        assert(request->count >= 1 && request->count <= 8);
+        fake->batches++;
+        BatchWireReply reply = {0};
+        reply.h = (A5MaliHeader){1, sizeof(reply), 0, 0};
+        reply.count = request->count;
+        reply.failedIndex = fake->batchFailIndex;
+        reply.completedCount = fake->batchFailIndex == UINT32_MAX ?
+            request->count : fake->batchFailIndex;
+        for (uint32_t i = 0; i < request->count; ++i) {
+            assert(request->commands[i].destination);
+            reply.items[i].status = i < reply.completedCount ? 0 :
+                i == reply.failedIndex ? 4 : 6;
+            if (i < reply.completedCount)
+                reply.items[i].fragmentFence = 100 + i;
+        }
         memcpy(output, &reply, sizeof(reply));
         *outputSize = sizeof(reply);
         return KERN_SUCCESS;
@@ -91,9 +136,10 @@ static kern_return_t fakeCall(void *opaque, uint32_t selector,
 
 int main(void)
 {
-    Fake fake = {0};
+    Fake fake = {.batchFailIndex = UINT32_MAX};
     A5MaliClient client;
-    assert(A5MaliInitTransport(&client, fakeCall, &fake) == KERN_SUCCESS);
+    assert(A5MaliInitTransportWithCapabilities(&client, fakeCall, &fake,
+        15) == KERN_SUCCESS);
     A5MaliResource source, destination;
     assert(A5MaliImportSurface(&client, 123, A5MaliRead, &source) == KERN_SUCCESS);
     assert(A5MaliImportSurface(&client, 123, A5MaliWrite, &destination) == KERN_SUCCESS);
@@ -106,12 +152,77 @@ int main(void)
         fence.fragmentFence == 12);
     assert(A5MaliCopy(&client, &source, rect, &destination, rect, &fence) == KERN_SUCCESS);
     assert(fake.lastOperation == A5MaliCopyBGRA && fake.lastSource == source.token);
+    A5MaliRect larger = {6, 8, 32, 32};
+    assert(A5MaliDrawTexturedQuad(&client, &source, rect, &destination,
+        larger, &fence) == KERN_SUCCESS);
+    assert(fake.lastOperation == A5MaliDrawTexturedQuadBGRA &&
+        fake.lastSource == source.token &&
+        fake.lastDestination == destination.token &&
+        fake.lastSourceRect.width == 16 &&
+        fake.lastDestinationRect.width == 32 && fence.fragmentFence == 12);
+    A5MaliBatchCommand commands[3] = {
+        {A5MaliClearBGRA, 0xff112233, NULL, &destination, {0}, rect},
+        {A5MaliCopyBGRA, 0, &source, &destination, rect, rect},
+        {A5MaliDrawTexturedQuadBGRA, 0, &source, &destination,
+            rect, larger},
+    };
+    A5MaliBatchResult batch = {0};
+    assert(A5MaliSubmitBatchCommands(&client, commands, 3, &batch) ==
+        kIOReturnUnsupported);
+    client.supportedOperations = 127;
+    assert(A5MaliSubmitBatchCommands(&client, commands, 3, &batch) ==
+        KERN_SUCCESS);
+    assert(fake.batches == 1 && batch.completedCount == 3 &&
+        batch.failedIndex == UINT32_MAX &&
+        batch.items[2].fence.fragmentFence == 102);
+    fake.batchFailIndex = 1;
+    assert(A5MaliSubmitBatchCommands(&client, commands, 3, &batch) ==
+        kIOReturnTimeout);
+    assert(fake.batches == 2 && batch.completedCount == 1 &&
+        batch.failedIndex == 1 && batch.items[2].status == 6);
+    const uint32_t batches = fake.batches;
+    commands[2].sourceRect.width = 0;
+    assert(A5MaliSubmitBatchCommands(&client, commands, 3, &batch) ==
+        kIOReturnBadArgument && fake.batches == batches);
     const uint32_t before = fake.submits;
     A5MaliRect outside = {60, 0, 16, 16};
     assert(A5MaliCopy(&client, &source, outside, &destination, rect, NULL) != KERN_SUCCESS);
+    assert(A5MaliDrawTexturedQuad(&client, &source, outside,
+        &destination, larger, NULL) != KERN_SUCCESS);
     assert(fake.submits == before);
+    client.gpuCommandsSupported = 7;
+    assert(A5MaliDrawTexturedQuad(&client, &source, rect,
+        &destination, larger, NULL) == kIOReturnUnsupported);
+    assert(fake.submits == before);
+    client.gpuCommandsSupported = 15;
     fake.failSubmit = 4;
     assert(A5MaliCopy(&client, &source, rect, &destination, rect, NULL) == kIOReturnTimeout);
+    fake.failSubmit = 0;
+    A5MaliResource fullSource = {0x100000011ULL, 1080, 1920, 4320,
+        A5MaliRead};
+    A5MaliResource fullDestination = {0x100000012ULL, 1080, 1920, 4320,
+        A5MaliWrite};
+    assert(A5MaliReadSurf(&client, &fullSource, &fullDestination,
+        NULL) == kIOReturnUnsupported);
+    client.gpuCommandsSupported = 31;
+    assert(A5MaliReadSurf(&client, &fullSource, &fullDestination,
+        &fence) == KERN_SUCCESS);
+    assert(fake.lastOperation == A5MaliReadSurfBGRA &&
+        fake.lastSourceRect.width == 1080 &&
+        fake.lastDestinationRect.height == 1920 &&
+        fence.fragmentFence == 12);
+    A5MaliBatchCommand readSurf = {A5MaliReadSurfBGRA, 0,
+        &fullSource, &fullDestination, {0, 0, 1080, 1920},
+        {0, 0, 1080, 1920}};
+    fake.batchFailIndex = UINT32_MAX;
+    assert(A5MaliSubmitBatchCommands(&client, &readSurf, 1,
+        &batch) == KERN_SUCCESS && batch.completedCount == 1);
+    fullSource.rowBytes = 4352;
+    const uint32_t beforeInvalid = fake.submits;
+    assert(A5MaliReadSurf(&client, &fullSource, &fullDestination,
+        NULL) == kIOReturnBadArgument && fake.submits == beforeInvalid);
+    assert(A5MaliSubmitBatchCommands(&client, &readSurf, 1,
+        &batch) == kIOReturnBadArgument);
     fake.malformedImport = 1;
     A5MaliResource rejected;
     const uint32_t released = fake.releases;
