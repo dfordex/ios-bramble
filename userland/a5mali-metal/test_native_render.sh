@@ -20,7 +20,7 @@ sys.path.insert(0,sys.argv[1])
 from build_runtime_encoder import compile_runtime
 compile_runtime(Path(sys.argv[2]).resolve(),Path(sys.argv[3]).resolve(),'host',Path(sys.argv[1]).resolve()/'runtime_path_encode.c')
 PYBUILD
-for test_name in test_native_render test_native_misc test_native_clear test_native_path; do
+for test_name in test_native_render test_native_misc test_native_clear test_native_path test_phase_diagnostics; do
 clang -fobjc-arc -fblocks -DA5_MALI_HOST_TEST -DA5_MALI_REQUIRE_COMPILED_REGISTRY=1 \
     -Wall -Wextra -Werror -I"$registry_dir" \
     "$src_dir/A5MaliBridge.c" "$src_dir/A5MaliNative.c" "$src_dir/A5MaliNativeUpload.c" "$src_dir/A5MaliCommandBuffer.m" \

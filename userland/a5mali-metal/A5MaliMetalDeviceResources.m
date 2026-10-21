@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+#include <stdio.h>
 
 enum { CreateBuffer = 8, ReleaseBuffer = 9, WriteBuffer = 14,
        ReadBuffer = 15, TransferMax = 256 };
@@ -401,6 +402,30 @@ static NSError *bindingError(kern_return_t status, NSString *message)
 - (MTLDepthStencilDescriptor *)descriptor { return [_descriptor copy]; }
 @end
 
+static void logSamplerRejection(MTLSamplerDescriptor *d)
+{
+    static atomic_uint count;
+    unsigned value=atomic_load_explicit(&count,memory_order_relaxed);
+    do {if(value>=64)return;} while(!atomic_compare_exchange_weak_explicit(&count,&value,value+1,
+        memory_order_relaxed,memory_order_relaxed));
+    const char *reason=!d?"nil-descriptor":
+        d.minFilter!=MTLSamplerMinMagFilterNearest?"min-filter":
+        d.magFilter!=MTLSamplerMinMagFilterNearest?"mag-filter":
+        d.mipFilter!=MTLSamplerMipFilterNotMipmapped?"mip-filter":
+        d.maxAnisotropy!=1?"anisotropy":
+        (d.sAddressMode!=MTLSamplerAddressModeClampToEdge||
+         d.tAddressMode!=MTLSamplerAddressModeClampToEdge||
+         d.rAddressMode!=MTLSamplerAddressModeClampToEdge)?"address-mode":
+        !d.normalizedCoordinates?"unnormalized-coordinates":
+        d.compareFunction!=MTLCompareFunctionNever?"compare-function":
+        d.supportArgumentBuffers?"argument-buffers":"lod-min-clamp";
+    fprintf(stderr,"A5XELTE Metal sampler: rejected reason=%s min=%lu mag=%lu mip=%lu anisotropy=%lu address=%lu/%lu/%lu normalized=%u compare=%lu argument_buffers=%u lod_min=%g lod_max=%g\n",
+        reason,(unsigned long)d.minFilter,(unsigned long)d.magFilter,(unsigned long)d.mipFilter,
+        (unsigned long)d.maxAnisotropy,(unsigned long)d.sAddressMode,(unsigned long)d.tAddressMode,
+        (unsigned long)d.rAddressMode,d.normalizedCoordinates,(unsigned long)d.compareFunction,
+        d.supportArgumentBuffers,(double)d.lodMinClamp,(double)d.lodMaxClamp);
+}
+
 static BOOL noStencilOperation(MTLStencilDescriptor *stencil)
 {
     return !stencil ||
@@ -410,24 +435,41 @@ static BOOL noStencilOperation(MTLStencilDescriptor *stencil)
          stencil.depthStencilPassOperation == MTLStencilOperationKeep);
 }
 
+static void logBufferRejection(NSUInteger length,MTLResourceOptions options,const char *reason)
+{
+    static atomic_uint count;
+    unsigned value=atomic_load_explicit(&count,memory_order_relaxed);
+    do {if(value>=64)return;} while(!atomic_compare_exchange_weak_explicit(&count,&value,value+1,
+        memory_order_relaxed,memory_order_relaxed));
+    fprintf(stderr,"A5XELTE Metal buffer: rejected reason=%s length=%lu options=%lu\n",
+        reason,(unsigned long)length,(unsigned long)options);
+}
 @implementation A5MaliRestrictedDevice (PrivateBufferResources)
 - (A5MaliPrivateBuffer *)newBufferWithLength:(NSUInteger)length options:(MTLResourceOptions)options
 {
-    if (options == MTLResourceStorageModeShared)
-        return [[A5MaliSharedReadBuffer alloc] initSharedWithDevice:self length:length];
-    return [[A5MaliPrivateBuffer alloc] initWithDevice:self length:length options:options];
+    A5MaliPrivateBuffer *buffer=options==MTLResourceStorageModeShared?
+        [[A5MaliSharedReadBuffer alloc] initSharedWithDevice:self length:length]:
+        [[A5MaliPrivateBuffer alloc] initWithDevice:self length:length options:options];
+    if(!buffer)logBufferRejection(length,options,!length||length>A5MaliMaxPrivateBufferLength?
+        "length":(options!=MTLResourceStorageModeShared&&options!=MTLResourceStorageModePrivate)?
+        "options":"allocation-or-kernel-create");
+    return buffer;
 }
 - (A5MaliPrivateBuffer *)newBufferWithBytes:(const void *)bytes length:(NSUInteger)length
     options:(MTLResourceOptions)options
 {
-    if (!bytes || options != MTLResourceStorageModeShared) return nil;
+    if (!bytes || options != MTLResourceStorageModeShared){
+        logBufferRejection(length,options,!bytes?"nil-source":"bytes-require-shared");return nil;
+    }
     A5MaliSharedReadBuffer *buffer = [[A5MaliSharedReadBuffer alloc]
         initSharedWithDevice:self length:length];
-    return [buffer uploadBytes:bytes offset:0 length:length] == KERN_SUCCESS ? buffer : nil;
+    BOOL uploaded=[buffer uploadBytes:bytes offset:0 length:length] == KERN_SUCCESS;
+    if(!uploaded||!buffer)logBufferRejection(length,options,"shared-allocation-or-upload");
+    return uploaded?buffer:nil;
 }
 - (A5MaliPrivateBuffer *)newBufferWithBytesNoCopy:(void *)bytes length:(NSUInteger)length
     options:(MTLResourceOptions)options deallocator:(void (^)(void *, NSUInteger))deallocator
-{ (void)bytes; (void)length; (void)options; (void)deallocator; return nil; }
+{ (void)bytes; (void)deallocator; logBufferRejection(length,options,"no-copy-unsupported");return nil; }
 - (MTLSizeAndAlign)heapBufferSizeAndAlignWithLength:(NSUInteger)length options:(MTLResourceOptions)options
 {
     if (options == MTLResourceStorageModeShared && length &&
@@ -446,8 +488,9 @@ static BOOL noStencilOperation(MTLStencilDescriptor *stencil)
         d.tAddressMode != MTLSamplerAddressModeClampToEdge ||
         d.rAddressMode != MTLSamplerAddressModeClampToEdge ||
         !d.normalizedCoordinates || d.compareFunction != MTLCompareFunctionNever ||
-        d.supportArgumentBuffers || d.lodMinClamp != 0)
-        return nil;
+        d.supportArgumentBuffers || d.lodMinClamp != 0){
+        logSamplerRejection(d);return nil;
+    }
     return [[A5MaliSamplerState alloc] initWithDevice:self descriptor:d];
 }
 - (A5MaliDepthStencilState *)newDepthStencilStateWithDescriptor:(MTLDepthStencilDescriptor *)d

@@ -2,6 +2,8 @@
 #include "A5MaliNative.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdatomic.h>
 _Static_assert(sizeof(A5NativeQueryRequest)==80,"native query ABI");
 _Static_assert(sizeof(A5NativeQueryResult)==352,"native spans ABI");
 _Static_assert(sizeof(A5NativeSubmitRequest)==120,"native submit ABI");
@@ -15,25 +17,44 @@ static kern_return_t nativeCall(A5MaliClient *c,uint32_t selector,
   return kIOReturnUnsupported;
  return c->call(c->context,selector,in,count,out,size);
 }
+static unsigned queryDiagnosticBegin(const A5NativeQueryRequest *q)
+{
+ static atomic_uint count;
+ unsigned value=atomic_load_explicit(&count,memory_order_relaxed);
+ do {if(value>=64)return 0;} while(!atomic_compare_exchange_weak_explicit(&count,&value,value+1,
+  memory_order_relaxed,memory_order_relaxed));
+ unsigned surfaces=0,buffers=0;
+ if(q)for(unsigned i=0;i<A5NativeSlots;++i){surfaces+=q->surfaces[i]!=0;buffers+=q->buffers[i]!=0;}
+ fprintf(stderr,"A5XELTE Metal Query17: receipt=%u phase=begin surfaces=%u buffers=%u\n",value+1,surfaces,buffers);
+ return value+1;
+}
+static kern_return_t queryDiagnosticEnd(unsigned receipt,const char *phase,kern_return_t status)
+{
+ if(receipt)fprintf(stderr,"A5XELTE Metal Query17: receipt=%u phase=%s result=%x\n",receipt,phase,(unsigned)status);
+ return status;
+}
 kern_return_t A5MaliQueryNative(A5MaliClient *c,const A5NativeQueryRequest *q,
  A5NativeQueryResult *r)
 {
- if (!q || !r || !valid(q->header,sizeof(*q),sizeof(*q))) return kIOReturnBadArgument;
+ int requestValid=q && r && valid(q->header,sizeof(*q),sizeof(*q));
+ unsigned diagnostic=queryDiagnosticBegin(requestValid?q:NULL);
+ if (!requestValid)
+  return queryDiagnosticEnd(diagnostic,"request-validation",kIOReturnBadArgument);
  A5NativeQueryResult result={0}; size_t size=sizeof(result);
  kern_return_t kr=nativeCall(c,A5NativeQuerySelector,q,sizeof(*q),&result,&size);
- if (kr) return kr;
+ if (kr) return queryDiagnosticEnd(diagnostic,"transport",kr);
  if (!valid(result.header,sizeof(result),size) || !result.flags ||
      result.jobVA!=A5NativeJobVA || result.jobBytes!=A5NativeJobBytes)
-  return kIOReturnBadArgument;
+  return queryDiagnosticEnd(diagnostic,"reply-header",kIOReturnBadArgument);
  for (unsigned i=0;i<A5NativeSlots;i++) {
   if (result.surfaces[i].token!=q->surfaces[i] || result.buffers[i].token!=q->buffers[i])
-   return kIOReturnBadArgument;
+   return queryDiagnosticEnd(diagnostic,"reply-identity",kIOReturnBadArgument);
   if (q->surfaces[i] && (!result.surfaces[i].gpuVA || !result.surfaces[i].bytes))
-   return kIOReturnBadArgument;
+   return queryDiagnosticEnd(diagnostic,"reply-surface-span",kIOReturnBadArgument);
   if (q->buffers[i] && (!result.buffers[i].gpuVA || !result.buffers[i].bytes))
-   return kIOReturnBadArgument;
+   return queryDiagnosticEnd(diagnostic,"reply-buffer-span",kIOReturnBadArgument);
  }
- *r=result; return KERN_SUCCESS;
+ *r=result; return queryDiagnosticEnd(diagnostic,"complete",KERN_SUCCESS);
 }
 kern_return_t A5MaliSubmitNative(A5MaliClient *c,const A5NativeSubmitRequest *q,
  const void *jobs,A5MaliFence *f)
