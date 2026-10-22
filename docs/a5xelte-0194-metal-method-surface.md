@@ -83,3 +83,14 @@ backboardd requests next. Later shader specialization failures, the 84-page
 contiguous allocation pressure, and slow on-phone compiler publication remain
 separate unresolved issues from 0193. A zero missing-method count does not
 establish that the black screen is fixed.
+
+## Installation receipt
+
+Mac ADB identified the previously authorized lab a5xelte in TWRP 3.3.0-0,
+verified BOOT resolves to p10 and its 32 MiB capacity, then streamed exactly
+30,289,936 bytes to p10. The dd receipt acknowledged that count; sync and
+reboot completed. Source commit: `6d39b3a`. No BOOT backup, post-write hash
+or readback was taken, following the user's instruction. No raw USERDATA
+transfer or recovery/EFS/radio/GPT write was performed. The embedded provider
+and compiler installer will update their files during XNU boot. Runtime
+selector audit and screen result are pending.
