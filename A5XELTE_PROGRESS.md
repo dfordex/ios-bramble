@@ -334,3 +334,6 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 
 
 - **0183 candidate built (2026-10-22):** Fresh XNU make completes exit0 including symbols; private BOOT is 28,749,840bytes and embeds the 502,224-byte signed corrected provider. The13-file payload retains the existing probe/compiler/cache; restored UI apps stay on HFS and are not retransferred. Raw28,215,602/packed7,893,465bytes; authenticated shader registry is byte-identical. Four CPUs, 30Hz presentation cap and all21 GPU tests are preserved. New initialization marker reports max2D=2048/2048. Phone result remains pending.
+
+
+- **0183 installed (2026-10-22):** Source0366818 pushed to GitHub. MacADB explicitly rechecked A5XELTE/TWRP3.3.0-0, BOOTp10 and32MiBcapacity; directdd acknowledged28,749,840bytes, sync completed and reboot was requested. NoBOOTbackup, post-writehash/readback orwholeUSERDATAtransfer. This boot changes advertised2Dcapacity to2048bothaxes, retaining existing shaders and the21oraclecases. It does not reinstall the47already-restored appfiles. New fullHDtextureimport/nonwarmupcommandbuffer/commit and renderedpixels remain runtime-verification pending.
