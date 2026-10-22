@@ -61,3 +61,12 @@ stock GPU job timing out. Waiting on the same serial submission target remains
 unsupported (as for existing waitUntilCompleted); no such caller pattern is
 established in0180. Next device replay must distinguish warmup encoding from
 real commit→Query17→Submit18→terminal fence and the presented compositor frame.
+
+## 0181 device replay
+
+Recovered flush39 confirms21/21GPUoracles and removal of the old copy rejection;
+four8x8scratchallocations are observed. No commit/native submission follows,
+so the two SPI forwards are not yet device-verified as called. Unlike0180, no
+full-panel GPU copy is recorded either. Reduced-root PosterBoard executable is
+missing. See [0181 log review](a5xelte-0181-log-review.md); first real-frame
+scheduling/flush transition remains unproven.
