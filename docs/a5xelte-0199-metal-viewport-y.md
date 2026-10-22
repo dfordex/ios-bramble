@@ -51,5 +51,18 @@ next physical trial must confirm the logo orientation and any later UI output.
 The full native transport suite and Cortex-A53 provider build pass with the
 new Y convention. Actual kernel installer preflight validates the15-file
 payload (39,515,958raw /9,450,189packed bytes). Full XNU build including symbols
-passes; the resulting0199 BOOT is30,308,368bytes. It has not been flashed:
-the phone is still running the observed0198 trial, pending its return to TWRP.
+passes; the resulting0199 BOOT is30,308,368bytes. At build completion it
+had not yet been flashed; the phone was still running the0198 trial.
+
+## Installed after0198 recovery
+
+After the user returned to TWRP, the complete0198SYSTEM log was recovered
+before installation. It verifies29,457colored603output pixels and a GPU panel
+copy with zero mismatches across4,096samples. It also records nine later
+backboardd aborts caused by two newly requested, unsupported fragment variants;
+see [the0198readout](a5xelte-0198-log-review.md). These are outside the Y fix.
+
+Source `4a7c496` was pushed before the0199write. Exact phone/recovery/BOOT
+mapping and capacity checks pass; direct BOOTp10 write acknowledges30,308,368
+bytes, then sync/reboot complete. No backup, post-write hash/readback, format
+or fullUSERDATAtransfer. The corrected physical orientation remains pending.
