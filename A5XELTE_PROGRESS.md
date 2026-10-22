@@ -439,3 +439,10 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Repair:** Exact matching method/type encodings are accepted before Foundation parsing; all real mismatch checks remain. The audit summary now uses stderr. Focused real Objective-C protocol/class tests accept the bitfield case and reject differing return/argument widths and missing selector; Cortex-A53 compile passes. See `docs/a5xelte-0194-log-review.md`.
 
 - **0195 installed:** Source `3c35fd6`, BOOT p10 only,30,289,936 bytes acknowledged by dd; sync/reboot complete. No backup or post-write hash/readback. Next runtime audit and iOS render result pending.
+
+
+## 2026-10-23 — 0195 audit/purge verification and black-screen investigation
+
+- **Recovered device evidence:** Flush28, all108,016 ring bytes (decoded107,771/1,257lines). Both target runtime audits pass14 mappings/751methods/errors0. Stock Metal accepts the device. Backboardd binds602/603 phone-compiled caches; two command buffers complete five native jobs with status0/header1/MMU0. Shared purge Volatile/NonVolatile transitions succeed. No process crash or kernel panic in this capture.
+- **Presentation limit:** One surface23 full-panel GPU copy completes (8,294,400bytes, CPUcopy0), but full-screen pixel correctness is unverified and the user sees black. iOS subsequently requests display off. `a5fb_keep_on` only ignores the physical off request; it does not demonstrate compositor wakefulness.
+- **Next observation:** User had not tried Home/power. Rebooted the same0195 installation without a new BOOT write for a short-button wake test. This is a hypothesis test, not a claimed black-screen fix. See `docs/a5xelte-0195-log-review.md`.
