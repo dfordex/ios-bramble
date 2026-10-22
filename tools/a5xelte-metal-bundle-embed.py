@@ -16,6 +16,8 @@ import json
 from pathlib import Path
 import plistlib
 import struct
+import subprocess
+import sys
 import zlib
 
 
@@ -139,6 +141,8 @@ def main() -> None:
                         help="current device launchd cache; only add the probe job")
     parser.add_argument('--compiler-dir', type=Path,
                         help='private native compiler package; requires compressed installer patch0172')
+    parser.add_argument('--installer-source',type=Path,
+                        help='actual staged kernel installer; required for automatic compiler payload preflight')
     parser.add_argument('--display-apps', type=Path,
                         help='mounted source Applications; embeds only six fixed display bundles, requires installer support')
     args = parser.parse_args()
@@ -204,6 +208,8 @@ def main() -> None:
             'compiler-launchdaemon.plist'}
         if (args.compiler_dir / 'a5shader/midgard-generic602').is_file():
             compiler_members.update({'a5shader/midgard-generic602','a5shader/generic602.json'})
+            if not args.installer_source:
+                parser.error('automatic compiler requires --installer-source to check the real kernel preflight')
         actual = {str(p.relative_to(args.compiler_dir)) for p in args.compiler_dir.rglob('*') if not p.is_dir()}
         if actual != compiler_members:
             parser.error('unexpected compiler package members')
@@ -250,6 +256,16 @@ def main() -> None:
     lines.append("};")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("\n".join(lines) + "\n")
+    if args.installer_source:
+        check = subprocess.run([sys.executable,str(Path(__file__).with_name('test-a5xelte-display-app-policy.py')),
+            '--installer',str(args.installer_source),'--payload',str(args.output),
+            '--output',str(args.output.parent / '.payload-preflight'),'--preflight-only'],
+            capture_output=True,text=True)
+        if check.returncode:
+            sys.stderr.write(check.stdout + check.stderr)
+            parser.error('actual kernel rejected the generated payload; BOOT packaging stopped')
+        sys.stderr.write(check.stdout)
+
     print(json.dumps({"output": str(args.output), "files": [{"path": p, "size": len(d), "mode": oct(m), "uid": u, "gid": g, "crc32": f"{zlib.crc32(d):08x}"} for p, d, m, u, g in entries], "bytes": sum(len(d) for _, d, _, _, _ in entries),
         'packed_bytes':sum(packed_sizes[i] or len(d) for i,(_,d,_,_,_) in enumerate(entries)), 'display_apps': list(DISPLAY_APPS) if args.display_apps else [], 'directories': [{'path':p,'mode':oct(m),'uid':u,'gid':g} for p,m,u,g in directories], 'xattrs': app_xattrs}, indent=2))
 

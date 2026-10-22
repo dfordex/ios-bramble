@@ -7,7 +7,7 @@ bytes remain only in the supplied private input/output paths, outside Git.
 """
 import argparse,subprocess
 from pathlib import Path
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--installer',type=Path,required=True);p.add_argument('--payload',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--installer',type=Path,required=True);p.add_argument('--payload',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--preflight-only',action='store_true',help='validate all actual payload metadata/streams without filesystem writes');p.add_argument('--compiler-only',action='store_true',help='exercise the actual15-file automatic compiler package instead of restored apps');p.add_argument('--expect-rejection',action='store_true',help='verify an unpatched installer rejects this exact private package');a=p.parse_args()
 s=a.installer.read_text();out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
 structs=s[s.index('struct a5metal_install_file {'):s.index('#if __has_include')]
 functions=s[s.index('#define A5METAL_INSTALL_CHUNK'):s.index('static int\na5metal_install_mkdir')]
@@ -42,6 +42,42 @@ unsigned char*corrupt=malloc(compressed.compressed_size);memcpy(corrupt,compress
 a5metal_install_files[13].size=0;a5metal_install_files[13].compressed_size=0;assert(a5metal_install_preflight(buffer)==0);struct a5metal_install_stream stream;assert(!a5metal_install_stream_start(&stream,&a5metal_install_files[13]));unsigned count=999;const unsigned char*data=NULL;assert(!a5metal_install_stream_next(&stream,buffer,&data,&count)&&!count);assert(!a5metal_install_stream_rewind(&stream));assert(!a5metal_install_stream_next(&stream,buffer,&data,&count)&&!count);a5metal_install_stream_end(&stream);a5metal_install_files[13]=saved;
 assert(a5metal_install_preflight(buffer)==0);assert(a5metal_install_files[13].uid==saved.uid&&a5metal_install_files[13].gid==saved.gid&&a5metal_install_files[13].mode==saved.mode);
 free(buffer);puts("PASS actual kernel preflight:60 real streams/225dirs, six-bundle scope, modes/parents, corrupt stream rejection, empty files, app-gate-off legacy-only; no filesystem write claim");return 0;}
+'''
+if a.expect_rejection:
+    test='int main(void){(void)a5metal_install_stream_rewind;unsigned char*buffer=malloc(A5METAL_INSTALL_CHUNK);assert(buffer);int error=a5metal_install_preflight(buffer);assert(error==EINVAL);printf("PASS reproduced original preflight rejection: %d\\n",error);free(buffer);return 0;}'
+elif a.preflight_only:
+    test='int main(void){(void)a5metal_install_stream_rewind;unsigned char*buffer=malloc(A5METAL_INSTALL_CHUNK);assert(buffer);a5metal_install_apps_enabled=true;assert(a5metal_install_preflight(buffer)==0);free(buffer);puts("PASS actual kernel preflight: all payload streams and policy; no filesystem writes");return 0;}'
+elif a.compiler_only:
+    test=r'''
+int main(void){
+unsigned char*buffer=malloc(A5METAL_INSTALL_CHUNK);assert(buffer);
+unsigned nf=sizeof(a5metal_install_files)/sizeof(a5metal_install_files[0]);assert(nf==15);
+assert(a5metal_install_preflight(buffer)==0);
+unsigned tool=nf,recipe=nf;
+for(unsigned i=0;i<nf;i++){
+ if(!strcmp(a5metal_install_files[i].path,"/usr/libexec/a5shader/midgard-generic602"))tool=i;
+ if(!strcmp(a5metal_install_files[i].path,"/usr/libexec/a5shader/generic602.json"))recipe=i;
+}
+assert(tool<nf&&recipe<nf&&tool!=recipe);
+struct a5metal_install_stream stream;const unsigned char*data=NULL;unsigned count=0;
+assert(!a5metal_install_stream_start(&stream,&a5metal_install_files[tool]));
+assert(!a5metal_install_stream_next(&stream,buffer,&data,&count)&&count);
+unsigned first_count=count;unsigned char*first=malloc(count);assert(first);memcpy(first,data,count);
+assert(!a5metal_install_stream_rewind(&stream));assert(!a5metal_install_stream_next(&stream,buffer,&data,&count));
+assert(count==first_count&&!memcmp(first,data,count));free(first);a5metal_install_stream_end(&stream);
+
+const char*bad[]={"/usr/libexec/a5shader/other-tool","/usr/libexec/a5shader/midgard-generic602.evil","/usr/libexec/a5shader/../midgard-generic602","/usr/libexec/a5shader/generic602.json/child"};
+struct a5metal_install_file saved=a5metal_install_files[tool];
+for(unsigned i=0;i<sizeof(bad)/sizeof(bad[0]);i++){
+ a5metal_install_files[tool].path=bad[i];assert(a5metal_install_preflight(buffer)==EINVAL);
+}a5metal_install_files[tool]=saved;
+a5metal_install_files[tool].path=a5metal_install_files[recipe].path;assert(a5metal_install_preflight(buffer)==EINVAL);a5metal_install_files[tool]=saved;
+a5metal_install_files[tool].mode=017777;assert(a5metal_install_preflight(buffer)!=0);a5metal_install_files[tool]=saved;
+assert(saved.compressed_size);unsigned char*corrupt=malloc(saved.compressed_size);assert(corrupt);
+memcpy(corrupt,saved.data,saved.compressed_size);corrupt[0]^=1;a5metal_install_files[tool].data=corrupt;
+assert(a5metal_install_preflight(buffer)!=0);a5metal_install_files[tool]=saved;free(corrupt);
+assert(a5metal_install_preflight(buffer)==0);
+free(buffer);puts("PASS actual15-file compiler payload: every compressed stream, exact new tool/recipe paths, duplicate/sibling/traversal/mode/corruption rejection; no filesystem writes");return 0;}
 '''
 source=out/'test.c';source.write_text(pre+structs+'\n#include "payload.inc"\n'+functions+test)
 exe=out/'test';subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(source),'-lz','-o',str(exe)],check=True);subprocess.run([str(exe)],check=True)
