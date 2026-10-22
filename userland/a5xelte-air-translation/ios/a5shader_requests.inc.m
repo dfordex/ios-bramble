@@ -77,7 +77,7 @@ static BOOL a5RequestFunction(NSDictionary *f, NSString *stage,
         [f[@"indexed_constants"] isEqual:@[]];
 }
 
-static BOOL a5Known602(NSDictionary *request, NSDictionary *known)
+static BOOL a5KnownProfile(NSDictionary *request, NSDictionary *known)
 {
     if (![request[@"kind"] isEqual:@"pipeline"] ||
         !a5ExactKeys(request,@[@"schema",@"kind",@"source_library",
@@ -175,7 +175,7 @@ static NSDictionary *a5NativeRecord(NSString *filename, NSDictionary *pin,
              @"tls_bytes":@0,@"wls_bytes":@0};
 }
 
-static void a5Compile602(NSString *self, NSDictionary *request, NSDictionary *known)
+static void a5CompileKnown(NSString *self, NSDictionary *request, NSDictionary *known)
 {
     NSString *key = request[@"request_id"];
     NSString *final = [publishedRoot stringByAppendingPathComponent:key];
@@ -247,16 +247,20 @@ static void a5Compile602(NSString *self, NSDictionary *request, NSDictionary *kn
     NSData *vertexData = a5Canonical(request[@"vertex"][@"named_constants"]);
     NSData *fragmentData = a5Canonical(request[@"fragment"][@"named_constants"]);
     if (!descriptorData || !vertexData || !fragmentData) fail(@"invalid request contract serialization");
-    NSDictionary *receipt = @{@"schema":@1,@"request_id":key,@"profile_id":@602,
+    NSNumber *profile = known[@"profile_id"];
+    NSString *recipeName = [NSString stringWithFormat:@"quartzcore-generic-%@",profile];
+    NSDictionary *receipt = @{@"schema":@1,@"request_id":key,@"profile_id":profile,
         @"source_library":@"quartzcore",@"metallib_sha256":known[@"metallib_sha256"],
         @"gpu_id":@"07201000",@"compiler_abi":@1,
-        @"recipe":@"quartzcore-generic-602",@"stage_compiled":@YES,
+        @"recipe":recipeName,@"stage_compiled":@YES,
         @"pipeline_compatible":@NO,
         @"descriptor_sha256":digest(descriptorData),
         @"vertex_constants_sha256":digest(vertexData),
         @"fragment_constants_sha256":digest(fragmentData),
-        @"vertex":a5NativeRecord(@"vertex.midgard",known[@"midgard"][@"vert"],8),
-        @"fragment":a5NativeRecord(@"fragment.midgard",known[@"midgard"][@"frag"],6)};
+        @"vertex":a5NativeRecord(@"vertex.midgard",known[@"midgard"][@"vert"],
+            [known[@"midgard"][@"vert"][@"native_info"][@"work_regs"] unsignedIntegerValue]),
+        @"fragment":a5NativeRecord(@"fragment.midgard",known[@"midgard"][@"frag"],
+            [known[@"midgard"][@"frag"][@"native_info"][@"work_regs"] unsignedIntegerValue])};
     NSString *receiptPath = [pubWork stringByAppendingPathComponent:@"receipt.json"];
     writeData(a5Canonical(receipt),receiptPath);
     if (chmod(receiptPath.fileSystemRepresentation,0444) ||
@@ -276,27 +280,32 @@ static void a5Compile602(NSString *self, NSDictionary *request, NSDictionary *kn
     [NSFileManager.defaultManager removeItemAtPath:work error:NULL];
     activeWork = nil;
     activeRequestKey = nil;
-    fprintf(stderr,"A5XELTE shader compiler: PUBLISHED profile=602 request=%s\n",key.UTF8String);
+    fprintf(stderr,"A5XELTE shader compiler: PUBLISHED profile=%u request=%s\n",
+        profile.unsignedIntValue,key.UTF8String);
 }
 
 static void a5HandleRequest(NSString *self, NSDictionary *request,
-                            NSDictionary *known, NSString *key)
+                            NSArray<NSDictionary *> *knownProfiles, NSString *key)
 {
     NSString *status = [[cacheRoot stringByAppendingPathComponent:@"request-status"]
         stringByAppendingPathComponent:[key stringByAppendingString:@".json"]];
     if ([NSFileManager.defaultManager fileExistsAtPath:status] ||
         [NSFileManager.defaultManager fileExistsAtPath:
             [publishedRoot stringByAppendingPathComponent:key]]) return;
-    if (!a5Known602(request,known)) {
+    NSDictionary *known = nil;
+    for (NSDictionary *candidate in knownProfiles) {
+        if (a5KnownProfile(request,candidate)) { known = candidate; break; }
+    }
+    if (!known) {
         a5WriteStatus(key,@"unsupported",
-            @"Only the exact captured fixed_vert_lph_spc/fixed_frag_lph_cph typed pair can compile; stage-only and other family requests remain queued.");
+            @"Only exact captured 602 or candidate 603 fixed_vert_lph_spc/fixed_frag_lph_cph typed pairs compile; other requests remain unsupported.");
         fprintf(stderr,"A5XELTE shader compiler: UNSUPPORTED request=%s\n",key.UTF8String);
         return;
     }
-    a5Compile602(self,request,known);
+    a5CompileKnown(self,request,known);
 }
 
-static void a5ScanRequests(NSString *self, NSDictionary *known)
+static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfiles)
 {
     int rootfd = open(requestRoot.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
     if (rootfd < 0) return; /* provider has not forwarded a request yet */
@@ -344,7 +353,7 @@ static void a5ScanRequests(NSString *self, NSDictionary *known)
             [body removeObjectForKey:@"request_id"];
             NSData *canonical = a5Canonical(body);
             if (!canonical || ![digest(canonical) isEqual:key]) continue;
-            a5HandleRequest(self,request,known,key);
+            a5HandleRequest(self,request,knownProfiles,key);
         }
         closedir(files); close(uidfd);
     }
@@ -354,12 +363,18 @@ static void a5ScanRequests(NSString *self, NSDictionary *known)
 static void a5Serve(NSString *self)
 {
     a5PrepareRequestRoots();
-    NSDictionary *known = readJSON([installed stringByAppendingPathComponent:@"generic602.json"]);
-    if (![known[@"profile_id"] isEqual:@602] ||
-        ![digest(regularData(sourceLibrary,64*1024*1024)) isEqual:known[@"metallib_sha256"]])
-        fail(@"installed generic recipe or stock library differs");
+    NSMutableArray<NSDictionary *> *knownProfiles = [NSMutableArray array];
+    NSString *sourceSHA = digest(regularData(sourceLibrary,64*1024*1024));
+    for (NSNumber *profile in @[@602,@603]) {
+        NSString *name = [NSString stringWithFormat:@"generic%@.json",profile];
+        NSDictionary *known = readJSON([installed stringByAppendingPathComponent:name]);
+        if (![known[@"profile_id"] isEqual:profile] ||
+            ![sourceSHA isEqual:known[@"metallib_sha256"]])
+            fail(@"installed generic recipe or stock library differs");
+        [knownProfiles addObject:known];
+    }
     for (;;) {
-        @autoreleasepool { a5ScanRequests(self,known); }
+        @autoreleasepool { a5ScanRequests(self,knownProfiles); }
         sleep(5);
     }
 }

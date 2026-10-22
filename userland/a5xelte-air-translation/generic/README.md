@@ -55,3 +55,22 @@ verified from this compilation alone.
 
 This directory contains no stock AIR, metallib, SPIR-V or Midgard bytes. Keep
 generated outputs private and out of Git.
+
+## 0189 textured variant
+
+`compile_0189.py` separately compiles the 0189 device-captured
+`fixed_frag_lph_cph` request with its exact 58 named constants. The matching
+`fixed_vert_lph_spc` specialization with four named constants is a **host
+candidate** until a live vertex request confirms it. The recipe requires the
+stock QuartzCore library SHA, exact capture hash, reflected ABI, validated
+SPIR-V, final native metadata and both native hashes. SamplerState spec ID 0
+is fixed at 1 for ClampToEdge; the runtime must admit only that sampler state.
+
+The candidate vertex reads Float4 position, Float2 UV and Half4 color from
+the original 48-byte Metal vertex layout. It also reads Metal Vertex Buffers
+2 and 3. The fragment samples Metal Texture 3 with runtime Sampler 0, reads
+Metal Fragment Buffer 2 for LOD bias, and reads texture dimensions from UBO 0
+at bytes `0x164` and `0x168`. The BGRA8Unorm ColorWriteRule push is at byte
+`0x48`. Fragment Buffer 1 and SyntheticConstantBlob are declared but dead in
+the optimized native shader. The host result is 2192 vertex bytes and 976
+fragment bytes; it does not establish phone execution or visual correctness.

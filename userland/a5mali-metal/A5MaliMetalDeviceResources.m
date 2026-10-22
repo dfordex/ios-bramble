@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <math.h>
 
 enum { CreateBuffer = 8, ReleaseBuffer = 9, WriteBuffer = 14,
        ReadBuffer = 15, TransferMax = 256 };
@@ -86,8 +87,8 @@ static kern_return_t call(A5MaliDevice *device, uint32_t selector,
 MTLSizeAndAlign A5MaliPrivateBufferSizeAndAlign(NSUInteger length,
     MTLResourceOptions options)
 {
-    /* Shared storage and no-copy would require clientMemoryForType/mmap.
-     * Hazard tracking is not exposed until buffers participate in draws. */
+    /* This size query describes pinned private BOs. Shared buffers instead
+     * snapshot their actual CPU bytes at submission; no mmap is fabricated. */
     if (!length || length > A5MaliMaxPrivateBufferLength ||
         options != MTLResourceStorageModePrivate)
         return (MTLSizeAndAlign){0, 0};
@@ -253,6 +254,9 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 @interface A5MaliSharedReadBuffer ()
 - (nullable instancetype)initSharedWithDevice:(A5MaliRestrictedDevice *)device
     length:(NSUInteger)length;
+- (nullable instancetype)initNoCopyWithDevice:(A5MaliRestrictedDevice *)device
+    bytes:(void *)bytes length:(NSUInteger)length
+    deallocator:(nullable void (^)(void *,NSUInteger))deallocator;
 @end
 @implementation A5MaliSharedReadBuffer {
     A5MaliRestrictedDevice *_sharedDevice;
@@ -260,6 +264,8 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     NSLock *_sharedLock;
     void *_sharedContents;
     NSUInteger _sharedLength, _sharedAllocation;
+    BOOL _sharedExternal;
+    void (^_sharedDeallocator)(void *,NSUInteger);
 }
 - (instancetype)initSharedWithDevice:(A5MaliRestrictedDevice *)device length:(NSUInteger)length
 {
@@ -281,11 +287,39 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     _sharedLock = [NSLock new];
     return self;
 }
+- (instancetype)initNoCopyWithDevice:(A5MaliRestrictedDevice *)device
+    bytes:(void *)bytes length:(NSUInteger)length
+    deallocator:(void (^)(void *,NSUInteger))deallocator
+{
+    if(!device||!bytes||!length||length>A5MaliMaxPrivateBufferLength||
+        ((uintptr_t)bytes&(A5MaliBufferPageSize-1))||
+        (length&(A5MaliBufferPageSize-1))||(uintptr_t)bytes>UINTPTR_MAX-length||
+        ![[device privateDevice] supportsNativePrograms]||!(self=[super init]))return nil;
+    NSLock *lock=[NSLock new];if(!lock)return nil;
+    /* Copy the block before taking ownership/accounting. A failed creation
+     * never invokes it or frees caller memory. No caller byte is read here. */
+    void (^releaseBytes)(void *,NSUInteger)=[deallocator copy];
+    A5MaliResourceAccounting *state=accounting(device);
+    @synchronized(state){
+        if(state.sharedBytes>64*1024*1024-length)return nil;
+        state.sharedBytes+=length;
+    }
+    _sharedDevice=device;_sharedAccounting=state;_sharedLock=lock;
+    _sharedLength=length;_sharedAllocation=length;_sharedExternal=YES;
+    _sharedDeallocator=releaseBytes;_sharedContents=bytes;
+    return self;
+}
 - (void)dealloc
 {
     if (_sharedContents) {
-        free(_sharedContents);
+        void *bytes=_sharedContents;
+        void (^deallocator)(void *,NSUInteger)=_sharedDeallocator;
+        _sharedContents=NULL;_sharedDeallocator=nil;
         @synchronized (_sharedAccounting) { _sharedAccounting.sharedBytes -= _sharedAllocation; }
+        /* Never call caller code while holding accounting/transfer locks.
+         * The device remains retained through the callback's lifetime. */
+        if(_sharedExternal){if(deallocator)deallocator(bytes,_sharedLength);}
+        else free(bytes);
     }
 }
 - (A5MaliRestrictedDevice *)device { return _sharedDevice; }
@@ -413,23 +447,29 @@ static NSError *bindingError(kern_return_t status, NSString *message)
 - (MTLDepthStencilDescriptor *)descriptor { return [_descriptor copy]; }
 @end
 
-static void logSamplerRejection(MTLSamplerDescriptor *d)
+static const char *samplerRejectionReason(MTLSamplerDescriptor *d)
+{
+    if(!d)return "nil-descriptor";
+    if(d.minFilter!=MTLSamplerMinMagFilterNearest&&d.minFilter!=MTLSamplerMinMagFilterLinear)return "min-filter";
+    if(d.magFilter!=MTLSamplerMinMagFilterNearest&&d.magFilter!=MTLSamplerMinMagFilterLinear)return "mag-filter";
+    if(d.mipFilter!=MTLSamplerMipFilterNotMipmapped&&d.mipFilter!=MTLSamplerMipFilterNearest&&
+        d.mipFilter!=MTLSamplerMipFilterLinear)return "mip-filter";
+    if(d.maxAnisotropy!=1)return "anisotropy";
+    if(d.sAddressMode!=MTLSamplerAddressModeClampToEdge||d.tAddressMode!=MTLSamplerAddressModeClampToEdge||
+        d.rAddressMode!=MTLSamplerAddressModeClampToEdge)return "address-mode";
+    if(!d.normalizedCoordinates)return "unnormalized-coordinates";
+    if(d.compareFunction!=MTLCompareFunctionNever)return "compare-function";
+    if(d.supportArgumentBuffers)return "argument-buffers";
+    if(!isfinite(d.lodMinClamp)||!isfinite(d.lodMaxClamp)||d.lodMinClamp<0||d.lodMaxClamp<d.lodMinClamp)
+        return "lod-range";
+    return NULL;
+}
+static void logSamplerRejection(MTLSamplerDescriptor *d,const char *reason)
 {
     static atomic_uint count;
     unsigned value=atomic_load_explicit(&count,memory_order_relaxed);
     do {if(value>=64)return;} while(!atomic_compare_exchange_weak_explicit(&count,&value,value+1,
         memory_order_relaxed,memory_order_relaxed));
-    const char *reason=!d?"nil-descriptor":
-        d.minFilter!=MTLSamplerMinMagFilterNearest?"min-filter":
-        d.magFilter!=MTLSamplerMinMagFilterNearest?"mag-filter":
-        d.mipFilter!=MTLSamplerMipFilterNotMipmapped?"mip-filter":
-        d.maxAnisotropy!=1?"anisotropy":
-        (d.sAddressMode!=MTLSamplerAddressModeClampToEdge||
-         d.tAddressMode!=MTLSamplerAddressModeClampToEdge||
-         d.rAddressMode!=MTLSamplerAddressModeClampToEdge)?"address-mode":
-        !d.normalizedCoordinates?"unnormalized-coordinates":
-        d.compareFunction!=MTLCompareFunctionNever?"compare-function":
-        d.supportArgumentBuffers?"argument-buffers":"lod-min-clamp";
     fprintf(stderr,"A5XELTE Metal sampler: rejected reason=%s min=%lu mag=%lu mip=%lu anisotropy=%lu address=%lu/%lu/%lu normalized=%u compare=%lu argument_buffers=%u lod_min=%g lod_max=%g\n",
         reason,(unsigned long)d.minFilter,(unsigned long)d.magFilter,(unsigned long)d.mipFilter,
         (unsigned long)d.maxAnisotropy,(unsigned long)d.sAddressMode,(unsigned long)d.tAddressMode,
@@ -480,7 +520,19 @@ static void logBufferRejection(NSUInteger length,MTLResourceOptions options,cons
 }
 - (A5MaliPrivateBuffer *)newBufferWithBytesNoCopy:(void *)bytes length:(NSUInteger)length
     options:(MTLResourceOptions)options deallocator:(void (^)(void *, NSUInteger))deallocator
-{ (void)bytes; (void)deallocator; logBufferRejection(length,options,"no-copy-unsupported");return nil; }
+{
+    if(options!=MTLResourceStorageModeShared){
+        logBufferRejection(length,options,"no-copy-requires-shared-default-options");return nil;
+    }
+    A5MaliSharedReadBuffer *buffer=[[A5MaliSharedReadBuffer alloc]initNoCopyWithDevice:self
+        bytes:bytes length:length deallocator:deallocator];
+    if(!buffer)logBufferRejection(length,options,!bytes?"no-copy-nil-source":
+        !length||length>A5MaliMaxPrivateBufferLength?"no-copy-length":
+        ((uintptr_t)bytes&(A5MaliBufferPageSize-1))||(length&(A5MaliBufferPageSize-1))?"no-copy-page-alignment":
+        (uintptr_t)bytes>UINTPTR_MAX-length?"no-copy-address-span":
+        ![[self privateDevice] supportsNativePrograms]?"no-copy-native-queue-unavailable":"no-copy-accounting-or-allocation");
+    return buffer;
+}
 - (MTLSizeAndAlign)heapBufferSizeAndAlignWithLength:(NSUInteger)length options:(MTLResourceOptions)options
 {
     if (options == MTLResourceStorageModeShared && length &&
@@ -492,17 +544,12 @@ static void logBufferRejection(NSUInteger length,MTLResourceOptions options,cons
 { return A5MaliBGRA8TextureSizeAndAlign(descriptor); }
 - (A5MaliSamplerState *)newSamplerStateWithDescriptor:(MTLSamplerDescriptor *)d
 {
-    if (!d || d.minFilter != MTLSamplerMinMagFilterNearest ||
-        d.magFilter != MTLSamplerMinMagFilterNearest ||
-        d.mipFilter != MTLSamplerMipFilterNotMipmapped || d.maxAnisotropy != 1 ||
-        d.sAddressMode != MTLSamplerAddressModeClampToEdge ||
-        d.tAddressMode != MTLSamplerAddressModeClampToEdge ||
-        d.rAddressMode != MTLSamplerAddressModeClampToEdge ||
-        !d.normalizedCoordinates || d.compareFunction != MTLCompareFunctionNever ||
-        d.supportArgumentBuffers || d.lodMinClamp != 0){
-        logSamplerRejection(d);return nil;
-    }
-    return [[A5MaliSamplerState alloc] initWithDevice:self descriptor:d];
+    MTLSamplerDescriptor *snapshot=[d copy];
+    const char *reason=samplerRejectionReason(snapshot);
+    if(reason){logSamplerRejection(snapshot,reason);return nil;}
+    /* Creation retains exact state. Individual native shader profiles still
+     * decide which filter/mip/LOD states their compiled specialization admits. */
+    return [[A5MaliSamplerState alloc] initWithDevice:self descriptor:snapshot];
 }
 - (A5MaliDepthStencilState *)newDepthStencilStateWithDescriptor:(MTLDepthStencilDescriptor *)d
 {

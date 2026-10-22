@@ -135,7 +135,7 @@ int main(void)
             assert(pipelineError.code==kIOReturnUnsupported);
             MTLRenderPipelineDescriptor *nativeDescriptor=descriptor(p,nativeLibrary);
             id pipeline=[nativeDevice newRenderPipelineStateWithDescriptor:nativeDescriptor error:&pipelineError];
-            if ((p->profileID>=99 && p->profileID<=108)||p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601||p->profileID==602||(p->profileID>=300&&p->profileID<=302))
+            if ((p->profileID>=99 && p->profileID<=108)||p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601||p->profileID==602||p->profileID==603||(p->profileID>=300&&p->profileID<=302))
                 assert([pipeline isKindOfClass:NSClassFromString(@"A5MaliCompiledPipeline")]&&!pipelineError);
             else assert(!pipeline&&pipelineError.code==kIOReturnUnsupported);
 
@@ -151,7 +151,7 @@ int main(void)
             error=nil;
             assert(![library newFunctionWithName:f.name constantValues:f.constantValues error:&error]);
             assert(error.code==kIOReturnUnsupported);
-            if(p->profileID==600||p->profileID==601||p->profileID==602){
+            if(p->profileID==600||p->profileID==601||p->profileID==602||p->profileID==603){
                 assert(![library newFunctionWithName:f.name constantValues:nil error:&error]);
                 assert(error.code==kIOReturnUnsupported);
                 size_t nc=0;const A5MaliCompiledFunctionConstant *values=A5MaliCompiledConstantsForProfile(p->profileID,&nc);
@@ -167,28 +167,34 @@ int main(void)
                 [extra setConstantValue:&value type:MTLDataTypeBool atIndex:0];
                 assert(![library newFunctionWithName:f.name constantValues:extra error:&error]);
             }else assert([library newFunctionWithName:f.name constantValues:nil error:&error]&&!error);
-            if(p->profileID==602){
+            if(p->profileID==602||p->profileID==603){
                 NSString *vertexName=[NSString stringWithUTF8String:p->vertexName];
                 assert([vertexName isEqualToString:@"fixed_vert_lph_spc"]);
                 assert(![library newFunctionWithName:vertexName]);
                 assert(![library newFunctionWithName:vertexName constantValues:nil error:&error]);
                 assert(![library newFunctionWithName:vertexName constantValues:[MTLFunctionConstantValues new] error:&error]);
-                size_t nc=0;const A5MaliCompiledFunctionConstant *vc=A5MaliCompiledVertexConstantsForProfile(602,&nc);assert(nc==4);
+                size_t nc=0;const A5MaliCompiledFunctionConstant *vc=A5MaliCompiledVertexConstantsForProfile(p->profileID,&nc);assert(nc==4);
                 for(size_t ci=0;ci<nc;++ci){
-                    MTLFunctionConstantValues *changed=stageConstants(602,YES);uint8_t raw[3];memcpy(raw,vc[ci].raw,3);raw[0]^=1;
+                    MTLFunctionConstantValues *changed=stageConstants(p->profileID,YES);uint8_t raw[3];memcpy(raw,vc[ci].raw,3);raw[0]^=1;
                     [changed setConstantValue:raw type:(MTLDataType)vc[ci].dataType withName:[NSString stringWithUTF8String:vc[ci].name]];
-                    assert(![library newFunctionWithName:vertexName constantValues:changed error:&error]);
-                    MTLFunctionConstantValues *wrongType=stageConstants(602,YES);
+                    A5MaliMetalFunction *other=[library newFunctionWithName:vertexName constantValues:changed error:&error];
+                    if(!strcmp(vc[ci].name,"fc_texcoord_count0") && A5MaliCompiledProfileForID(603)) {
+                        assert(other&&!error); /* Valid sibling specialization, incompatible with this FS. */
+                        MTLRenderPipelineDescriptor *mixed=descriptor(p,library);mixed.vertexFunction=(id)other;
+                        reject(mixed);
+                    } else assert(!other&&error);
+                    MTLFunctionConstantValues *wrongType=stageConstants(p->profileID,YES);
                     [wrongType setConstantValue:vc[ci].raw type:vc[ci].dataType==MTLDataTypeBool?MTLDataTypeUChar:MTLDataTypeBool
                         withName:[NSString stringWithUTF8String:vc[ci].name]];
                     assert(![library newFunctionWithName:vertexName constantValues:wrongType error:&error]);
                 }
-                MTLFunctionConstantValues *extra=stageConstants(602,YES);uint8_t v=0;
+                MTLFunctionConstantValues *extra=stageConstants(p->profileID,YES);uint8_t v=0;
                 [extra setConstantValue:&v type:MTLDataTypeBool atIndex:0];
                 assert(![library newFunctionWithName:vertexName constantValues:extra error:&error]);
                 MTLRenderPipelineDescriptor *missingVertex=descriptor(p,library);
                 missingVertex.vertexFunction=(id)[library newFunctionWithName:@"std_vert0_lph"];
-                assert(A5MaliSelectCompiledProfile(missingVertex,NULL)==A5MaliCompiledProfileForID(601));
+                if(p->profileID==602)assert(A5MaliSelectCompiledProfile(missingVertex,NULL)==A5MaliCompiledProfileForID(601));
+                else reject(missingVertex);
                 /* Byte-identical native code stays in its distinct candidate profile. */
                 missingVertex=descriptor(p,library);missingVertex.vertexFunction=missingVertex.fragmentFunction;
                 reject(missingVertex);

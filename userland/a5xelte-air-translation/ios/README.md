@@ -27,12 +27,17 @@ entry. Unexpected live descendants are killed. Failed workspaces are removed;
 retained cache entries and bytes have finite limits. Outputs and directories
 are fsynced before publication. These bounds still need measurement on the A53.
 
-The launch job runs `--serve`. It first compiles both real baseline pairs and
-checks their cache entries, then scans the bounded request spool. The exact
-captured QuartzCore `fixed_vert_lph_spc` + `fixed_frag_lph_cph` profile 602 can
-be translated and compiled on the phone. Unknown functions and pipeline
-contracts receive explicit unsupported results. A compiled stage does not
-prove that an arbitrary Metal pipeline can draw.
+The launch job runs `--serve` and scans the bounded request spool immediately;
+the baseline pairs remain available through the separate `--selftest` action.
+The exact captured QuartzCore `fixed_vert_lph_spc` +
+`fixed_frag_lph_cph` profile 602 and the 0189 textured fragment with a
+UV-capable vertex candidate (profile 603) have source-pinned translation and
+Midgard recipes. Profile 603 is restricted to the captured 58 typed fragment
+constants, four candidate vertex constants, and a ClampToEdge S/T/R sampler.
+The live textured vertex request and full pipeline state have not yet been
+observed on the phone. Unknown functions and pipeline contracts receive
+explicit unsupported results. A compiled stage does not prove an arbitrary
+Metal pipeline can draw.
 
 Build the explicit no-timeout translator with `build_air_no_timeout.py`, the
 Midgard tools with `build_midgard_ios.py`, and the validator with
@@ -52,12 +57,14 @@ python3 prepare_package.py PATCHED_AIR_IOS MIDGARD_IOS SPIRV_VAL_IOS \
   --receipt602 VERIFIED_PRIVATE_602_RECEIPT_JSON \
   --fragment-capture602 PRIVATE_0186_FRAGMENT_CAPTURE_JSON \
   --vertex-capture602 PRIVATE_0187_VERTEX_CAPTURE_JSON \
+  --receipt603 VERIFIED_PRIVATE_603_RECEIPT_JSON \
+  --fragment-capture603 PRIVATE_0189_FRAGMENT_CAPTURE_JSON \
   --metallib PRIVATE_QUARTZCORE_METALLIB
 python3 test_package_air_gate.py PATCHED_TRANSLATOR_BUILD_DIR \
   --old-translator OLD_OPTIMIZED_TRANSLATOR_IOS
 ```
 
-The package contains only the runner, launchd plist, four tools and three JSON
+The package contains only the runner, launchd plist, four tools and four JSON
 resources. The host-only provenance manifest is written beside it as
 `OUTPUT_DIR-package-manifest.json`, outside the embedder's exact member list.
 
@@ -69,10 +76,12 @@ formats a partition nor copies a whole root image. Patch0173 restricts the
 extra platform authorization to the signed identities/paths with compiler
 entitlements and the explicit `a5compiler=1` boot option.
 
-**Current evidence:** the corrected 0189 package passed the host request-to-
-publication regression and signing checks. Its on-phone `--no-timeout` path
-still needs device observation; the previous 0188b optimized translator lacked
-the option and failed before spool scanning.
+**Current evidence:** the 0190 package passed signed iOS Mach-O checks and
+host request-to-publication tests for both 602 and 603. Profile 603 host
+output is an actual 2192-byte vertex shader and 976-byte textured fragment;
+its private receipt pins both SHA-256 hashes. The textured vertex pairing and
+sampler state still need a live device request and render result. The earlier
+0188b translator lacked `--no-timeout` and failed before spool scanning.
 See `A5XELTE_PROGRESS.md` for the latest installation and device measurements.
 
 `build_air_translator.py` cross-builds the reviewed upstream `metal2vulkan`

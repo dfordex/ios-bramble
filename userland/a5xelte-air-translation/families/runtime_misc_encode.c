@@ -66,18 +66,18 @@ static void framebuffer(uint8_t*d,uint64_t VA,unsigned format,const A5RuntimeIma
  }
  u32(d,POLY_BODY,0xa0000000);
 }
-static void renderer(uint8_t*d,uint64_t VA,int home,int clear,int generic_color,unsigned vs_regs,unsigned fs_regs,unsigned blend){
+static void renderer(uint8_t*d,uint64_t VA,int home,int clear,int generic_color,int generic_textured,unsigned vs_regs,unsigned fs_regs,unsigned blend){
  pan_pack((struct mali_renderer_state_packed*)(d+VS_RSD),RENDERER_STATE,c){
-  c.shader.shader=VA+VS_CODE+5;c.shader.attribute_count=generic_color?2:home?3:18;
-  c.shader.varying_count=generic_color?3:home?4:clear?2:7;
+  c.shader.shader=VA+VS_CODE+5;c.shader.attribute_count=generic_color?2:home||generic_textured?3:18;
+  c.shader.varying_count=generic_color?3:home||generic_textured?4:clear?2:7;
   c.properties.uniform_buffer_count=generic_color?2:3;c.properties.work_register_count=vs_regs;
   c.properties.force_early_z=true;c.multisample_misc.sample_mask=0xffff;
   c.multisample_misc.depth_function=MALI_FUNC_ALWAYS;
  }
  pan_pack((struct mali_renderer_state_packed*)(d+FS_RSD),RENDERER_STATE,c){
-  c.shader.shader=VA+FS_CODE+5;c.shader.texture_count=home?2:0;
-  c.shader.sampler_count=home?2:0;c.shader.varying_count=generic_color?1:home?1:clear?0:5;
-  c.properties.uniform_buffer_count=generic_color?3:clear?1:4;c.properties.work_register_count=fs_regs;
+  c.shader.shader=VA+FS_CODE+5;c.shader.texture_count=home?2:generic_textured?1:0;
+  c.shader.sampler_count=home?2:generic_textured?1:0;c.shader.varying_count=generic_color||generic_textured?1:home?1:clear?0:5;
+  c.properties.uniform_buffer_count=generic_textured?5:generic_color?3:clear?1:4;c.properties.work_register_count=fs_regs;
   c.properties.force_early_z=true;c.multisample_misc.sample_mask=0xffff;
   c.multisample_misc.depth_function=MALI_FUNC_ALWAYS;
   c.stencil_mask_misc.alpha_test_compare_function=MALI_FUNC_ALWAYS;
@@ -98,6 +98,54 @@ static unsigned bpp(unsigned f){return f==80?4:f==115?8:f==10?1:f==30?2:0;}
 static int valid_image(const A5RuntimeImage*i){unsigned n=bpp(i->metalPixelFormat);
  return n&&span(i->gpuVA,i->bytes)&&!(i->gpuVA&63)&&i->width&&i->width<=2048&&i->height&&i->height<=2048&&
  i->rowBytes>=i->width*n&&!(i->rowBytes&15)&&(uint64_t)i->rowBytes*i->height<=i->bytes;
+}
+/* The 603 native fragment was compiled with SamplerState specID0=1, the
+ * translator's ClampToEdge-S variant. The runtime sampler table supplies
+ * filtering and LOD. One source mip means every valid LOD resolves to level0. */
+static int textured_sampler(const A5RuntimeSampler*s){
+ return s->valid==1&&s->normalizedCoordinates==1&&s->maxAnisotropy==1&&
+  !s->compareEnabled&&s->minFilter<=A5RuntimeSamplerLinear&&
+  s->magFilter<=A5RuntimeSamplerLinear&&s->mipFilter<=A5RuntimeSamplerMipLinear&&
+  s->sAddressMode==A5RuntimeSamplerClampEdge&&
+  s->tAddressMode==A5RuntimeSamplerClampEdge&&
+  s->rAddressMode==A5RuntimeSamplerClampEdge&&
+  isfinite(s->lodMinClamp)&&isfinite(s->lodMaxClamp)&&
+  s->lodMinClamp>=0&&s->lodMaxClamp>=s->lodMinClamp;
+}
+static int textured_image(uint8_t*d,const A5RuntimeMiscDraw*m){
+ const A5RuntimeImage*im=&m->fragmentTextures[3];const A5RuntimeSampler*s=&m->fragmentSamplers[0];
+ uint64_t VA=m->draw.descriptorGPUVA;
+ if(!textured_sampler(s)||!valid_image(im)||im->metalPixelFormat!=80||
+    (uint64_t)im->rowBytes*im->height>INT32_MAX||
+    overlap(im->gpuVA,im->bytes,VA,SIZE))return A5RuntimeUnsupported;
+ for(unsigned i=0;i<m->draw.profile->passCount;++i){
+  const A5RuntimeImage*dest=&m->colorAttachments[m->draw.profile->passes[i].logicalTarget];
+  if(overlap(im->gpuVA,im->bytes,dest->gpuVA,dest->bytes))return A5RuntimeUnsupported;
+ }
+ pan_pack((struct mali_texture_packed*)(d+TEX0),TEXTURE,c){
+  c.width=im->width;c.height=im->height;c.array_size=1;c.levels=1;
+  c.format=(MALI_RGBA8_UNORM<<12)|0x60a;c.dimension=MALI_TEXTURE_DIMENSION_2D;
+  c.texel_ordering=MALI_TEXTURE_LAYOUT_LINEAR;c.swizzle=0x688;
+ }
+ pan_pack((struct mali_surface_with_stride_packed*)(d+TEX0+32),SURFACE_WITH_STRIDE,c){
+  c.pointer=im->gpuVA;c.row_stride=im->rowBytes;c.surface_stride=im->rowBytes*im->height;
+ }
+ u64(d,TEX_TABLE,VA+TEX0);
+ pan_pack((struct mali_sampler_packed*)(d+SAMPLERS),SAMPLER,c){
+  c.normalized_coordinates=true;c.seamless_cube_map=false;
+  c.minify_nearest=s->minFilter==A5RuntimeSamplerNearest;
+  c.magnify_nearest=s->magFilter==A5RuntimeSamplerNearest;
+  c.mipmap_mode=MALI_MIPMAP_MODE_NEAREST;
+  c.wrap_mode_s=MALI_WRAP_MODE_CLAMP_TO_EDGE;
+  c.wrap_mode_t=MALI_WRAP_MODE_CLAMP_TO_EDGE;
+  c.wrap_mode_r=MALI_WRAP_MODE_CLAMP_TO_EDGE;
+  c.minimum_lod=0;c.maximum_lod=0;
+ }
+ /* Clamp-edge AIR specialization converts pixel UVs using this synthetic
+  * texture0 size record before TEX.2d.bias. A normalized Mali sampler then
+  * consumes the converted coordinates. */
+ u32(d,FS_SYS+352,1);u32(d,FS_SYS+356,im->width);u32(d,FS_SYS+360,im->height);
+ return A5RuntimeOK;
 }
 /* Admit only the captured, host-compiled native VS/FS pairs below. This is
  * an encoder contract, not evidence that a stock iOS draw uses the pair.
@@ -146,6 +194,58 @@ static int generic_color_contract(const A5MaliCompiledProfile*p){
   pass->vertex.byteCount==1808&&pass->fragment.byteCount==848&&
   pass->vertex.workRegisters==8&&pass->fragment.workRegisters==6;
 }
+/* This is a separate, actually compiled texture specialization. Its vertex
+ * reads original Metal attr0/attr1/attr3, exports UV in VAR0 and colour in
+ * VAR1. The fragment samples Texture3/Sampler0 with bias from FB2; FB1 and
+ * the translator's synthetic blob are dead in this pinned native pair. */
+static int generic_textured_contract(const A5MaliCompiledProfile*p){
+ if(p->profileID!=603||p->flags||p->passCount!=1||!p->passes||
+    p->passes[0].passID!=603||p->passes[0].logicalTarget||
+    !p->vertexName||strcmp(p->vertexName,"fixed_vert_lph_spc")||
+    !p->fragmentName||strcmp(p->fragmentName,"fixed_frag_lph_cph")||
+    p->colorFormats[0]!=80||p->attributeCount!=4||!p->attributes||
+    p->layoutCount!=1||!p->layouts||p->resourceCount!=5||!p->resources||
+    p->pushFieldCount!=4||!p->pushFields||p->attachmentContractCount!=1||
+    !p->attachmentContracts)return 0;
+ for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return 0;
+ static const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
+ for(unsigned i=0;i<4;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
+  if(a->index!=i||a->format!=formats[i]||a->offset!=offsets[i]||a->bufferIndex!=1)return 0;
+ }
+ const A5MaliCompiledVertexLayout*l=p->layouts;
+ if(l->index!=1||l->stride!=48||l->stepFunction!=1||l->stepRate!=1)return 0;
+ static const A5MaliCompiledResource expected[]={
+  {1,1,2,0,1,1,0,64,0,0},
+  {1,1,3,1,2,1,0,16,0,4},
+  {2,1,2,3,4,1,0,8,0,68},
+  {2,2,3,5,0,1,0,0,0,0},
+  {2,3,0,5,0,1,0,0,0,0}
+ };
+ for(unsigned i=0;i<5;++i){const A5MaliCompiledResource*a=&p->resources[i],*b=&expected[i];
+  if(a->stage!=b->stage||a->kind!=b->kind||a->metalIndex!=b->metalIndex||
+     a->bindingIndex!=b->bindingIndex||a->nativeIndex!=b->nativeIndex||
+     a->flags!=b->flags||a->windowOffset!=b->windowOffset||
+     a->uniformBytes!=b->uniformBytes||a->sysvalOffset!=b->sysvalOffset||
+     a->pushOffset!=b->pushOffset)return 0;
+ }
+ static const A5MaliCompiledPushField pushes[]={
+  {1,1,2,0,4,0},{1,1,3,4,4,0},{2,1,2,68,4,0},{2,2,0,72,4,0x2222}
+ };
+ for(unsigned i=0;i<4;++i){const A5MaliCompiledPushField*a=&p->pushFields[i],*b=&pushes[i];
+  if(a->stage!=b->stage||a->kind!=b->kind||a->metalIndex!=b->metalIndex||
+     a->offset!=b->offset||a->bytes!=b->bytes||a->value!=b->value)return 0;
+ }
+ for(unsigned i=0;i<8;++i){const A5MaliCompiledAttachmentState*a=&p->attachmentContracts[0].attachments[i];
+  if(a->writeMask!=15||a->blendEnabled||a->rgbOperation||a->alphaOperation||
+     a->sourceRGB!=1||a->destinationRGB||a->sourceAlpha!=1||a->destinationAlpha)return 0;
+ }
+ const A5MaliCompiledPass*pass=p->passes;
+ return pass->vertex.sha256&&pass->fragment.sha256&&
+  !strcmp(pass->vertex.sha256,"e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96")&&
+  !strcmp(pass->fragment.sha256,"b7ab26bc9a0da3ff4a5f87e73fe6aaab07680ae383a3fbdd9d8abc000387cd96")&&
+  pass->vertex.byteCount==2192&&pass->fragment.byteCount==976&&
+  pass->vertex.workRegisters==8&&pass->fragment.workRegisters==6;
+}
 static int bind_buffer(const A5RuntimeMiscDraw*m,uint8_t*d,unsigned*arena,
  const A5RuntimeBuffer*b,unsigned need,uint64_t*addr,unsigned*push,unsigned*available){
  if(!need||b->offset>b->bytes||need>b->bytes-b->offset)return 0;
@@ -160,7 +260,7 @@ static int bind_buffer(const A5RuntimeMiscDraw*m,uint8_t*d,unsigned*arena,
  }
  unsigned folded=b->offset&~15u;*addr=b->gpuVA+folded;*push=b->offset&15u;*available=b->bytes-folded;return 1;
 }
-static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int generic_color,unsigned*outArena){
+static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int generic_color,int generic_textured,unsigned*outArena){
  const A5RuntimeDraw*r=&m->draw;const A5MaliCompiledProfile*p=r->profile;uint64_t VA=r->descriptorGPUVA;
  unsigned arena=ARENA,pushes[2][31]={{0}},seen[2][31]={{0}};
  for(unsigned i=0;i<8;++i){ubo(d,VS_UBOS,i,VA+VS_SYS,576);ubo(d,FS_UBOS,i,VA+FS_SYS,576);}
@@ -193,7 +293,7 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
   f32(d,o+512,(float)(r->viewportWidth*.5));f32(d,o+516,(float)(r->viewportHeight*.5));f32(d,o+520,(float)((r->viewportFar-r->viewportNear)*.5));
   f32(d,o+528,(float)(r->viewportX+r->viewportWidth*.5));f32(d,o+532,(float)(r->viewportY+r->viewportHeight*.5));f32(d,o+536,(float)((r->viewportFar+r->viewportNear)*.5));
  }
- if(home||generic_color){
+ if(home||generic_color||generic_textured){
   uint64_t vertex;unsigned push,available;
   if(!bind_buffer(m,d,&arena,&r->vertexBuffers[1],r->vertexCount*48,&vertex,&push,&available))return A5RuntimeBounds;
   vertex+=push;unsigned low=(unsigned)(vertex&63);vertex&=~UINT64_C(63);
@@ -201,6 +301,7 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
   if(generic_color)attr(d,ATTRS+8,0,MALI_RGBA16F,0x688,low+32);
   else{attr(d,ATTRS+8,0,MALI_RG32F,RG_SWIZZLE,low+16);attr(d,ATTRS+16,0,MALI_RGBA16F,0x688,low+32);}
   buf(d,ATTR_BUFS,vertex,48,r->vertexCount*48+low);
+  if(generic_textured){int rc=textured_image(d,m);if(rc)return rc;}
   if(home)for(unsigned t=0;t<2;++t){const A5RuntimeImage*im=&m->fragmentTextures[t+3];unsigned tex=t?TEX1:TEX0;
    if(!valid_image(im)||im->metalPixelFormat!=80)return A5RuntimeUnsupported;
    for(unsigned i=0;i<p->passCount;++i){const A5RuntimeImage*dest=&m->colorAttachments[p->passes[i].logicalTarget];
@@ -221,10 +322,21 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
  }
  attr(d,VS_VARY,0,MALI_SNAP_4,0x688,0);buf(d,VS_VARY_BUFS,VA+POS,16,r->vertexCount*16);
  attr(d,VS_VARY+8,1,MALI_R16F,R_SWIZZLE,0);buf(d,VS_VARY_BUFS+16,VA+PSIZ,2,r->vertexCount*2);
- if(home){
+ if(home||generic_textured){
   attr(d,VS_VARY+16,2,MALI_RGBA32UI,0x688,0);buf(d,VS_VARY_BUFS+32,VA+VARY_DATA,16,r->vertexCount*16);
   attr(d,VS_VARY+24,3,MALI_RG32UI,RG_SWIZZLE,0);buf(d,VS_VARY_BUFS+48,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
-  attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);buf(d,FS_VARY_BUFS,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
+  if(generic_textured){
+   /* Textured VS: hardware VAR0 is UV, VAR1 is colour; FS reads VAR0. */
+   attr(d,VS_VARY+16,2,MALI_RG32UI,RG_SWIZZLE,0);
+   buf(d,VS_VARY_BUFS+32,VA+VARY_DATA,8,r->vertexCount*8);
+   attr(d,VS_VARY+24,3,MALI_RGBA32UI,0x688,0);
+   buf(d,VS_VARY_BUFS+48,VA+VARY_DATA+0x1000,16,r->vertexCount*16);
+   attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);
+   buf(d,FS_VARY_BUFS,VA+VARY_DATA,8,r->vertexCount*8);
+  }else{
+   attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);
+   buf(d,FS_VARY_BUFS,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
+  }
  }else if(generic_color){
   attr(d,VS_VARY+16,2,MALI_RGBA32UI,0x688,0);
   buf(d,VS_VARY_BUFS+32,VA+VARY_DATA,16,r->vertexCount*16);
@@ -289,11 +401,13 @@ static void jobs(uint8_t*d,uint64_t VA,const A5RuntimeDraw*r,uint64_t indexVA){
 }
 static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  const A5RuntimeDraw*r=&m->draw;const A5MaliCompiledProfile*p=r->profile;
- if(!p||!(p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601||p->profileID==602)||
+ if(!p||!(p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601||p->profileID==602||p->profileID==603)||
   p->passCount<1||p->passCount>2||!p->passes||m->passIndex>=p->passCount||p->resourceCount>16||p->pushFieldCount>16)return A5RuntimeUnsupported;
  const A5MaliCompiledPass*pass=p->passes+m->passIndex;
  int home=p->profileID==206,clear=p->profileID==207,generic_color=p->profileID==600||p->profileID==601||p->profileID==602;
+ int generic_textured=p->profileID==603;
  if(generic_color&&!generic_color_contract(p))return A5RuntimeUnsupported;
+ if(generic_textured&&!generic_textured_contract(p))return A5RuntimeUnsupported;
  if(pass->logicalTarget>=2||p->passCount!=1||pass->logicalTarget!=(clear?1u:0u))return A5RuntimeUnsupported;
  if(!span(r->descriptorGPUVA,SIZE)||(r->descriptorGPUVA&4095))return A5RuntimeBounds;
  for(unsigned i=0;i<p->passCount;++i){unsigned target=p->passes[i].logicalTarget;if(target>=2)return A5RuntimeUnsupported;
@@ -307,14 +421,14 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  unsigned drawCount=r->indexCount?r->indexCount:r->vertexCount;
  if(r->vertexStart||!r->vertexCount||(!r->indexCount&&r->vertexCount<3)||
    r->vertexCount>A5RuntimeMaxVertices||(r->indexCount&&r->indexCount<3)||
-   (r->indexCount&&p->profileID!=602)||
+   (r->indexCount&&p->profileID!=602&&p->profileID!=603)||
    (!r->indexCount&&r->indexSize)||r->indexCount>A5RuntimeMaxIndices||
    (r->primitive!=A5RuntimeTriangle&&r->primitive!=A5RuntimeTriangleStrip)||
    (r->primitive==A5RuntimeTriangle&&drawCount%3)||r->blend>A5RuntimeBlendPremultipliedSourceOver||
    (r->blend&&(!(p->flags&A5MaliProfileSourceOverBlend)||
      (out->metalPixelFormat==115&&!(p->flags&A5MaliProfileInlineSourceOver))))||
    ((p->flags&A5MaliProfileInlineSourceOver)&&r->blend!=A5RuntimeBlendPremultipliedSourceOver))return A5RuntimeUnsupported;
- if(generic_color&&r->blend!=A5RuntimeBlendCopy)return A5RuntimeUnsupported;
+ if((generic_color||generic_textured)&&r->blend!=A5RuntimeBlendCopy)return A5RuntimeUnsupported;
  if(!isfinite(r->viewportX)||!isfinite(r->viewportY)||!isfinite(r->viewportWidth)||!isfinite(r->viewportHeight)||
    !isfinite(r->viewportNear)||!isfinite(r->viewportFar)||r->viewportWidth<=0||r->viewportHeight<=0||
    r->viewportX<0||r->viewportY<0||r->viewportWidth>4096-r->viewportX||r->viewportHeight>4096-r->viewportY||
@@ -327,7 +441,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
    fs->tlsBytes||fs->wlsBytes||!vs->workRegisters||vs->workRegisters>16||!fs->workRegisters||fs->workRegisters>16)return A5RuntimeUnsupported;
  memcpy(d+VS_CODE,vs->bytes,vs->byteCount);memcpy(d+FS_CODE,fs->bytes,fs->byteCount);
  unsigned fmt=out->metalPixelFormat==115?2:out->metalPixelFormat==10?1:out->metalPixelFormat==30?3:0;
- framebuffer(d,r->descriptorGPUVA,fmt,out);renderer(d,r->descriptorGPUVA,home,clear,generic_color,vs->workRegisters,fs->workRegisters,
+ framebuffer(d,r->descriptorGPUVA,fmt,out);renderer(d,r->descriptorGPUVA,home,clear,generic_color,generic_textured,vs->workRegisters,fs->workRegisters,
   p->flags&A5MaliProfileInlineSourceOver?0:r->blend);
  if(p->flags&A5MaliProfileInlineSourceOver){
   /* Inline blend shader reads the preloaded tilebuffer. Fixed-function RSD
@@ -336,7 +450,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   rs.multisample_misc.load_destination=true;MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
  }
  unsigned arena=0;
- int rc=resources(d,m,home,clear,generic_color,&arena);if(rc)return rc;
+ int rc=resources(d,m,home,clear,generic_color,generic_textured,&arena);if(rc)return rc;
  uint64_t indexVA=0;rc=index_data(d,r,arena,&indexVA);if(rc)return rc;
  jobs(d,r->descriptorGPUVA,r,indexVA);
  return a5_runtime_preload(d,r->descriptorGPUVA,&m->colorAttachments[pass->logicalTarget]);

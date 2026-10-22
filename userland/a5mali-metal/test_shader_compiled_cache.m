@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Root-cache loader ownership/hash/ABI/lifetime regression. Operator supplies
- * actual private pinned602 native bytes; no shader bytes are in this source.
+ * actual private pinned602/603 native bytes; no shader bytes are in this source.
  */
 #import "A5MaliShaderCompiledCache.h"
 #include <assert.h>
@@ -12,8 +12,26 @@
 #endif
 static NSString *const root=@A5_SHADER_COMPILED_CACHE_TEST_ROOT;
 static NSString *const key=@"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+#ifndef A5_CACHE_TEST_PROFILE
+#define A5_CACHE_TEST_PROFILE 602
+#endif
+#if A5_CACHE_TEST_PROFILE == 602
+enum {testProfile=602,vertexLength=1808,fragmentLength=848,fragmentRegisters=6};
 static NSString *const vs=@"3cdf2b0db0b9992ce887242e7cac282cd70c3f8051e3ace3e791a0b676193a79";
 static NSString *const fs=@"e66041333f6452510cda4d0ee1f1c1edf443a12007a989871a1546791deb0834";
+static NSString *const vertexConstants=@"d8b11a43b5075c7c8f179f6da7849edc5c5534f161590552da6b177007c8595f";
+static NSString *const fragmentConstants=@"5e1fae69edcd5f51efdf3a4adbca80e9c7901844f942404208c0b2dc89bb7c7f";
+static NSString *const otherConstants=@"57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112";
+#elif A5_CACHE_TEST_PROFILE == 603
+enum {testProfile=603,vertexLength=2192,fragmentLength=976,fragmentRegisters=6};
+static NSString *const vs=@"e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96";
+static NSString *const fs=@"b7ab26bc9a0da3ff4a5f87e73fe6aaab07680ae383a3fbdd9d8abc000387cd96";
+static NSString *const vertexConstants=@"57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112";
+static NSString *const fragmentConstants=@"1314cb292bea03fb85537fdebb3919e65b76db1e99f72b12f7fb1abcd7c8d50d";
+static NSString *const otherConstants=@"d8b11a43b5075c7c8f179f6da7849edc5c5534f161590552da6b177007c8595f";
+#else
+#error "only known602/603 cache tests exist"
+#endif
 static NSString *entryPath(void){return [root stringByAppendingPathComponent:key];}
 static NSString *filePath(NSString *name){return [entryPath() stringByAppendingPathComponent:name];}
 static NSDictionary *stage(NSString *name,NSString *sha,NSUInteger bytes,NSUInteger registers)
@@ -23,14 +41,14 @@ static NSDictionary *stage(NSString *name,NSString *sha,NSUInteger bytes,NSUInte
 }
 static NSMutableDictionary *receipt(void)
 {
-    return [@{@"schema":@1,@"request_id":key,@"profile_id":@602,@"source_library":@"quartzcore",
+    return [@{@"schema":@1,@"request_id":key,@"profile_id":@(testProfile),@"source_library":@"quartzcore",
         @"metallib_sha256":@"11c74cc42ce5137b73d44d427f75764f886656d4ddb374422d56b609ed2762d9",
-        @"gpu_id":@"07201000",@"compiler_abi":@1,@"recipe":@"quartzcore-generic-602",
+        @"gpu_id":@"07201000",@"compiler_abi":@1,@"recipe":[NSString stringWithFormat:@"quartzcore-generic-%u",testProfile],
         @"stage_compiled":@YES,@"pipeline_compatible":@NO,
         @"descriptor_sha256":key,
-        @"vertex_constants_sha256":@"d8b11a43b5075c7c8f179f6da7849edc5c5534f161590552da6b177007c8595f",
-        @"fragment_constants_sha256":@"5e1fae69edcd5f51efdf3a4adbca80e9c7901844f942404208c0b2dc89bb7c7f",
-        @"vertex":stage(@"vertex.midgard",vs,1808,8),@"fragment":stage(@"fragment.midgard",fs,848,6)} mutableCopy];
+        @"vertex_constants_sha256":vertexConstants,@"fragment_constants_sha256":fragmentConstants,
+        @"vertex":stage(@"vertex.midgard",vs,vertexLength,8),
+        @"fragment":stage(@"fragment.midgard",fs,fragmentLength,fragmentRegisters)} mutableCopy];
 }
 static void writeFile(NSString *name,NSData *data)
 {
@@ -55,11 +73,11 @@ int main(int argc,const char **argv)
         assert(argc==3&&[root hasPrefix:@"/private/tmp/"]);
         NSData *vertex=[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[1]]];
         NSData *fragment=[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[2]]];
-        assert(vertex.length==1808&&fragment.length==848);
-        A5MaliCompiledPass pass={.passID=602,.logicalTarget=0,
-            .vertex={vertex.bytes,1808,5,8,0,0,vs.UTF8String},
-            .fragment={fragment.bytes,848,5,6,0,0,fs.UTF8String}};
-        A5MaliCompiledProfile profile={.profileID=602,.name="generic602",.vertexName="fixed_vert_lph_spc",
+        assert(vertex.length==vertexLength&&fragment.length==fragmentLength);
+        A5MaliCompiledPass pass={.passID=testProfile,.logicalTarget=0,
+            .vertex={vertex.bytes,vertexLength,5,8,0,0,vs.UTF8String},
+            .fragment={fragment.bytes,fragmentLength,5,fragmentRegisters,0,0,fs.UTF8String}};
+        A5MaliCompiledProfile profile={.profileID=testProfile,.name="generic-cache-test",.vertexName="fixed_vert_lph_spc",
             .fragmentName="fixed_frag_lph_cph",.passes=&pass,.passCount=1,.colorFormats={80}};
         NSFileManager *fm=NSFileManager.defaultManager;[fm removeItemAtPath:root error:NULL];
         NSError *error=nil;assert(!A5MaliLoadShaderCompiledCache(key,&profile,&error)&&error.code==ENOENT);
@@ -71,7 +89,7 @@ int main(int argc,const char **argv)
         assert(loaded.profile->passes[0].vertex.bytes!=vertex.bytes&&loaded.profile->passes[0].fragment.bytes!=fragment.bytes);
         assert(!memcmp(loaded.profile->passes[0].vertex.bytes,vertex.bytes,vertex.length));
         assert(!memcmp(loaded.profile->passes[0].fragment.bytes,fragment.bytes,fragment.length));
-        assert(loaded.profile->passes[0].passID==602&&loaded.profile->colorFormats[0]==80&&[loaded.requestID isEqual:key]);
+        assert(loaded.profile->passes[0].passID==testProfile&&loaded.profile->colorFormats[0]==80&&[loaded.requestID isEqual:key]);
 
         NSMutableData *changed=[vertex mutableCopy];((uint8_t *)changed.mutableBytes)[37]^=1;
         writeFile(@"vertex.midgard",changed);expectRejected(&profile);writeFile(@"vertex.midgard",vertex);
@@ -93,6 +111,10 @@ int main(int argc,const char **argv)
         NSMutableDictionary *r=receipt();r[@"schema"]=@YES;writeReceipt(r);expectRejected(&profile);
         r=receipt();r[@"stage_compiled"]=@1;writeReceipt(r);expectRejected(&profile);
         r=receipt();r[@"pipeline_compatible"]=@YES;writeReceipt(r);expectRejected(&profile);
+        r=receipt();r[@"vertex_constants_sha256"]=otherConstants;writeReceipt(r);expectRejected(&profile);
+        r=receipt();r[@"fragment_constants_sha256"]=otherConstants;writeReceipt(r);expectRejected(&profile);
+        r=receipt();r[@"recipe"]=[NSString stringWithFormat:@"quartzcore-generic-%u",testProfile==602?603:602];
+        writeReceipt(r);expectRejected(&profile);
         writeReceipt(receipt());
         assert(!chmod(filePath(@"vertex.midgard").fileSystemRepresentation,0644));expectRejected(&profile);
         assert(!chmod(filePath(@"vertex.midgard").fileSystemRepresentation,0444));
@@ -109,7 +131,9 @@ int main(int argc,const char **argv)
         assert(!unlink(filePath(@"vertex.midgard").fileSystemRepresentation));assert(!unlink(outside.fileSystemRepresentation));
         writeFile(@"vertex.midgard",vertex);
         pass.vertex.workRegisters=7;expectRejected(&profile);pass.vertex.workRegisters=8;
-        profile.profileID=601;expectRejected(&profile);profile.profileID=602;
+        profile.profileID=601;expectRejected(&profile);profile.profileID=testProfile;
+        profile.profileID=testProfile==602?603:602;pass.passID=profile.profileID;
+        expectRejected(&profile);profile.profileID=testProfile;pass.passID=testProfile;
         assert(!A5MaliLoadShaderCompiledCache(@"../escape",&profile,&error)&&error);
         writeFile(@"receipt.json",[@"[]" dataUsingEncoding:NSUTF8StringEncoding]);expectRejected(&profile);
         writeFile(@"receipt.json",[@"not JSON" dataUsingEncoding:NSUTF8StringEncoding]);expectRejected(&profile);
@@ -119,7 +143,7 @@ int main(int argc,const char **argv)
         assert([fm removeItemAtPath:root error:NULL]);
         assert(!memcmp(loaded.profile->passes[0].vertex.bytes,vertex.bytes,vertex.length));
         assert(!memcmp(loaded.profile->passes[0].fragment.bytes,fragment.bytes,fragment.length));
-        puts("known602 compiled cache: exact native pins, receipt identity/metadata, owner/mode/symlink/link rejection and retained byte lifetime: PASS");
+        printf("known%u compiled cache: exact native pins, receipt identity/metadata, owner/mode/symlink/link rejection and retained byte lifetime: PASS\n",testProfile);
     }
     return 0;
 }

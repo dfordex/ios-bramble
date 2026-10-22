@@ -42,7 +42,9 @@ static atomic_uint encoderDiagnosticCount,commitDiagnosticCount,nativePhaseDiagn
 static atomic_uint commandDiagnosticNext,queueCreationDiagnosticCount,bufferCreationDiagnosticCount,unretainedDiagnosticCount;
 static atomic_uint copyRejectionDiagnosticCount;
 static atomic_uint protectionDiagnosticCount;
+#if A5_MALI_NATIVE_RENDER
 static atomic_uint indexedDrawDiagnosticCount;
+#endif
 static void logQueuePhase(const char *phase,unsigned bufferID,BOOL created,atomic_uint *counter,unsigned limit)
 {
     if(diagnosticTake(counter,limit))fprintf(stderr,
@@ -173,7 +175,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 {
     if ((self = [super initWithDevice:device])) {
         _profile=profile;_sourceOver=sourceOver;
-        _compileRequestID=profile->profileID==602?[requestID copy]:nil;
+        _compileRequestID=(profile->profileID==602 || profile->profileID==603)?[requestID copy]:nil;
         _compiledCacheLock=[NSLock new];
     }
     return self;
@@ -189,8 +191,8 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
         A5MaliShaderCompiledCacheEntry *entry=A5MaliLoadShaderCompiledCache(_compileRequestID,_profile,NULL);
         if(entry) {
             _compiledCacheEntry=entry;_profile=entry.profile;
-            fprintf(stderr,"A5XELTE Metal compile cache: bound profile=602 request=%s source=phone-compiled\n",
-                _compileRequestID.UTF8String);
+            fprintf(stderr,"A5XELTE Metal compile cache: bound profile=%u request=%s source=phone-compiled\n",
+                _profile->profileID,_compileRequestID.UTF8String);
         }
     }
     const A5MaliCompiledProfile *profile=_profile;
@@ -329,7 +331,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     BOOL executable=profile && ((profile->profileID>=99 && profile->profileID<=108) ||
         profile->profileID==200 || profile->profileID==202 || profile->profileID==204 ||
         profile->profileID==206 || profile->profileID==207 ||
-        profile->profileID==600 || profile->profileID==601 || profile->profileID==602 ||
+        profile->profileID==600 || profile->profileID==601 || profile->profileID==602 || profile->profileID==603 ||
         (profile->profileID>=300 && profile->profileID<=302));
     if(executable && [[self privateDevice]supportsNativePrograms]){
         if(error)*error=nil;
@@ -1112,11 +1114,11 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     NSUInteger primitiveCount=indexed?indexCount:count;
     if(!profile || !(profile->profileID==200 || profile->profileID==202 ||
         profile->profileID==204 || profile->profileID==206 || profile->profileID==207 ||
-        profile->profileID==600 || profile->profileID==601 || profile->profileID==602 ||
+        profile->profileID==600 || profile->profileID==601 || profile->profileID==602 || profile->profileID==603 ||
         (profile->profileID>=300 && profile->profileID<=302)) ||
         !profile->passCount || profile->passCount>2 || primitiveCount<3 ||
         (!indexed && count>A5RuntimeMaxVertices) ||
-        (indexed && (profile->profileID!=602 || indexCount>A5RuntimeMaxIndices ||
+        (indexed && ((profile->profileID!=602 && profile->profileID!=603) || indexCount>A5RuntimeMaxIndices ||
             (indexSize!=2 && indexSize!=4) || indexBinding.device!=_buffer.device ||
             indexBinding.length!=indexCount*indexSize || !indexBinding.buffer.readyForRead)) ||
         (primitiveType!=MTLPrimitiveTypeTriangle && primitiveType!=MTLPrimitiveTypeTriangleStrip) ||
@@ -1127,6 +1129,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     NSDictionary<NSNumber *,A5MaliMetalTexture *> *textures=[_textures copy];
     for(NSNumber *key in attachments)
         if(attachments[key].pixelFormat!=profile->colorFormats[key.unsignedIntegerValue])return NO;
+    A5RuntimeSampler samplerSnapshot={0};
     NSMutableArray<A5MaliMetalTexture *> *mappedImages=[NSMutableArray new];
     NSMutableArray<NSNumber *> *imageSlots=[NSMutableArray new];
     uint32_t readImages=0;
@@ -1142,13 +1145,36 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     for(uint32_t i=0;i<profile->resourceCount;++i){
         const A5MaliCompiledResource *r=profile->resources+i;
         if(r->kind==A5MaliResourceSampler){
-            if(!(r->flags&A5MaliResourceImmutableSampler))return NO;
-            continue; /* Actual AIR constexpr state, not an ignored application sampler. */
+            if(r->flags&A5MaliResourceImmutableSampler)continue;
+            A5MaliSamplerState *sampler=_samplers[@(r->metalIndex)];
+            if(profile->profileID!=603 || r->stage!=A5MaliStageFragment || r->metalIndex ||
+                ![sampler isKindOfClass:[A5MaliSamplerState class]] || sampler.device!=_buffer.device)return NO;
+            MTLSamplerDescriptor *sd=sampler.descriptor;
+            /* The compiled FS specializes address_s=ClampToEdge. Other
+             * coordinates/address states cannot borrow that native variant.
+             * Single-level images retain their actual min/mag filtering;
+             * the native sampler clamps its effective LOD to base level. */
+            if(sd.minFilter>MTLSamplerMinMagFilterLinear || sd.magFilter>MTLSamplerMinMagFilterLinear ||
+                sd.mipFilter>MTLSamplerMipFilterLinear || !sd.normalizedCoordinates ||
+                sd.sAddressMode!=MTLSamplerAddressModeClampToEdge ||
+                sd.tAddressMode!=MTLSamplerAddressModeClampToEdge ||
+                sd.rAddressMode!=MTLSamplerAddressModeClampToEdge || sd.maxAnisotropy!=1 ||
+                sd.compareFunction!=MTLCompareFunctionNever || sd.supportArgumentBuffers ||
+                !isfinite(sd.lodMinClamp) || !isfinite(sd.lodMaxClamp) ||
+                sd.lodMinClamp<0 || sd.lodMaxClamp<sd.lodMinClamp)return NO;
+            samplerSnapshot=(A5RuntimeSampler){.valid=1,.minFilter=(uint32_t)sd.minFilter,
+                .magFilter=(uint32_t)sd.magFilter,.mipFilter=(uint32_t)sd.mipFilter,
+                .sAddressMode=A5RuntimeSamplerClampEdge,.tAddressMode=A5RuntimeSamplerClampEdge,
+                .rAddressMode=A5RuntimeSamplerClampEdge,.normalizedCoordinates=1,
+                .maxAnisotropy=1,.compareEnabled=0,.lodMinClamp=sd.lodMinClamp,.lodMaxClamp=sd.lodMaxClamp};
+            continue;
         }
         if(r->kind!=A5MaliResourceTexture)continue;
         if(r->stage!=A5MaliStageFragment || r->metalIndex>=31)return NO;
         A5MaliMetalTexture *image=textures[@(r->metalIndex)];
         if(!image || image.pixelFormat!=MTLPixelFormatBGRA8Unorm || !(image.usage&MTLTextureUsageShaderRead))return NO;
+        if(profile->profileID==603 && (r->metalIndex!=3 || image.mipmapLevelCount!=1 ||
+            image.textureType!=MTLTextureType2D || image.sampleCount!=1))return NO;
         for(NSUInteger j=0;j<mappedImages.count;++j){A5MaliMetalTexture *old=mappedImages[j];
             if(image==old || image.privateSurface.resource.token==old.privateSurface.resource.token ||
                 (image.privateSurface.iosurface && old.privateSurface.iosurface && IOSurfaceGetID(image.privateSurface.iosurface)==IOSurfaceGetID(old.privateSurface.iosurface)))return NO;
@@ -1161,7 +1187,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
         [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
     NSMutableArray<NSMutableSet<NSNumber *> *> *storageSlots=
         [NSMutableArray arrayWithObjects:[NSMutableSet new],[NSMutableSet new],nil];
-    if(profile->profileID==206 || profile->profileID==600 || profile->profileID==601 || profile->profileID==602)
+    if(profile->profileID==206 || profile->profileID==600 || profile->profileID==601 || profile->profileID==602 || profile->profileID==603)
         windows[0][@1]=@((indexed?1:count)*48);
     for(uint32_t i=0;i<profile->resourceCount;++i){const A5MaliCompiledResource*r=profile->resources+i;
         if(r->kind!=A5MaliResourceBuffer)continue;
@@ -1220,6 +1246,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
                 .scissorWidth=(uint32_t)scissor.width,.scissorHeight=(uint32_t)scissor.height,
                 .viewportX=viewport.originX,.viewportY=viewport.originY,.viewportWidth=viewport.width,
                 .viewportHeight=viewport.height,.viewportNear=viewport.znear,.viewportFar=viewport.zfar}};
+            if(profile->profileID==603)command.fragmentSamplers[0]=samplerSnapshot;
             if(indexed){
                 command.draw.indexBuffer=(A5RuntimeBuffer){0,(uint32_t)indices.length,0,indices.bytes};
                 command.draw.indexCount=(uint32_t)indexCount;command.draw.indexSize=(uint32_t)indexSize;

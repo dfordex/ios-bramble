@@ -180,9 +180,12 @@ static void verifyVertex602Factory(A5MaliMetalLibrary *library,State *state)
     for(int i=0;i<4;++i){
         error=nil;
         MTLFunctionConstantValues *wrong=vertexConstants(602,i,NO,NO);
-        assert(![library newFunctionWithName:name constantValues:wrong error:&error]&&error);
-        d.constantValues=wrong;error=nil;
-        assert(![library newFunctionWithDescriptor:d error:&error]&&error);
+        A5MaliMetalFunction *other=[library newFunctionWithName:name constantValues:wrong error:&error];
+        size_t nc=0;const A5MaliCompiledFunctionConstant *vc=A5MaliCompiledVertexConstantsForProfile(602,&nc);
+        BOOL sibling=A5MaliCompiledProfileForID(603)&&!strcmp(vc[i].name,"fc_texcoord_count0");
+        if(sibling)assert(other&&!error);else assert(!other&&error);
+        d.constantValues=wrong;error=nil;other=[library newFunctionWithDescriptor:d error:&error];
+        if(sibling)assert(other&&!error);else assert(!other&&error);
     }
     for(int kind=0;kind<2;++kind){
         error=nil;

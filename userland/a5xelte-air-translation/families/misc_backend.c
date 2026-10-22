@@ -42,6 +42,9 @@ struct a5_stage_profile {
    unsigned push_bytes;
 };
 #include A5_FAMILY_CONFIG
+#ifndef A5_PROFILE_COUNT
+#define A5_PROFILE_COUNT 2
+#endif
 static unsigned type_size(const struct glsl_type *type, bool bindless)
 { (void)bindless; return glsl_count_attribute_slots(type, false); }
 static uint64_t fingerprint(const void *data, size_t size)
@@ -184,10 +187,17 @@ static bool lower_sysvals(nir_builder *b,nir_intrinsic_instr *intr,void *data)
 }
 static int compile(const char *input,const char *output,mesa_shader_stage stage)
 {
-   const struct a5_stage_profile *profile=&kStages[stage==MESA_SHADER_VERTEX?0:1];
    size_t bytes=0;
    uint32_t *words=read_module(input,&bytes);
-   if (!words || words[0]!=0x07230203 || fingerprint(words,bytes)!=profile->fingerprint) {
+   if (!words || words[0]!=0x07230203) {
+      fprintf(stderr,"module differs from authenticated family profile\n");free(words);return 2;
+   }
+   uint64_t module_fingerprint=fingerprint(words,bytes);
+   const struct a5_stage_profile *profile=NULL;
+   unsigned stage_index=stage==MESA_SHADER_VERTEX?0:1;
+   for(unsigned i=stage_index;i<A5_PROFILE_COUNT;i+=2)
+      if(kStages[i].fingerprint==module_fingerprint){profile=&kStages[i];break;}
+   if(!profile){
       fprintf(stderr,"module differs from authenticated family profile\n");free(words);return 2;
    }
    struct nir_spirv_specialization_entry entries[16]={0};

@@ -38,7 +38,7 @@ int main(void){@autoreleasepool{
   MTLTextureDescriptor*t=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:80 width:64 height:64 mipmapped:NO];
   t.storageMode=MTLStorageModePrivate;t.sampleCount=4;t.usage=MTLTextureUsageRenderTarget;
   assert(![d newTextureWithDescriptor:t]);
-  MTLSamplerDescriptor*s=[MTLSamplerDescriptor new];s.minFilter=MTLSamplerMinMagFilterLinear;
+  MTLSamplerDescriptor*s=[MTLSamplerDescriptor new];s.minFilter=(MTLSamplerMinMagFilter)2;
   assert(![d newSamplerStateWithDescriptor:s]);
  }});
  assert(![d newBufferWithLength:1 options:MTLResourceStorageModeMemoryless]);
@@ -71,8 +71,8 @@ int main(void){@autoreleasepool{
  NSString*log=[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding];assert(log);
  assert(occurrences(log,@"Metal texture: rejected")==64&&occurrences(log,@"Metal sampler: rejected")==64);
  assert([log containsString:@"reason=sample-count"]&&[log containsString:@"samples=4"]);
- assert([log containsString:@"reason=min-filter min=1"]);
- assert([log containsString:@"no-copy-unsupported"]&&[log containsString:@"commandBufferWithUnretainedReferences-unsupported"]);
+ assert([log containsString:@"reason=min-filter min=2"]);
+ assert([log containsString:@"no-copy-page-alignment"]&&[log containsString:@"commandBufferWithUnretainedReferences-unsupported"]);
  assert(occurrences(log,@"first_error=")==5); /* two first errors plus three commit begin records */
  assert([log containsString:@"selector=fillBuffer:range:value:"]&&![log containsString:@"selector=synchronizeResource:"]);
  assert([log containsString:@"selector=setVertexBytes:length:atIndex:"]&&![log containsString:@"selector=setBoundBytes:"]);

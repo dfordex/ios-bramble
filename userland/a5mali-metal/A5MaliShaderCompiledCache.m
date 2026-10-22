@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT
- * Known-602 native stage cache. Root publication authenticates provenance;
+ * Known602/603 native stage cache. Root publication authenticates provenance;
  * code/metadata pins and the caller's independent exact pipeline selection
  * preserve the already reviewed executable ABI. No arbitrary code admission.
  */
@@ -23,13 +23,35 @@ static const char *const cacheRoot=A5_SHADER_COMPILED_CACHE_TEST_ROOT;
 static uid_t ownerUID(void){return geteuid();}
 #endif
 static NSString *const librarySHA=@"11c74cc42ce5137b73d44d427f75764f886656d4ddb374422d56b609ed2762d9";
-static NSString *const vertexSHA=@"3cdf2b0db0b9992ce887242e7cac282cd70c3f8051e3ace3e791a0b676193a79";
-static NSString *const fragmentSHA=@"e66041333f6452510cda4d0ee1f1c1edf443a12007a989871a1546791deb0834";
 /* SHA256 of the complete sorted named-constant JSON arrays. Indexed arrays
- * must be empty in the worker's known602 recipe. These are semantic contract
+ * must be empty in each worker recipe. These are semantic contract
  * hashes, independent of native dead-resource optimization. */
-static NSString *const vertexConstantsSHA=@"d8b11a43b5075c7c8f179f6da7849edc5c5534f161590552da6b177007c8595f";
-static NSString *const fragmentConstantsSHA=@"5e1fae69edcd5f51efdf3a4adbca80e9c7901844f942404208c0b2dc89bb7c7f";
+typedef struct {
+    uint32_t profileID,vertexBytes,fragmentBytes,vertexRegisters,fragmentRegisters;
+    const char *recipe,*vertexSHA,*fragmentSHA,*vertexConstantsSHA,*fragmentConstantsSHA;
+} CacheContract;
+static const CacheContract contracts[]={
+    {602,1808,848,8,6,"quartzcore-generic-602",
+        "3cdf2b0db0b9992ce887242e7cac282cd70c3f8051e3ace3e791a0b676193a79",
+        "e66041333f6452510cda4d0ee1f1c1edf443a12007a989871a1546791deb0834",
+        "d8b11a43b5075c7c8f179f6da7849edc5c5534f161590552da6b177007c8595f",
+        "5e1fae69edcd5f51efdf3a4adbca80e9c7901844f942404208c0b2dc89bb7c7f"},
+    /* Fragment constants are0189-captured. The texcoord1 vertex is an exact
+     * host-compiled candidate, not yet a phone-observed vertex contract. The
+     * caller still must independently match both actual stage specializations
+     * and all pipeline state before these bytes can replace its known profile. */
+    {603,2192,976,8,6,"quartzcore-generic-603",
+        "e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96",
+        "b7ab26bc9a0da3ff4a5f87e73fe6aaab07680ae383a3fbdd9d8abc000387cd96",
+        "57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112",
+        "1314cb292bea03fb85537fdebb3919e65b76db1e99f72b12f7fb1abcd7c8d50d"},
+};
+static const CacheContract *contractForID(uint32_t profileID)
+{
+    for(unsigned i=0;i<sizeof(contracts)/sizeof(contracts[0]);++i)
+        if(contracts[i].profileID==profileID)return contracts+i;
+    return NULL;
+}
 
 @interface A5MaliShaderCompiledCacheEntry ()
 - (instancetype)initWithRequestID:(NSString *)requestID expected:(const A5MaliCompiledProfile *)expected
@@ -106,10 +128,11 @@ static NSData *readFile(int parent,const char *name,size_t maximum,NSError **err
     if(close(fd))return failure(error,EIO,@"compiled cache close failed");
     return [data copy];
 }
-static BOOL expectedShader(const A5MaliCompiledShader *shader,BOOL vertex)
+static BOOL expectedShader(const A5MaliCompiledShader *shader,const CacheContract *contract,BOOL vertex)
 {
-    NSUInteger bytes=vertex?1808:848,registers=vertex?8:6;
-    NSString *pin=vertex?vertexSHA:fragmentSHA;
+    NSUInteger bytes=vertex?contract->vertexBytes:contract->fragmentBytes;
+    NSUInteger registers=vertex?contract->vertexRegisters:contract->fragmentRegisters;
+    NSString *pin=[NSString stringWithUTF8String:vertex?contract->vertexSHA:contract->fragmentSHA];
     return shader->bytes&&shader->byteCount==bytes&&shader->firstTag==5&&
         shader->workRegisters==registers&&!shader->tlsBytes&&!shader->wlsBytes&&
         shader->sha256&&[pin isEqualToString:[NSString stringWithUTF8String:shader->sha256]]&&
@@ -139,12 +162,13 @@ A5MaliShaderCompiledCacheEntry *A5MaliLoadShaderCompiledCache(NSString *requestI
     const A5MaliCompiledProfile *expected,NSError **error)
 {
     if(error)*error=nil;
-    if(!hexDigest(requestID)||!expected||expected->profileID!=602||expected->passCount!=1||!expected->passes||
-        (expected->flags&A5MaliProfileNotExecutable)||expected->passes[0].passID!=602||
+    const CacheContract *contract=expected?contractForID(expected->profileID):NULL;
+    if(!hexDigest(requestID)||!expected||!contract||expected->passCount!=1||!expected->passes||
+        (expected->flags&A5MaliProfileNotExecutable)||expected->passes[0].passID!=contract->profileID||
         expected->passes[0].logicalTarget||!expected->vertexName||!expected->fragmentName||
         strcmp(expected->vertexName,"fixed_vert_lph_spc")||strcmp(expected->fragmentName,"fixed_frag_lph_cph")||
-        !expectedShader(&expected->passes[0].vertex,YES)||!expectedShader(&expected->passes[0].fragment,NO))
-        return failure(error,EINVAL,@"compiled cache requires the exact authenticated602 stage contract");
+        !expectedShader(&expected->passes[0].vertex,contract,YES)||!expectedShader(&expected->passes[0].fragment,contract,NO))
+        return failure(error,EINVAL,@"compiled cache requires an exact authenticated602/603 stage contract");
     int root=open(cacheRoot,O_RDONLY|O_DIRECTORY|O_NOFOLLOW),dir=-1;
     if(root<0)return failure(error,errno==ENOENT?ENOENT:EIO,@"compiled cache not published");
     if(!directory(root)){close(root);return failure(error,EINVAL,@"compiled cache root ownership/mode rejected");}
@@ -160,12 +184,13 @@ A5MaliShaderCompiledCacheEntry *A5MaliLoadShaderCompiledCache(NSString *requestI
     }
     NSDictionary *receipt=decoded;
     if(!exactNumber(receipt[@"schema"],1)||![receipt[@"request_id"] isEqual:requestID]||
-        !exactNumber(receipt[@"profile_id"],602)||![receipt[@"source_library"] isEqual:@"quartzcore"]||
+        !exactNumber(receipt[@"profile_id"],contract->profileID)||![receipt[@"source_library"] isEqual:@"quartzcore"]||
         ![receipt[@"metallib_sha256"] isEqual:librarySHA]||![receipt[@"gpu_id"] isEqual:@"07201000"]||
-        !exactNumber(receipt[@"compiler_abi"],1)||![receipt[@"recipe"] isEqual:@"quartzcore-generic-602"]||
+        !exactNumber(receipt[@"compiler_abi"],1)||![receipt[@"recipe"] isEqual:[NSString stringWithUTF8String:contract->recipe]]||
         !exactBool(receipt[@"stage_compiled"],YES)||!exactBool(receipt[@"pipeline_compatible"],NO)||
-        !hexDigest(receipt[@"descriptor_sha256"])||![receipt[@"vertex_constants_sha256"] isEqual:vertexConstantsSHA]||
-        ![receipt[@"fragment_constants_sha256"] isEqual:fragmentConstantsSHA]){
+        !hexDigest(receipt[@"descriptor_sha256"])||
+        ![receipt[@"vertex_constants_sha256"] isEqual:[NSString stringWithUTF8String:contract->vertexConstantsSHA]]||
+        ![receipt[@"fragment_constants_sha256"] isEqual:[NSString stringWithUTF8String:contract->fragmentConstantsSHA]]){
         close(dir);return failure(error,EINVAL,@"compiled receipt identity/source/recipe rejected");
     }
     NSData *vertex=readFile(dir,"vertex.midgard",64*1024,error);

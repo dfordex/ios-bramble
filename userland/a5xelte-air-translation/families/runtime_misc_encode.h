@@ -5,6 +5,23 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* Commit-time copy of the application sampler descriptor. Values in these
+ * enums describe the requested filtering/addressing, not a synthetic test
+ * sampler. Unsupported combinations must fail before a native job is sent. */
+enum { A5RuntimeSamplerNearest=0, A5RuntimeSamplerLinear=1 };
+enum { A5RuntimeSamplerMipNone=0, A5RuntimeSamplerMipNearest=1,
+       A5RuntimeSamplerMipLinear=2 };
+enum { A5RuntimeSamplerClampEdge=0, A5RuntimeSamplerRepeat=1,
+       A5RuntimeSamplerMirrorRepeat=2, A5RuntimeSamplerClampZero=3,
+       A5RuntimeSamplerClampBorder=4 };
+typedef struct {
+    uint32_t valid;
+    uint32_t minFilter, magFilter, mipFilter;
+    uint32_t sAddressMode, tAddressMode, rAddressMode;
+    uint32_t normalizedCoordinates, maxAnisotropy;
+    uint32_t compareEnabled;
+    float lodMinClamp, lodMaxClamp;
+} A5RuntimeSampler;
 /* One native pass for an original, authenticated misc pipeline. The caller
  * submits EVERY profile->passes entry in encoded order, retaining every
  * source/destination through its terminal fence. Configured but AIR-unwritten
@@ -15,12 +32,14 @@ typedef struct {
     uint32_t passIndex;
     A5RuntimeImage colorAttachments[8];
     A5RuntimeImage fragmentTextures[31];
+    A5RuntimeSampler fragmentSamplers[31];
 } A5RuntimeMiscDraw;
 /* Large CPU-backed SSBOs must first be uploaded into a real mapped GPU buffer.
  * Copies of actual snapshots are bounded by the64KiB descriptor-owned arena;
  * insufficient space returns A5RuntimeBounds, never truncated/zeroed inputs.
- * Home's two constexpr samplers are the actual translated linear-clamp states;
- * this does not accept arbitrary application sampler specialization. */
+ * Home's two constexpr samplers are the actual translated linear-clamp states.
+ * Generic texture profile603 uses the snapshotted Sampler0 and accepts only
+ * its separately compiled ClampToEdge specialization. */
 int A5MaliEncodeRuntimeMiscPass(const A5RuntimeMiscDraw *, void *, size_t);
 #ifdef __cplusplus
 }

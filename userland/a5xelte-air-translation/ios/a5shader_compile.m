@@ -396,19 +396,17 @@ int main(int argc, char **argv)
             if (setpriority(PRIO_PROCESS,0,10))
                 fprintf(stderr,"A5XELTE shader compiler: priority adjustment unavailable errno=%d\n",errno);
         }
-        if (argc == 2 && (!strcmp(argv[1],"--selftest") || !strcmp(argv[1],"--serve"))) {
-#ifdef A5_SHADER_HOST_TEST
-            if (strcmp(argv[1],"--serve")) {
-#endif
+        if (argc == 2 && !strcmp(argv[1],"--serve")) {
+            /* Requests are useful during first boot. The legacy pair selftest
+             * can take minutes on Cortex-A53, so it remains an explicit
+             * operation instead of delaying the long-lived request worker. */
+            a5Serve(self);
+        } else if (argc == 2 && !strcmp(argv[1],"--selftest")) {
             for (NSString *pair in @[@"read_surf",@"downsample_4"]) {
                 compilePair(self,pair);
                 compilePair(self,pair);
             }
             showSuccess();
-#ifdef A5_SHADER_HOST_TEST
-            }
-#endif
-            if (!strcmp(argv[1],"--serve")) a5Serve(self);
         } else if (argc == 3 && !strcmp(argv[1],"--pair")) {
             compilePair(self,[NSString stringWithUTF8String:argv[2]]);
         } else return 2;

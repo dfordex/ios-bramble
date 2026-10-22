@@ -102,7 +102,13 @@ const A5MaliCompiledFunctionConstant *A5MaliCompiledConstantsForProfile(uint32_t
         return kA5MaliProfile602Constants;
     }
 #endif
-#if !defined(A5_MALI_HAS_GENERIC_600) && !defined(A5_MALI_HAS_GENERIC_601) && !defined(A5_MALI_HAS_GENERIC_602)
+#ifdef A5_MALI_HAS_GENERIC_603
+    if(profileID==603 && A5MaliCompiledProfileForID(603)) {
+        if(count)*count=sizeof(kA5MaliProfile603Constants)/sizeof(kA5MaliProfile603Constants[0]);
+        return kA5MaliProfile603Constants;
+    }
+#endif
+#if !defined(A5_MALI_HAS_GENERIC_600) && !defined(A5_MALI_HAS_GENERIC_601) && !defined(A5_MALI_HAS_GENERIC_602) && !defined(A5_MALI_HAS_GENERIC_603)
     (void)profileID;
 #endif
     return NULL;
@@ -119,7 +125,14 @@ const A5MaliCompiledFunctionConstant *A5MaliCompiledVertexConstantsForProfile(ui
         if(count)*count=sizeof(kA5MaliProfile602VertexConstants)/sizeof(kA5MaliProfile602VertexConstants[0]);
         return kA5MaliProfile602VertexConstants;
     }
-#else
+#endif
+#ifdef A5_MALI_HAS_GENERIC_603
+    if(profileID==603 && A5MaliCompiledProfileForID(603)) {
+        if(count)*count=sizeof(kA5MaliProfile603VertexConstants)/sizeof(kA5MaliProfile603VertexConstants[0]);
+        return kA5MaliProfile603VertexConstants;
+    }
+#endif
+#if !defined(A5_MALI_HAS_GENERIC_602) && !defined(A5_MALI_HAS_GENERIC_603)
     (void)profileID;
 #endif
     return NULL;
@@ -615,7 +628,9 @@ const A5MaliCompiledProfile *A5MaliSelectCompiledProfile(
             [[fragment name] isEqualToString:[NSString stringWithUTF8String:p->fragmentName]]) {
             if(!specializationIdentityMatches(vertex,p,MTLFunctionTypeVertex) ||
                 !specializationIdentityMatches(fragment,p,MTLFunctionTypeFragment)) {
-                knownPair=YES;reason=@"function specialization identity differs from the compiled profile";continue;
+                knownPair=YES;
+                if(reasonScore<0 && !reason)reason=@"function specialization identity differs from the compiled profile";
+                continue;
             }
             knownPair=YES;NSString *mismatch=compiledDescriptorMismatch(p,descriptor);
             if(!mismatch)return p;

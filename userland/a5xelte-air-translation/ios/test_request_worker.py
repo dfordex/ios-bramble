@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host test of one real 602 request through the native spool worker.
+"""Host test of a strict 602 or 603 request through the native spool worker.
 
 All stock inputs and generated shaders stay outside the checkout. The test
 does not prove iOS execution or GPU submission.
@@ -33,8 +33,10 @@ def function(base, stage, capture):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('translator', 'midgard', 'validator', 'profile', 'known',
-                 'metallib', 'vertex-capture', 'fragment-capture', 'work-dir'):
+                 'metallib', 'fragment-capture', 'work-dir'):
         p.add_argument('--' + name, type=Path, required=True)
+    p.add_argument('--vertex-capture', type=Path)
+    p.add_argument('--other-known', type=Path, required=True)
     a = p.parse_args()
     work = a.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -46,7 +48,8 @@ def main():
                      (a.midgard, 'midgard-generic602'),
                      (a.validator, 'spirv-val'),
                      (a.profile, 'profile.json'),
-                     (a.known, 'generic602.json')):
+                     (a.known, f'generic{json.loads(a.known.read_text())["profile_id"]}.json'),
+                     (a.other_known, f'generic{json.loads(a.other_known.read_text())["profile_id"]}.json')):
         shutil.copy2(src, tools / dst)
     # A Homebrew validator may need real @rpath libraries. Its original lib
     # directory is copied to the relative path the bottle records.
@@ -73,7 +76,14 @@ def main():
     base = {'schema': 1, 'kind': 'function', 'source_library': 'quartzcore',
             'metallib_sha256': known['metallib_sha256'], 'gpu_id': '07201000',
             'compiler_abi': 1}
-    vertex = json.loads(a.vertex_capture.read_text())
+    if known['profile_id'] == 602:
+        if a.vertex_capture is None:
+            p.error('--vertex-capture required for 602')
+        vertex = json.loads(a.vertex_capture.read_text())
+    else:
+        vertex = {'function':known['vertex_function'],
+                  'constants':{c['name']:{'type':c['type'],'raw':c['raw']}
+                               for c in known['vertex_constants']}}
     fragment = json.loads(a.fragment_capture.read_text())
     body = dict(base, kind='pipeline', owner_uid=uid,
                 vertex=function(base, 'vertex', vertex),
@@ -103,10 +113,10 @@ def main():
                 break
             time.sleep(1)
         if not result.joinpath('receipt.json').exists():
-            raise AssertionError(f'no published 602 result: {work / "service.log"}')
+            raise AssertionError(f'no published {known["profile_id"]} result: {work / "service.log"}')
         receipt = json.loads(result.joinpath('receipt.json').read_text())
         if (receipt['request_id'] != request_id or
-                receipt['profile_id'] != 602 or
+                receipt['profile_id'] != known['profile_id'] or
                 receipt['stage_compiled'] is not True or
                 receipt['pipeline_compatible'] is not False):
             raise AssertionError('compiled receipt identity differs')
@@ -115,6 +125,9 @@ def main():
             binary = result.joinpath(info['file']).read_bytes()
             if len(binary) != info['bytes'] or sha(binary) != info['sha256']:
                 raise AssertionError(f'{stage} output differs from receipt')
+            pin = known['midgard']['vert' if stage == 'vertex' else 'frag']
+            if info['bytes'] != pin['bytes'] or info['sha256'] != pin['sha256']:
+                raise AssertionError(f'{stage} does not match pinned native code')
         print(json.dumps({'host_end_to_end': True, 'device_verified': False,
                           'request_id': request_id, 'receipt': str(result / 'receipt.json'),
                           'vertex_sha256': receipt['vertex']['sha256'],

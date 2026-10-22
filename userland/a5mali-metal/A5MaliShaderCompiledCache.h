@@ -13,9 +13,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic,readonly,copy) NSString *requestID;
 @end
 
-/* Only the exact authenticated profile602 is accepted in this first route.
+/* Only exact authenticated profiles602/603 are accepted in this route.
  * nil/error.code=ENOENT means not published yet; other errors reject a cache.
- * The caller must first select602 against the full actual Metal descriptor,
+ * The caller must first select the profile against the full actual descriptor,
  * then pass the canonical pipeline request ID (not a function-only request).
  */
 FOUNDATION_EXPORT A5MaliShaderCompiledCacheEntry * _Nullable A5MaliLoadShaderCompiledCache(

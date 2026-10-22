@@ -38,10 +38,13 @@ enum { A5MaliMaxPrivateBufferLength = 0x800000,
                                       bytesPerRow:(NSUInteger)bytesPerRow;
 @end
 
-/* CPU-visible storage for read-only shader bindings. It has a genuine contents
- * allocation, no invented GPU mapping/handle. Submission must capture and copy
- * it into the GPU job's retained resource storage immediately before executing.
- * GPU writes, no-copy ownership, and persistent GPU aliases are unsupported. */
+/* CPU-visible storage for read-only shader bindings. It owns an allocation or
+ * genuinely aliases the caller's page-aligned no-copy allocation. Submission
+ * snapshots current bytes into retained GPU job storage immediately before
+ * execution; there is no upfront no-copy substitute or persistent GPU alias.
+ * A no-copy deallocator runs once after the last buffer/binding/job releases
+ * the object. With a nil deallocator the caller retains allocation ownership.
+ * The caller must keep no-copy pages mapped and accessible until that point. */
 @interface A5MaliSharedReadBuffer : A5MaliPrivateBuffer
 @end
 
@@ -91,7 +94,7 @@ NSUInteger A5MaliAllocatedSharedReadBufferBytes(A5MaliRestrictedDevice *device);
 - (nullable A5MaliPrivateBuffer *)newBufferWithBytes:(const void *)bytes
                                            length:(NSUInteger)length
                                           options:(MTLResourceOptions)options;
-- (nullable A5MaliPrivateBuffer *)newBufferWithBytesNoCopy:(void *)bytes
+- (nullable A5MaliPrivateBuffer *)newBufferWithBytesNoCopy:(void * _Nullable)bytes
     length:(NSUInteger)length options:(MTLResourceOptions)options
     deallocator:(nullable void (^)(void *, NSUInteger))deallocator;
 - (MTLSizeAndAlign)heapBufferSizeAndAlignWithLength:(NSUInteger)length

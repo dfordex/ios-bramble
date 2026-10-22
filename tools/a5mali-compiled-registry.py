@@ -334,6 +334,42 @@ def generic_profile(receipt_path, capture_path, metallib_path, vertex_capture_pa
     return p
 
 
+def textured_profile(receipt_path, capture_path, metallib_path):
+    recipe=Path(__file__).resolve().parents[1]/'userland/a5xelte-air-translation/generic/compile_0189.py'
+    spec=importlib.util.spec_from_file_location('textured_recipe',recipe)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    j=module.validate_receipt(receipt_path,capture_path,metallib_path)
+    if j['profile_id']!=603 or j['metallib_sha256']!=METALLIB_SHA:
+        fail('unreviewed textured library/profile')
+    c=j['native_contract']; stages={}; resources=[]; pushes=[]
+    for stage,key in ((1,'vertex_live_buffers'),(2,'fragment_live_buffers')):
+        for b in c[key]:
+            resources.append([stage,1,b['metal_index'],b['binding'],b['native_ubo'],1,
+                0,b['bytes'],0,b['push_offset']])
+            pushes.append([stage,1,b['metal_index'],b['push_offset'],4,0])
+    t=c['fragment_texture']; s=c['fragment_sampler']; rule=c['push_color_write_rule']
+    resources.append([2,2,t['metal_index'],t['binding'],t['native_texture'],1,0,0,0,0])
+    resources.append([2,3,s['metal_index'],s['binding'],s['native_sampler'],1,0,0,0,0])
+    pushes.append([2,2,0,rule['offset'],rule['bytes'],rule['value']])
+    constants=lambda items:{k:dict(v,values=list(bytes.fromhex(v['raw']))) for k,v in items.items()}
+    for key,stage in [('vertex','vert'),('fragment','frag')]:
+        r=j['stages'][stage];info=r['native_info']
+        stages[key]=shader(receipt_path.parent/(stage+'.midgard'),dict(
+            bytes=r['midgard_bytes'],sha256=r['midgard_sha256'],first_tag=info['first_tag'],
+            work_regs=info['work_regs'],tls=info['tls'],wls=info['wls']))
+    return {'id':603,'name':'fixed_frag_lph_cph_textured_bgra8',
+        'vertex':j['vertex_function'],'fragment':j['compiled_function'],
+        'formats':[80]+[0]*7,'flags':0,'viewport':[0,0],
+        'resources':resources,'push':pushes,
+        'attributes':ATTRIBUTES,'layouts':LAYOUTS,
+        'passes':[dict(id=603,target=0,**stages)],
+        'attachment_contracts':[[[15,0,0,0,1,0,1,0] for _ in range(8)]],
+        'function_constants':constants(j['fragment_constants']),
+        'vertex_function_constants':constants({v['name']:{k:x for k,x in v.items() if k!='name'}
+            for v in j['vertex_candidate_constants']}),
+        'proof':'Observed complete textured fragment; compatible compiled vertex/state candidate, runtime selection still requires exact typed stage/state match'}
+
+
 def emit(profiles,output):
     if not profiles or len(profiles)>32:fail('registry profile count invalid')
     lines=['/* Generated private compiler outputs. Never commit. */\n'];rows=[];seen=set();blobs={}
@@ -364,7 +400,7 @@ def emit(profiles,output):
         for field,suffix,expected in [('function_constants','Constants',58),('vertex_function_constants','VertexConstants',4)]:
             constants=p.get(field)
             if not constants:continue
-            if p['id'] not in (600,601,602) or (field=='vertex_function_constants' and p['id']!=602) or len(constants)!=expected:fail('unreviewed specialized function profile')
+            if p['id'] not in (600,601,602,603) or (field=='vertex_function_constants' and p['id'] not in (602,603)) or len(constants)!=expected:fail('unreviewed specialized function profile')
             values=[]
             for key,item in sorted(constants.items()):
                 raw=list(bytes.fromhex(item['raw']))
@@ -393,6 +429,8 @@ def main():
     p.add_argument('--generic-fixed-receipt',type=Path)
     p.add_argument('--generic-fixed-fragment-capture',type=Path)
     p.add_argument('--generic-fixed-vertex-capture',type=Path)
+    p.add_argument('--generic-textured-receipt',type=Path)
+    p.add_argument('--generic-textured-capture',type=Path)
     p.add_argument('--ds4-vertex',type=Path);p.add_argument('--ds4-fragment',type=Path)
     p.add_argument('--quartzcore-image',type=Path,required=True)
     p.add_argument('--output-dir',type=Path,required=True)
@@ -423,10 +461,14 @@ def main():
     if any((a.generic_fixed_receipt,a.generic_fixed_fragment_capture,a.generic_fixed_vertex_capture)):
         if not all((a.generic_fixed_receipt,a.generic_fixed_fragment_capture,a.generic_fixed_vertex_capture,a.generic_metallib)):fail('fixed vertex recipe needs receipt, both captures and actual library')
         profiles.append(generic_profile(a.generic_fixed_receipt.resolve(),a.generic_fixed_fragment_capture.resolve(),a.generic_metallib.resolve(),a.generic_fixed_vertex_capture.resolve()))
+    if a.generic_textured_receipt or a.generic_textured_capture:
+        if not all((a.generic_textured_receipt,a.generic_textured_capture,a.generic_metallib)):
+            fail('textured recipe needs receipt, capture and actual library')
+        profiles.append(textured_profile(a.generic_textured_receipt.resolve(),a.generic_textured_capture.resolve(),a.generic_metallib.resolve()))
     out.mkdir(parents=True,exist_ok=True);include=out/'A5MaliCompiledRegistryData.inc';emit(profiles,include)
     receipt={'schema':2,'quartzcore_attachment_audit':qc,'metallib_sha256':METALLIB_SHA,'include_sha256':sha(include.read_bytes()),
              'generator_sha256':sha(Path(__file__).read_bytes()),
-             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest,a.raw204_runtime_manifest,a.generic_receipt,a.generic_capture,a.generic_cph_receipt,a.generic_cph_capture,a.generic_fixed_receipt,a.generic_fixed_fragment_capture,a.generic_fixed_vertex_capture) if path},'profiles':profiles,
+             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest,a.raw204_runtime_manifest,a.generic_receipt,a.generic_capture,a.generic_cph_receipt,a.generic_cph_capture,a.generic_fixed_receipt,a.generic_fixed_fragment_capture,a.generic_fixed_vertex_capture,a.generic_textured_receipt,a.generic_textured_capture) if path},'profiles':profiles,
              'claim':'Authenticated native program and binding registry; pipeline/runtime acceptance is separately gated.'}
     (out/'compiled-registry.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps({'profiles':len(profiles),'native_passes':sum(len(x['passes']) for x in profiles),'include':str(include),'sha256':receipt['include_sha256']}))

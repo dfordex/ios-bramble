@@ -97,6 +97,8 @@ def main():
     ap.add_argument('--receipt602', type=Path, required=True)
     ap.add_argument('--fragment-capture602', type=Path, required=True)
     ap.add_argument('--vertex-capture602', type=Path, required=True)
+    ap.add_argument('--receipt603', type=Path, required=True)
+    ap.add_argument('--fragment-capture603', type=Path, required=True)
     ap.add_argument('--metallib', type=Path, required=True)
     args = ap.parse_args()
     src = Path(__file__).resolve().parent
@@ -112,6 +114,11 @@ def main():
         args.fragment_capture602, args.metallib, args.vertex_capture602)
     if receipt['profile_id'] != 602:
         raise ValueError('actual captured 0187/0186 pair required')
+    textured_recipe = load(src.parent / 'generic' / 'compile_0189.py', 'textured_recipe')
+    textured = textured_recipe.validate_receipt(args.receipt603,
+        args.fragment_capture603, args.metallib)
+    if textured['profile_id'] != 603 or textured['vertex_candidate'] is not True:
+        raise ValueError('exact 0189 textured candidate receipt required')
     for name, path in [('metal2vulkan', args.air), ('midgard-compile', args.midgard),
                        ('midgard-generic602', args.generic602),
                        ('spirv-val', args.validator)]:
@@ -161,10 +168,37 @@ def main():
                         'sha256':receipt['stages'][stage]['spirv_sha256']}
                  for stage in ('vert','frag')},
         'midgard':{stage:{'bytes':receipt['stages'][stage]['midgard_bytes'],
-                          'sha256':receipt['stages'][stage]['midgard_sha256']}
+                          'sha256':receipt['stages'][stage]['midgard_sha256'],
+                          'native_info':receipt['stages'][stage]['native_info']}
                    for stage in ('vert','frag')},
     }
     (resources / 'generic602.json').write_text(json.dumps(known602, indent=2)+'\n')
+    capture603 = json.loads(args.fragment_capture603.read_text())
+    vertex603 = textured['vertex_candidate_constants']
+    known603 = {
+        'schema':1, 'profile_id':603,
+        'metallib_sha256':textured['metallib_sha256'],
+        'vertex_function':textured['vertex_function'],
+        'fragment_function':textured['compiled_function'],
+        'vertex_candidate':True, 'device_pair_verified':False,
+        'pipeline_compatible':False,
+        'vertex_constants':vertex603,
+        'fragment_constants':captured_list(capture603),
+        'configured_vertex_packing0':textured['configured_vertex_packing0'],
+        'reflected_vertex_input':textured['reflected_vertex_input'],
+        'reflected_layout':textured['reflected_layout'],
+        'reflected_color_write_rules':json.loads(
+            (args.receipt603.parent / 'reflection.json').read_text())['graphics']['color_write_rules'],
+        'native_contract':textured['native_contract'],
+        'spirv':{stage:{'bytes':textured['stages'][stage]['spirv_bytes'],
+                        'sha256':textured['stages'][stage]['spirv_sha256']}
+                 for stage in ('vert','frag')},
+        'midgard':{stage:{'bytes':textured['stages'][stage]['midgard_bytes'],
+                          'sha256':textured['stages'][stage]['midgard_sha256'],
+                          'native_info':textured['stages'][stage]['native_info']}
+                   for stage in ('vert','frag')},
+    }
+    (resources / 'generic603.json').write_text(json.dumps(known603, indent=2)+'\n')
     shutil.copyfile(args.profile, resources / 'profile.json')
     shutil.copyfile(src / 'compiler-launchdaemon.plist', out / 'compiler-launchdaemon.plist')
     # Keep provenance beside the payload. The device embedder has an exact
@@ -174,6 +208,7 @@ def main():
         'runner_sha256': sha(runner),
         'generic602_midgard_sha256': sha(resources / 'midgard-generic602'),
         'generic602_contract_sha256': sha(resources / 'generic602.json'),
+        'generic603_contract_sha256': sha(resources / 'generic603.json'),
         'device_runtime_verified': False,
     }, indent=2) + '\n')
     print(json.dumps({'output':str(out),'device_runtime_verified':False,

@@ -2,6 +2,8 @@
 #import "A5MaliMetalDeviceResources.h"
 #include <assert.h>
 #include <string.h>
+#include <float.h>
+#include <math.h>
 
 typedef struct { A5MaliHeader h; uint32_t bytes, usage; } CreateRequest;
 typedef struct { A5MaliHeader h; uint64_t handle; uint32_t bytes, usage; } CreateReply;
@@ -228,7 +230,41 @@ int main(void)
         assert(state && [state.label isEqualToString:@"immutable sampler"]);
         sampler.minFilter = MTLSamplerMinMagFilterLinear;
         assert(state.descriptor.minFilter == MTLSamplerMinMagFilterNearest);
-        assert(![device newSamplerStateWithDescriptor:sampler]);
+        sampler.magFilter=MTLSamplerMinMagFilterLinear;sampler.mipFilter=MTLSamplerMipFilterLinear;
+        sampler.lodMinClamp=.25f;sampler.lodMaxClamp=3.5f;
+        A5MaliSamplerState *linear=[device newSamplerStateWithDescriptor:sampler];assert(linear);
+        sampler.minFilter=MTLSamplerMinMagFilterNearest;sampler.lodMinClamp=1;
+        assert(linear.descriptor.minFilter==MTLSamplerMinMagFilterLinear&&linear.descriptor.magFilter==MTLSamplerMinMagFilterLinear);
+        assert(linear.descriptor.mipFilter==MTLSamplerMipFilterLinear&&linear.descriptor.lodMinClamp==.25f&&linear.descriptor.lodMaxClamp==3.5f);
+        MTLSamplerDescriptor *returned=linear.descriptor;returned.magFilter=MTLSamplerMinMagFilterNearest;
+        assert(linear.descriptor.magFilter==MTLSamplerMinMagFilterLinear); /* getter cannot mutate retained state */
+        for(unsigned min=0;min<2;++min)for(unsigned mag=0;mag<2;++mag)for(unsigned mip=0;mip<3;++mip){
+            MTLSamplerDescriptor *accepted=[MTLSamplerDescriptor new];accepted.minFilter=min;accepted.magFilter=mag;accepted.mipFilter=mip;
+            accepted.lodMinClamp=.5f;accepted.lodMaxClamp=FLT_MAX;
+            A5MaliSamplerState *created=[device newSamplerStateWithDescriptor:accepted];assert(created);
+            assert(created.descriptor.minFilter==min&&created.descriptor.magFilter==mag&&created.descriptor.mipFilter==mip&&
+                created.descriptor.lodMinClamp==.5f&&created.descriptor.lodMaxClamp==FLT_MAX);
+        }
+        for(unsigned fault=0;fault<14;++fault){
+            MTLSamplerDescriptor *bad=[MTLSamplerDescriptor new];
+            switch(fault){
+                case 0:bad.minFilter=(MTLSamplerMinMagFilter)99;break;
+                case 1:bad.magFilter=(MTLSamplerMinMagFilter)99;break;
+                case 2:bad.mipFilter=(MTLSamplerMipFilter)99;break;
+                case 3:bad.maxAnisotropy=2;break;
+                case 4:bad.sAddressMode=MTLSamplerAddressModeRepeat;break;
+                case 5:bad.tAddressMode=MTLSamplerAddressModeRepeat;break;
+                case 6:bad.rAddressMode=MTLSamplerAddressModeRepeat;break;
+                case 7:bad.normalizedCoordinates=NO;break;
+                case 8:bad.compareFunction=MTLCompareFunctionLess;break;
+                case 9:bad.supportArgumentBuffers=YES;break;
+                case 10:bad.lodMinClamp=-1;break;
+                case 11:bad.lodMinClamp=2;bad.lodMaxClamp=1;break;
+                case 12:bad.lodMinClamp=NAN;break;
+                case 13:bad.lodMaxClamp=INFINITY;break;
+            }
+            assert(![device newSamplerStateWithDescriptor:bad]);
+        }
         MTLDepthStencilDescriptor *depth = [MTLDepthStencilDescriptor new];
         A5MaliDepthStencilState *depthState = [device newDepthStencilStateWithDescriptor:depth];
         assert(depthState);
