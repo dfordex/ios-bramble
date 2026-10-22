@@ -68,3 +68,8 @@ an iOS graphics fix. Device results remain pending.
 0197 local build: both complete XNU make runs exit zero; installer preflight
 accepts16 files (39,515,630 raw /9,446,848 compressed bytes). Final BOOT is
 30,308,368 bytes. No on-device success is claimed by packaging.
+
+0197 installation: source `954533f`; Mac ADB revalidated the authorized lab
+phone in TWRP and p10 capacity, wrote30,308,368 bytes with matching dd receipt,
+synced and requested reboot. No backup/hash/readback as instructed. Runtime
+results are pending; no raw USERDATA transfer or recovery/EFS/radio/GPT write.
