@@ -71,7 +71,7 @@ USERDATA. The generated combined payload has 60 files (13 existing + 47 apps), 2
 29,710,506 raw / 8,412,239 packed bytes. Independent extraction/decompression verifies
 all 60 source byte sequences. Kernel allowlist is exact six subtrees, with an
 explicit a5apps_install=1 gate plus existing USERDATA/write/HFS requirements.
-The fresh kernel build completed with exit 0, including symbol generation. The BOOT candidate is 29,280,272 bytes, below the 32 MiB BOOT partition capacity. Five builder tests, the actual kernel preflight harness (including corrupt streams and app-gate-off coverage), all 183 patch-format checks, and Python/shell syntax checks pass. Actual device installation and first-frame consequences remain pending.
+The fresh kernel build completed with exit 0, including symbol generation. The BOOT candidate is 29,280,272 bytes, below the 32 MiB BOOT partition capacity. Five builder tests, the actual kernel preflight harness (including corrupt streams and app-gate-off coverage), all 183 patch-format checks, and Python/shell syntax checks pass. The BOOT image was streamed to the explicitly checked lab A5 BOOT p10: dd acknowledged all 29,280,272 bytes, sync completed and reboot was requested. The HFS installer receipt and first-frame consequences remain pending runtime log recovery.
 
 ## Next evidence
 
