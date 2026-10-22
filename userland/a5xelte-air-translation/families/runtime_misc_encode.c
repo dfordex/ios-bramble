@@ -99,21 +99,21 @@ static int valid_image(const A5RuntimeImage*i){unsigned n=bpp(i->metalPixelForma
  return n&&span(i->gpuVA,i->bytes)&&!(i->gpuVA&63)&&i->width&&i->width<=2048&&i->height&&i->height<=2048&&
  i->rowBytes>=i->width*n&&!(i->rowBytes&15)&&(uint64_t)i->rowBytes*i->height<=i->bytes;
 }
-/* The only admitted generic native pair is the host-compiled VS/FS below. This is
- * an encoder contract, not evidence that a stock iOS draw uses this pair.
+/* Admit only the captured, host-compiled native VS/FS pairs below. This is
+ * an encoder contract, not evidence that a stock iOS draw uses the pair.
  * Inactive Metal attributes 1/2 are still part of the original 4QC layout;
  * native attr slots 0/1 are the surviving position and half4 colour inputs.
  * The captured FS constant blob and FB1 uniform are dead in this exact code.
  */
 static int generic_color_contract(const A5MaliCompiledProfile*p){
- if((p->profileID!=600&&p->profileID!=601)||p->flags||p->passCount!=1||
+ if((p->profileID!=600&&p->profileID!=601&&p->profileID!=602)||p->flags||p->passCount!=1||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     p->colorFormats[0]!=80||p->attributeCount!=4||!p->attributes||
     p->layoutCount!=1||!p->layouts||p->resourceCount!=1||!p->resources||
     p->pushFieldCount!=2||!p->pushFields||p->attachmentContractCount!=1||
     !p->attachmentContracts)return 0;
- if(!p->vertexName||strcmp(p->vertexName,"std_vert0_lph")||!p->fragmentName||
-    strcmp(p->fragmentName,p->profileID==600?"fixed_frag_lph_cpf":"fixed_frag_lph_cph"))return 0;
+ if(!p->vertexName||strcmp(p->vertexName,p->profileID==602?"fixed_vert_lph_spc":"std_vert0_lph")||
+    !p->fragmentName||strcmp(p->fragmentName,p->profileID==600?"fixed_frag_lph_cpf":"fixed_frag_lph_cph"))return 0;
  for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return 0;
  static const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
  for(unsigned i=0;i<4;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
@@ -255,10 +255,10 @@ static void jobs(uint8_t*d,uint64_t VA,const A5RuntimeDraw*r){
 }
 static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  const A5RuntimeDraw*r=&m->draw;const A5MaliCompiledProfile*p=r->profile;
- if(!p||!(p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601)||
+ if(!p||!(p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601||p->profileID==602)||
   p->passCount<1||p->passCount>2||!p->passes||m->passIndex>=p->passCount||p->resourceCount>16||p->pushFieldCount>16)return A5RuntimeUnsupported;
  const A5MaliCompiledPass*pass=p->passes+m->passIndex;
- int home=p->profileID==206,clear=p->profileID==207,generic_color=p->profileID==600||p->profileID==601;
+ int home=p->profileID==206,clear=p->profileID==207,generic_color=p->profileID==600||p->profileID==601||p->profileID==602;
  if(generic_color&&!generic_color_contract(p))return A5RuntimeUnsupported;
  if(pass->logicalTarget>=2||p->passCount!=1||pass->logicalTarget!=(clear?1u:0u))return A5RuntimeUnsupported;
  if(!span(r->descriptorGPUVA,SIZE)||(r->descriptorGPUVA&4095))return A5RuntimeBounds;

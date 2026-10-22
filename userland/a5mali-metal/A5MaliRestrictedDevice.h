@@ -105,6 +105,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
 @property (nonatomic, readonly) A5MaliMetalLibrary *library;
 @property (nonatomic, readonly) uint32_t specializationProfileID;
+/* Immutable source/typed-constant request, never an executable cache entry. */
+@property (nullable, nonatomic, readonly) NSDictionary *compileRequestPayload;
 @property (nullable, copy, atomic) NSString *label;
 @end
 

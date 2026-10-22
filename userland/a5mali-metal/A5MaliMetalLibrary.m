@@ -4,6 +4,7 @@
  */
 #import "A5MaliRestrictedDevice.h"
 #import "A5MaliCompiledRegistry.h"
+#import "A5MaliShaderCompileRequest.h"
 #import <CommonCrypto/CommonDigest.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -95,10 +96,41 @@ const A5MaliCompiledFunctionConstant *A5MaliCompiledConstantsForProfile(uint32_t
         return kA5MaliProfile601Constants;
     }
 #endif
-#if !defined(A5_MALI_HAS_GENERIC_600) && !defined(A5_MALI_HAS_GENERIC_601)
+#ifdef A5_MALI_HAS_GENERIC_602
+    if(profileID==602 && A5MaliCompiledProfileForID(602)) {
+        if(count)*count=sizeof(kA5MaliProfile602Constants)/sizeof(kA5MaliProfile602Constants[0]);
+        return kA5MaliProfile602Constants;
+    }
+#endif
+#if !defined(A5_MALI_HAS_GENERIC_600) && !defined(A5_MALI_HAS_GENERIC_601) && !defined(A5_MALI_HAS_GENERIC_602)
     (void)profileID;
 #endif
     return NULL;
+}
+
+/* Fragment and vertex constants are independent Metal specializations. A
+ * function may be reused by multiple compiled pipeline profiles when its exact
+ * typed constant contract is identical; no shader name is substituted. */
+const A5MaliCompiledFunctionConstant *A5MaliCompiledVertexConstantsForProfile(uint32_t profileID,size_t *count)
+{
+    if(count)*count=0;
+#ifdef A5_MALI_HAS_GENERIC_602
+    if(profileID==602 && A5MaliCompiledProfileForID(602)) {
+        if(count)*count=sizeof(kA5MaliProfile602VertexConstants)/sizeof(kA5MaliProfile602VertexConstants[0]);
+        return kA5MaliProfile602VertexConstants;
+    }
+#else
+    (void)profileID;
+#endif
+    return NULL;
+}
+
+static const A5MaliCompiledFunctionConstant *constantsForStage(uint32_t profileID,
+    MTLFunctionType stage,size_t *count)
+{
+    return stage==MTLFunctionTypeVertex?
+        A5MaliCompiledVertexConstantsForProfile(profileID,count):
+        A5MaliCompiledConstantsForProfile(profileID,count);
 }
 
 static NSError *libraryError(NSString *reason)
@@ -179,8 +211,25 @@ static void logConstantArray(NSArray *array,BOOL indexed,unsigned request)
     }
 }
 
+static void forwardFunctionSpecialization(NSString *name,MTLFunctionConstantValues *values)
+{
+    MTLFunctionType stage=0;
+    if([name hasPrefix:@"fixed_vert_"]||[name containsString:@"_vert"])stage=MTLFunctionTypeVertex;
+    else if([name hasPrefix:@"fixed_frag_"]||[name containsString:@"_frag"])stage=MTLFunctionTypeFragment;
+    if(!stage)return; /* Do not invent a stage for an unclassified source name. */
+    NSError *error=nil;
+    NSDictionary *payload=A5MaliShaderCompileFunctionPayload(name,stage,values,&error);
+    NSString *requestID=nil;
+    A5MaliShaderForwardResult result=payload?A5MaliForwardShaderCompileRequest(payload,&requestID,&error):A5MaliShaderForwardFailed;
+    static atomic_uint receipts;
+    if(atomic_fetch_add_explicit(&receipts,1,memory_order_relaxed)<16)
+        fprintf(stderr,"A5XELTE Metal compile request: function=%s result=%ld request=%s\n",
+            boundedFunctionIdentifier(name).UTF8String,(long)result,requestID.UTF8String?:"unavailable");
+}
+
 static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *values)
 {
+    forwardFunctionSpecialization(name,values);
     static atomic_uint requests;
     unsigned request=atomic_fetch_add_explicit(&requests,1,memory_order_relaxed);
     if(request>=4)return;
@@ -198,10 +247,10 @@ static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *
     logConstantArray(indexed,YES,request);
 }
 
-static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t profileID)
+static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t profileID,MTLFunctionType stage)
 {
     size_t count=0;
-    const A5MaliCompiledFunctionConstant *expected=A5MaliCompiledConstantsForProfile(profileID,&count);
+    const A5MaliCompiledFunctionConstant *expected=constantsForStage(profileID,stage,&count);
     if(!expected || !count || count>64 ||
         ![values isKindOfClass:[MTLFunctionConstantValues class]] ||
         ![values respondsToSelector:@selector(newNamedConstantArray)] ||
@@ -239,6 +288,7 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
     NSString *_name;
     MTLFunctionType _functionType;
     uint32_t _specializationProfileID;
+    NSDictionary *_compileRequestPayload;
 }
 - (instancetype)initWithLibrary:(A5MaliMetalLibrary *)library
                            name:(NSString *)name
@@ -342,6 +392,9 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
         const A5MaliCompiledProfile *profiles = A5MaliCompiledProfiles(&count);
         for (size_t i = 0; i < count; ++i) {
             if ([name isEqualToString:[NSString stringWithUTF8String:profiles[i].vertexName]]) {
+                size_t constants=0;
+                A5MaliCompiledVertexConstantsForProfile(profiles[i].profileID,&constants);
+                if(constants)continue;
                 type = MTLFunctionTypeVertex; found = YES; break;
             }
             if ([name isEqualToString:[NSString stringWithUTF8String:profiles[i].fragmentName]]) {
@@ -402,15 +455,19 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
         size_t profileCount=0;const A5MaliCompiledProfile *profiles=A5MaliCompiledProfiles(&profileCount);
         for(size_t i=0;i<profileCount;++i) {
             const A5MaliCompiledProfile *profile=profiles+i;
-            if(!(profile->flags&A5MaliProfileNotExecutable) &&
-                [name isEqualToString:[NSString stringWithUTF8String:profile->fragmentName]] &&
-                constantsMatchProfile(constants,profile->profileID)) {
+            if(profile->flags&A5MaliProfileNotExecutable)continue;
+            for(MTLFunctionType stage=MTLFunctionTypeVertex;stage<=MTLFunctionTypeFragment;++stage) {
+                const char *stageName=stage==MTLFunctionTypeVertex?profile->vertexName:profile->fragmentName;
+                if(![name isEqualToString:[NSString stringWithUTF8String:stageName]] ||
+                    !constantsMatchProfile(constants,profile->profileID,stage))continue;
+                size_t constantCount=0;constantsForStage(profile->profileID,stage,&constantCount);
                 static atomic_uint accepted;
                 if(atomic_fetch_add_explicit(&accepted,1,memory_order_relaxed)<16)
-                    fprintf(stderr,"A5XELTE Metal specialize: accepted profile=%u function=%s constants=58\n",profile->profileID,name.UTF8String);
+                    fprintf(stderr,"A5XELTE Metal specialize: accepted profile=%u function=%s constants=%zu stage=%s\n",
+                        profile->profileID,name.UTF8String,constantCount,stage==MTLFunctionTypeVertex?"vertex":"fragment");
                 if(error)*error=nil;
                 return [[A5MaliMetalFunction alloc]initWithLibrary:self name:name
-                    type:MTLFunctionTypeFragment specializationProfileID:profile->profileID];
+                    type:stage specializationProfileID:profile->profileID];
             }
         }
         logFunctionSpecialization(name,constants);
@@ -439,6 +496,11 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
         _name = [name copy];
         _functionType = type;
         _specializationProfileID=profileID;
+        size_t count=0;const A5MaliCompiledFunctionConstant *expected=constantsForStage(profileID,type,&count);
+        MTLFunctionConstantValues *values=count?[MTLFunctionConstantValues new]:nil;
+        for(size_t i=0;i<count;++i)[values setConstantValue:expected[i].raw type:expected[i].dataType
+            withName:[NSString stringWithUTF8String:expected[i].name]];
+        _compileRequestPayload=A5MaliShaderCompileFunctionPayload(_name,type,values,NULL);
     }
     return self;
 }
@@ -447,6 +509,7 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
 - (A5MaliMetalLibrary *)library { return _library; }
 - (A5MaliRestrictedDevice *)device { return _library.device; }
 - (uint32_t)specializationProfileID { return _specializationProfileID; }
+- (NSDictionary *)compileRequestPayload { return _compileRequestPayload; }
 @end
 
 static NSString *compiledDescriptorMismatch(const A5MaliCompiledProfile *p,
@@ -508,6 +571,27 @@ static NSString *compiledDescriptorMismatch(const A5MaliCompiledProfile *p,
     return nil;
 }
 
+static BOOL specializationIdentityMatches(A5MaliMetalFunction *function,
+    const A5MaliCompiledProfile *profile,MTLFunctionType stage)
+{
+    size_t expectedCount=0,actualCount=0;
+    const A5MaliCompiledFunctionConstant *expected=constantsForStage(profile->profileID,stage,&expectedCount);
+    uint32_t identity=function.specializationProfileID;
+    if(!expectedCount)return identity==0;
+    const A5MaliCompiledProfile *origin=A5MaliCompiledProfileForID(identity);
+    const A5MaliCompiledFunctionConstant *actual=constantsForStage(identity,stage,&actualCount);
+    if(!origin||!expected||!actual||expectedCount!=actualCount)return NO;
+    const char *expectedName=stage==MTLFunctionTypeVertex?profile->vertexName:profile->fragmentName;
+    const char *actualName=stage==MTLFunctionTypeVertex?origin->vertexName:origin->fragmentName;
+    if(strcmp(expectedName,actualName))return NO;
+    for(size_t i=0;i<expectedCount;++i) {
+        if(strcmp(expected[i].name,actual[i].name)||expected[i].dataType!=actual[i].dataType||
+            expected[i].byteCount!=actual[i].byteCount||
+            memcmp(expected[i].raw,actual[i].raw,expected[i].byteCount))return NO;
+    }
+    return YES;
+}
+
 const A5MaliCompiledProfile *A5MaliSelectCompiledProfile(
     MTLRenderPipelineDescriptor *descriptor, NSError **error)
 {
@@ -529,8 +613,8 @@ const A5MaliCompiledProfile *A5MaliSelectCompiledProfile(
         if (p->flags&A5MaliProfileNotExecutable) continue;
         if ([[vertex name] isEqualToString:[NSString stringWithUTF8String:p->vertexName]] &&
             [[fragment name] isEqualToString:[NSString stringWithUTF8String:p->fragmentName]]) {
-            size_t constantCount=0;A5MaliCompiledConstantsForProfile(p->profileID,&constantCount);
-            if([vertex specializationProfileID] || [fragment specializationProfileID]!=(constantCount?p->profileID:0)) {
+            if(!specializationIdentityMatches(vertex,p,MTLFunctionTypeVertex) ||
+                !specializationIdentityMatches(fragment,p,MTLFunctionTypeFragment)) {
                 knownPair=YES;reason=@"function specialization identity differs from the compiled profile";continue;
             }
             knownPair=YES;NSString *mismatch=compiledDescriptorMismatch(p,descriptor);

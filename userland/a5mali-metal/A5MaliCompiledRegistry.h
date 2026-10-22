@@ -101,6 +101,9 @@ const A5MaliCompiledProfile * A5_MALI_NULLABLE A5MaliCompiledProfiles(size_t *co
 const A5MaliCompiledProfile * A5_MALI_NULLABLE A5MaliCompiledProfileForID(uint32_t profileID);
 const A5MaliCompiledFunctionConstant * A5_MALI_NULLABLE
 A5MaliCompiledConstantsForProfile(uint32_t profileID, size_t *count);
+/* Exact vertex constants are separate from the fragment table above. */
+const A5MaliCompiledFunctionConstant * A5_MALI_NULLABLE
+A5MaliCompiledVertexConstantsForProfile(uint32_t profileID, size_t *count);
 
 #ifdef __OBJC__
 @class A5MaliMetalFunction;

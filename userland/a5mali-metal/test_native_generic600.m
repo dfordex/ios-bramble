@@ -83,7 +83,7 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
     memcpy(output,&result,sizeof(result));*outputBytes=sizeof(result);return KERN_SUCCESS;
 }
 
-static MTLFunctionConstantValues *constants(uint32_t profileID,BOOL changed)
+static MTLFunctionConstantValues *fragmentConstants(uint32_t profileID,BOOL changed)
 {
     size_t count=0;
     const A5MaliCompiledFunctionConstant *values=A5MaliCompiledConstantsForProfile(profileID,&count);
@@ -102,15 +102,43 @@ static MTLFunctionConstantValues *constants(uint32_t profileID,BOOL changed)
     }
     assert(!changed||changedOne);return result;
 }
+/* The 602 vertex program is a separate real specialization. Test the four
+ * exact typed values independently, including extra indexed/named entries. */
+static MTLFunctionConstantValues *vertexConstants(uint32_t profileID,
+    int changedIndex,BOOL extraIndexed,BOOL extraNamed)
+{
+    size_t count=0;
+    const A5MaliCompiledFunctionConstant *values=
+        A5MaliCompiledVertexConstantsForProfile(profileID,&count);
+    assert(profileID==602&&values&&count==4);
+    MTLFunctionConstantValues *result=[MTLFunctionConstantValues new];
+    for(size_t i=0;i<count;++i){
+        const A5MaliCompiledFunctionConstant *value=values+i;
+        assert(value->name&&value->byteCount==1&&value->raw[0]==0&&
+            (value->dataType==MTLDataTypeBool||value->dataType==MTLDataTypeUChar));
+        uint8_t raw=(int)i==changedIndex?1:0;
+        [result setConstantValue:&raw type:value->dataType
+            withName:[NSString stringWithUTF8String:value->name]];
+    }
+    uint8_t one=1;
+    if(extraIndexed)[result setConstantValue:&one type:MTLDataTypeUChar atIndex:63];
+    if(extraNamed)[result setConstantValue:&one type:MTLDataTypeUChar withName:@"fc_unknown_extra"];
+    return result;
+}
 static MTLRenderPipelineDescriptor *descriptor(A5MaliMetalLibrary *library,
     const A5MaliCompiledProfile *profile,BOOL changed,NSError **error)
 {
-    assert((profile->profileID==600||profile->profileID==601)&&!strcmp(profile->vertexName,"std_vert0_lph")&&
+    assert((profile->profileID==600||profile->profileID==601||profile->profileID==602)&&
+        !strcmp(profile->vertexName,profile->profileID==602?"fixed_vert_lph_spc":"std_vert0_lph")&&
         !strcmp(profile->fragmentName,profile->profileID==600?"fixed_frag_lph_cpf":"fixed_frag_lph_cph"));
     MTLRenderPipelineDescriptor *d=[MTLRenderPipelineDescriptor new];
-    d.vertexFunction=(id)[library newFunctionWithName:@"std_vert0_lph"];
+    if(profile->profileID==602)
+        d.vertexFunction=(id)[library newFunctionWithName:@"fixed_vert_lph_spc"
+            constantValues:vertexConstants(profile->profileID,-1,NO,NO) error:error];
+    else d.vertexFunction=(id)[library newFunctionWithName:@"std_vert0_lph"];
+    if(!d.vertexFunction)return nil;
     d.fragmentFunction=(id)[library newFunctionWithName:[NSString stringWithUTF8String:profile->fragmentName]
-        constantValues:constants(profile->profileID,changed) error:error];
+        constantValues:fragmentConstants(profile->profileID,changed) error:error];
     if(!d.fragmentFunction)return nil;
     assert(d.vertexFunction&&profile->attributeCount==4&&profile->layoutCount==1);
     d.vertexDescriptor=[MTLVertexDescriptor vertexDescriptor];
@@ -138,6 +166,30 @@ static MTLRenderPipelineDescriptor *descriptor(A5MaliMetalLibrary *library,
         a.sourceAlphaBlendFactor=state->sourceAlpha;a.destinationAlphaBlendFactor=state->destinationAlpha;
     }
     return d;
+}
+static void verifyVertex602Factory(A5MaliMetalLibrary *library,State *state)
+{
+    NSString *name=@"fixed_vert_lph_spc";
+    NSError *error=nil;
+    assert(![library newFunctionWithName:name]); /* Four constants are mandatory. */
+    assert([library newFunctionWithName:name
+        constantValues:vertexConstants(602,-1,NO,NO) error:&error]&&!error);
+    MTLFunctionDescriptor *d=[MTLFunctionDescriptor new];d.name=name;
+    d.constantValues=vertexConstants(602,-1,NO,NO);
+    assert([library newFunctionWithDescriptor:d error:&error]&&!error);
+    for(int i=0;i<4;++i){
+        error=nil;
+        MTLFunctionConstantValues *wrong=vertexConstants(602,i,NO,NO);
+        assert(![library newFunctionWithName:name constantValues:wrong error:&error]&&error);
+        d.constantValues=wrong;error=nil;
+        assert(![library newFunctionWithDescriptor:d error:&error]&&error);
+    }
+    for(int kind=0;kind<2;++kind){
+        error=nil;
+        MTLFunctionConstantValues *wrong=vertexConstants(602,-1,kind==0,kind==1);
+        assert(![library newFunctionWithName:name constantValues:wrong error:&error]&&error);
+    }
+    assert(!state->queries&&!state->submits);
 }
 static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCandidate *pipeline,
     A5MaliMetalTexture *destination,State *s)
@@ -184,6 +236,7 @@ static int run(uint32_t profileID)
         NSError *error=nil;
         A5MaliMetalLibrary *library=[device newLibraryWithURL:[NSURL fileURLWithPath:
             [NSString stringWithUTF8String:path]]error:&error];assert(library&&!error);
+        if(profileID==602)verifyVertex602Factory(library,&s);
         MTLRenderPipelineDescriptor *d=descriptor(library,s.profile,NO,&error);assert(d&&!error);
         A5MaliReadSurfCandidate *pipeline=[device newRenderPipelineStateWithDescriptor:d error:&error];
         assert(pipeline&&!error&&!s.queries&&!s.submits);
@@ -204,8 +257,8 @@ static int run(uint32_t profileID)
         assert(s.queries==2&&s.submits==2&&!command.privateBuffer.completedFence.fragmentFence);
     }
     assert(s.releases==1);
-    puts("native generic600: exact58 typed specialization, authenticated real shader bytes, original packing0, CPU caller snapshots, RT0-only query/submit, constants rejection and terminal/error fences passed (mock transport; no GPU pixels claimed)");
+    printf("native generic%u: exact fragment specialization, authenticated native pair, original packing0, CPU snapshots, RT0-only query/submit, constant rejection and terminal/error fences passed (mock transport; no GPU pixels claimed)\n",profileID);
     return 0;
 }
 
-int main(void) { assert(!run(600));assert(!run(601));puts("generic CPF and CPH native wrapper paths passed; GPU pixels unverified");return 0; }
+int main(void) { assert(!run(600));assert(!run(601));assert(!run(602));puts("generic CPF, CPH and specialized-vertex native wrapper paths passed; GPU pixels unverified");return 0; }

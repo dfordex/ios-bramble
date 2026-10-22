@@ -7,6 +7,8 @@
 #import "A5MaliMetalTexture.h"
 #import "A5MaliNativeTextureOps.h"
 #import "A5MaliCompiledRegistry.h"
+#import "A5MaliShaderCompileRequest.h"
+#import "A5MaliShaderCompiledCache.h"
 #import "A5MaliNative.h"
 #import "A5MaliNativeUpload.h"
 #include "../a5xelte-air-translation/families/runtime_encode.h"
@@ -14,6 +16,7 @@
 #include "../a5xelte-air-translation/families/runtime_path_encode.h"
 #include "../a5xelte-air-translation/families/runtime_clear.h"
 #include <math.h>
+#include <time.h>
 #import <objc/runtime.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -152,16 +155,47 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 @property (nonatomic, readonly) const A5MaliCompiledProfile *profile;
 @property (nonatomic, readonly) BOOL sourceOver;
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
-    profile:(const A5MaliCompiledProfile *)profile sourceOver:(BOOL)sourceOver;
+    profile:(const A5MaliCompiledProfile *)profile sourceOver:(BOOL)sourceOver
+    compileRequestID:(nullable NSString *)requestID;
 @end
 @implementation A5MaliCompiledPipeline {
     const A5MaliCompiledProfile *_profile;
     BOOL _sourceOver;
+    NSString *_compileRequestID;
+    NSLock *_compiledCacheLock;
+    A5MaliShaderCompiledCacheEntry *_compiledCacheEntry;
+    double _nextCachePoll;
 }
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
     profile:(const A5MaliCompiledProfile *)profile sourceOver:(BOOL)sourceOver
-{ if ((self = [super initWithDevice:device])) { _profile=profile; _sourceOver=sourceOver; } return self; }
-- (const A5MaliCompiledProfile *)profile { return _profile; }
+    compileRequestID:(NSString *)requestID
+{
+    if ((self = [super initWithDevice:device])) {
+        _profile=profile;_sourceOver=sourceOver;
+        _compileRequestID=profile->profileID==602?[requestID copy]:nil;
+        _compiledCacheLock=[NSLock new];
+    }
+    return self;
+}
+- (const A5MaliCompiledProfile *)profile
+{
+    [_compiledCacheLock lock];
+    struct timespec uptime;
+    BOOL haveClock=!clock_gettime(CLOCK_MONOTONIC,&uptime);
+    double now=haveClock?uptime.tv_sec+uptime.tv_nsec/1e9:0;
+    if(_compileRequestID && !_compiledCacheEntry && (!haveClock || now>=_nextCachePoll)) {
+        _nextCachePoll=now+5; /* Compilation is background work, never per-draw I/O. */
+        A5MaliShaderCompiledCacheEntry *entry=A5MaliLoadShaderCompiledCache(_compileRequestID,_profile,NULL);
+        if(entry) {
+            _compiledCacheEntry=entry;_profile=entry.profile;
+            fprintf(stderr,"A5XELTE Metal compile cache: bound profile=602 request=%s source=phone-compiled\n",
+                _compileRequestID.UTF8String);
+        }
+    }
+    const A5MaliCompiledProfile *profile=_profile;
+    [_compiledCacheLock unlock];
+    return profile;
+}
 - (BOOL)sourceOver { return _sourceOver; }
 @end
 
@@ -266,6 +300,19 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
         logPipelineDecision(self,descriptor,0,YES,@"legacy read_surf operation4");
         return [[A5MaliReadSurfCandidate alloc]initWithDevice:self];
     }
+    /* Capture the actual complete pipeline, not an inferred state from one
+     * fragment constant. The worker independently validates and compiles it. */
+    NSString *compileRequestID=nil;
+    if(authenticatedPair && [vertex compileRequestPayload] && [fragment compileRequestPayload]) {
+        NSError *requestError=nil;
+        NSDictionary *request=A5MaliShaderCompilePipelinePayload(descriptor,
+            [vertex compileRequestPayload],[fragment compileRequestPayload],&requestError);
+        A5MaliShaderForwardResult forwarded=request?A5MaliForwardShaderCompileRequest(request,&compileRequestID,&requestError):A5MaliShaderForwardFailed;
+        static atomic_uint requestReceipts;
+        if(atomic_fetch_add_explicit(&requestReceipts,1,memory_order_relaxed)<16)
+            fprintf(stderr,"A5XELTE Metal compile request: pipeline vertex=%s fragment=%s result=%ld request=%s\n",
+                [[vertex name]UTF8String],[[fragment name]UTF8String],(long)forwarded,compileRequestID.UTF8String?:"unavailable");
+    }
     NSError *rejection=nil;
     uint32_t profileID=0;
 #if A5_MALI_NATIVE_RENDER
@@ -278,13 +325,13 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     BOOL executable=profile && ((profile->profileID>=99 && profile->profileID<=108) ||
         profile->profileID==200 || profile->profileID==202 || profile->profileID==204 ||
         profile->profileID==206 || profile->profileID==207 ||
-        profile->profileID==600 || profile->profileID==601 ||
+        profile->profileID==600 || profile->profileID==601 || profile->profileID==602 ||
         (profile->profileID>=300 && profile->profileID<=302));
     if(executable && [[self privateDevice]supportsNativePrograms]){
         if(error)*error=nil;
         logPipelineDecision(self,descriptor,profileID,YES,@"authenticated executable profile");
         return [[A5MaliCompiledPipeline alloc]initWithDevice:self profile:profile
-            sourceOver:descriptor.colorAttachments[0].isBlendingEnabled];
+            sourceOver:descriptor.colorAttachments[0].isBlendingEnabled compileRequestID:compileRequestID];
     }
     if(profile)rejection=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
         code:kIOReturnUnsupported userInfo:@{NSLocalizedDescriptionKey:executable?
@@ -1050,7 +1097,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     const A5MaliCompiledProfile *profile=pipeline.profile;
     if(!profile || !(profile->profileID==200 || profile->profileID==202 ||
         profile->profileID==204 || profile->profileID==206 || profile->profileID==207 ||
-        profile->profileID==600 || profile->profileID==601 ||
+        profile->profileID==600 || profile->profileID==601 || profile->profileID==602 ||
         (profile->profileID>=300 && profile->profileID<=302)) ||
         !profile->passCount || profile->passCount>2 || count<3 || count>A5RuntimeMaxVertices ||
         (primitiveType!=MTLPrimitiveTypeTriangle && primitiveType!=MTLPrimitiveTypeTriangleStrip) ||
@@ -1095,7 +1142,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
         [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
     NSMutableArray<NSMutableSet<NSNumber *> *> *storageSlots=
         [NSMutableArray arrayWithObjects:[NSMutableSet new],[NSMutableSet new],nil];
-    if(profile->profileID==206 || profile->profileID==600 || profile->profileID==601)windows[0][@1]=@(count*48);
+    if(profile->profileID==206 || profile->profileID==600 || profile->profileID==601 || profile->profileID==602)windows[0][@1]=@(count*48);
     for(uint32_t i=0;i<profile->resourceCount;++i){const A5MaliCompiledResource*r=profile->resources+i;
         if(r->kind!=A5MaliResourceBuffer)continue;
         if(r->metalIndex>=31 || r->windowOffset || (r->flags&A5MaliResourceWrite) ||

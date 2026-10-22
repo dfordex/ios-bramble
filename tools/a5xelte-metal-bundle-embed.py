@@ -184,10 +184,14 @@ def main() -> None:
             if args.compiler_dir:
                 compiler_launch = regular_bytes(args.compiler_dir / 'compiler-launchdaemon.plist')
                 compiler_plist = plistlib.loads(compiler_launch)
-                if compiler_plist.get('ProgramArguments') != ['/usr/libexec/a5shader-compile','--selftest']:
+                if compiler_plist.get('ProgramArguments') not in (['/usr/libexec/a5shader-compile','--selftest'],['/usr/libexec/a5shader-compile','--serve']):
                     parser.error('unexpected compiler launch arguments')
                 if COMPILER_PLIST_DEST in jobs and jobs[COMPILER_PLIST_DEST] != compiler_plist:
-                    parser.error('cache contains a different compiler job')
+                    previous = dict(compiler_plist)
+                    previous['ProgramArguments'] = ['/usr/libexec/a5shader-compile','--selftest']
+                    previous.pop('KeepAlive', None)
+                    if jobs[COMPILER_PLIST_DEST] != previous:
+                        parser.error('cache contains an unrecognized different compiler job')
                 jobs[COMPILER_PLIST_DEST] = compiler_plist
             patched_cache = plistlib.dumps(cache, fmt=plistlib.FMT_BINARY, sort_keys=False)
             if len(patched_cache) > MAX_FILE:
@@ -198,6 +202,8 @@ def main() -> None:
             'a5shader-compile','a5shader/metal2vulkan','a5shader/midgard-compile',
             'a5shader/spirv-val','a5shader/profile.json','a5shader/pairs.json',
             'compiler-launchdaemon.plist'}
+        if (args.compiler_dir / 'a5shader/midgard-generic602').is_file():
+            compiler_members.update({'a5shader/midgard-generic602','a5shader/generic602.json'})
         actual = {str(p.relative_to(args.compiler_dir)) for p in args.compiler_dir.rglob('*') if not p.is_dir()}
         if actual != compiler_members:
             parser.error('unexpected compiler package members')

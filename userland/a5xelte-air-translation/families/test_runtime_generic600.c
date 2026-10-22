@@ -98,9 +98,29 @@ int main(int argc,char**argv){
  assert(!memcmp(syntheticDescriptor,descriptor,sizeof(descriptor)));
  m.draw.profile=&profile;
 #endif
+ /* 602 is the actual fixed_vert_lph_spc specialization seen in the phone
+  * trace. Its compiled VS happens to be byte-identical to std_vert0_lph;
+  * keep the captured function identity distinct in the profile contract. */
+ profile.profileID=602;pass.passID=602;
+ profile.vertexName="fixed_vert_lph_spc";
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ assert(!memcmp(syntheticDescriptor,descriptor,sizeof(descriptor)));
+#ifdef A5_TEST_REAL_PROFILE
+ real=NULL;
+ for(size_t i=0;i<sizeof(kA5MaliCompiledProfiles)/sizeof(kA5MaliCompiledProfiles[0]);++i)
+  if(kA5MaliCompiledProfiles[i].profileID==602)real=&kA5MaliCompiledProfiles[i];
+ assert(real);m.draw.profile=real;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ assert(!memcmp(syntheticDescriptor,descriptor,sizeof(descriptor)));
+ m.draw.profile=&profile;
+#endif
+ profile.vertexName="std_vert0_lph";
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ profile.vertexName="fixed_vert_lph_spc";
  profile.fragmentName="fixed_frag_lph_cpf";
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
  profile.profileID=600;pass.passID=600;
+ profile.vertexName="std_vert0_lph";
  m.draw.blend=A5RuntimeBlendPremultipliedSourceOver;
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
  m.draw.blend=A5RuntimeBlendCopy;m.draw.vertexBuffers[1].bytes=sizeof(vertices)-1;
@@ -116,6 +136,6 @@ int main(int argc,char**argv){
  res.uniformBytes=64;pass.fragment.sha256="wrong";
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
  free(vs);free(fs);
- puts("PASS generic600/601 exact host pair descriptor/ABI and unsupported-state gates; device pixels unverified");
+ puts("PASS generic600/601/602 exact host pair descriptor/ABI and unsupported-state gates; device pixels unverified");
  return 0;
 }

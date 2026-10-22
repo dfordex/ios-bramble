@@ -34,6 +34,8 @@ def main() -> int:
     source = out / "src" / "mesa-26.2.4"
     build = out / "build"
     compiler = Path(__file__).resolve().parents[1] / "spirv_pair_midgard.c"
+    family_dir = Path(__file__).resolve().parents[1] / "families"
+    generic_profile = Path(__file__).resolve().parents[1] / "generic" / "ios_602_profile.h"
     archive_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
     if archive_sha != "bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9":
         raise ValueError("requires the pinned official Mesa26.2.4 archive")
@@ -48,7 +50,8 @@ def main() -> int:
     clangxx = run(["xcrun", "--sdk", "iphoneos", "--find", "clang++"]).strip()
     ar = run(["xcrun", "--sdk", "iphoneos", "--find", "ar"]).strip()
     cross = out / "ios-arm64.ini"
-    target_args = ["-target", "arm64-apple-ios16.0", "-isysroot", sdk]
+    target_args = ["-target", "arm64-apple-ios16.0", "-mcpu=cortex-a53",
+                   "-march=armv8-a+crypto", "-isysroot", sdk]
     cross.write_text(
         "[binaries]\n" +
         f"c = {[clang, *target_args]!r}\n" +
@@ -80,12 +83,30 @@ def main() -> int:
             stream.write(marker)
     integration = source / "a5-ios"
     integration.mkdir(exist_ok=True)
+    generic_source = integration / "midgard_generic.c"
+    generic_source_text = (family_dir / "misc_backend.c").read_text()
+    anchor = "   pan_preprocess_nir(nir,inputs.gpu_id);"
+    if generic_source_text.count(anchor) != 1:
+        raise ValueError("Mesa generic backend initializer insertion point changed")
+    generic_source_text = generic_source_text.replace(anchor,
+        "   NIR_PASS(_,nir,nir_lower_variable_initializers,\n"
+        "            nir_var_function_temp|nir_var_shader_temp);\n" + anchor)
+    generic_source.write_text(generic_source_text)
+    for name in ("misc_resource_lowering.h", "misc_native_rt.h"):
+        shutil.copyfile(family_dir / name, integration / name)
+    shutil.copyfile(generic_profile, integration / "ios_602_profile.h")
     (integration / "meson.build").write_text(
         "executable('midgard', files(" + repr(str(compiler)) + "),\n"
         "  include_directories: [inc_include, inc_src, inc_panfrost],\n"
         "  dependencies: [idep_vtn, idep_nir, idep_mesautil],\n"
         "  link_with: [libpanfrost_compiler, libpanfrost_midgard_disasm],\n"
-        "  c_args: ['-Werror'], install: false)\n")
+        "  c_args: ['-Werror', '-mcpu=cortex-a53', '-march=armv8-a+crypto'], install: false)\n"
+        "executable('midgard-generic602', files('midgard_generic.c'),\n"
+        "  include_directories: [inc_include, inc_src, inc_panfrost],\n"
+        "  dependencies: [idep_vtn, idep_nir, idep_mesautil],\n"
+        "  link_with: [libpanfrost_compiler, libpanfrost_midgard_disasm],\n"
+        "  c_args: ['-Werror', '-mcpu=cortex-a53', '-march=armv8-a+crypto',\n"
+        "           '-DA5_FAMILY_CONFIG=\"ios_602_profile.h\"'], install: false)\n")
     if not (build / "build.ninja").exists():
         run([sys.executable, "-m", "mesonbuild.mesonmain", "setup", str(build),
              str(source), "--cross-file", str(cross),
@@ -96,11 +117,14 @@ def main() -> int:
              "-Dshader-cache=disabled", "-Dlibunwind=disabled", "-Dvalgrind=disabled",
              "-Dxmlconfig=disabled", "-Dexpat=disabled", "-Dspirv-tools=disabled",
              "-Dbuild-tests=false"])
-    run(["ninja", "-j", str(args.jobs), "a5-ios/midgard"], cwd=build)
+    run(["ninja", "-j", str(args.jobs), "a5-ios/midgard", "a5-ios/midgard-generic602"], cwd=build)
     executable = out / "midgard"
     shutil.copy2(build / "a5-ios" / "midgard", executable)
-    run(["strip", "-S", "-x", str(executable)])
-    run(["codesign", "--force", "--sign", "-", str(executable)])
+    generic_executable = out / "midgard-generic602"
+    shutil.copy2(build / "a5-ios" / "midgard-generic602", generic_executable)
+    for tool in (executable, generic_executable):
+        run(["strip", "-S", "-x", str(tool)])
+        run(["codesign", "--force", "--sign", "-", str(tool)])
     load_commands = run(["otool", "-l", str(executable)])
     dependencies = run(["otool", "-L", str(executable)])
     file_info = run(["file", str(executable)])
@@ -120,6 +144,8 @@ def main() -> int:
         "nir_validation": True, "executable_bytes": executable.stat().st_size,
         "executable_sha256": hashlib.sha256(
             executable.read_bytes()).hexdigest(), "dependencies": dependency_paths,
+        "generic_602_source_sha256": hashlib.sha256(generic_source.read_bytes()).hexdigest(),
+        "generic_602_executable_sha256": hashlib.sha256(generic_executable.read_bytes()).hexdigest(),
     }, indent=2) + "\n")
     print(executable)
     return 0

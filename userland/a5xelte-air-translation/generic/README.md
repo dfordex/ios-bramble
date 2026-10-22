@@ -1,6 +1,6 @@
 # Captured QuartzCore generic fragment, host compilation
 
-`compile_0185.py` reproduces two narrowly identified host compilations. The
+`compile_0185.py` reproduces three narrowly identified host compilations. The
 0185 device log captured 58 named function constants while QuartzCore
 requested `fixed_frag_lpf_cpf`, which does not exist in the staged stock
 QuartzCore library. The earlier `fixed_frag_lph_cpf` compilation was an
@@ -10,6 +10,14 @@ the 0186 device log actually requested `fixed_frag_lph_cph` with the same 58
 constants. The 0186 profile compiles this exact stock function. QuartzCore's
 CP precision selection depends on another config bit; native FP16 alone did
 not imply the earlier CPF prediction.
+
+The 0187 device capture names the actual vertex function
+`fixed_vert_lph_spc` and four named function constants, all zero. Supply its
+JSON with `--vertex-capture` alongside the 0186 fragment capture to select
+profile 602. The script requires the exact capture hashes and compiles the
+actual vertex and fragment AIR rather than a substituted vertex name. Without
+`--vertex-capture`, profiles 600 and 601 retain the earlier `std_vert0_lph`
+host candidate; profile 601 alone is not proof of the live vertex stage.
 
 Inputs are the private capture JSON, stock QuartzCore `default.metallib`,
 `metal2vulkan-host`, `spirv-val`, its Vulkan 1.2 floor profile, and a Mesa
@@ -30,15 +38,20 @@ are dead in native code for this exact specialization. There are no surviving
 texture, sampler, storage, or input attachment reads. A real color rule value
 is still required; BGRA8Unorm uses `0x2222` in the available metadata.
 
-The candidate `std_vert0_lph` vertex shader is likewise byte-identical across
-both host compilations. It reads original Metal Buffer 1,
+The actual `fixed_vert_lph_spc` shader in profile 602 and the earlier
+`std_vert0_lph` candidate compile to byte-identical native vertex code for
+these constants. QuartzCore configures original Metal Buffer 1 with stride
+48 and four attributes: Float4 at offset 0, Float2 at offset 16, Float2 at
+offset 24 and Half4 at offset 32. The specialized vertex shader uses only
+the Float4 and Half4 inputs. It reads original Metal Buffer 1,
 stride 48: Float4 at offset 0 and Half4 at offset 32. It reads a 64 byte
 matrix from Metal Vertex Buffer 2 (hardware UBO 1), and viewport scale/offset
 from hardware UBO 0 at bytes `0x200` and `0x210`. It emits position, point
-size, and `VAR0` color. Neither phone capture included the actual
-vertex function, vertex buffer layout, topology, color attachment format, or
-blend state. BGRA8Unorm and triangle topology are host assumptions. A pair or
-draw must not be reported as device verified from this compilation alone.
+size, and `VAR0` color. The 0187 capture identifies the live vertex function,
+but no phone capture establishes the render target format, blend state,
+topology, resource contents, or executed GPU job. BGRA8Unorm and triangle
+topology remain host assumptions. A draw must not be reported as device
+verified from this compilation alone.
 
 This directory contains no stock AIR, metallib, SPIR-V or Midgard bytes. Keep
 generated outputs private and out of Git.

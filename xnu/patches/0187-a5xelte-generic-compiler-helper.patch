@@ -1,0 +1,10 @@
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -316,6 +316,7 @@
+ 			{ "com.orhunnx.a5shader.a5shader-compile", "/usr/libexec/a5shader-compile" },
+ 			{ "com.orhunnx.a5shader.metal2vulkan", "/usr/libexec/a5shader/metal2vulkan" },
+ 			{ "com.orhunnx.a5shader.midgard-compile", "/usr/libexec/a5shader/midgard-compile" },
++			{ "com.orhunnx.a5shader.midgard-generic602", "/usr/libexec/a5shader/midgard-generic602" },
+ 			{ "com.orhunnx.a5shader.spirv-val", "/usr/libexec/a5shader/spirv-val" },
+ 		};
+ 		char path[128];

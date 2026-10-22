@@ -5,7 +5,7 @@ metallib by size, magic and SHA256. Additional function objects are created
 only for actual programs in the private compiled registry. Each native stage
 is checked against its recorded SHA256 before the registry is exposed.
 Unknown names, unsupported Metal function constants, specialization names,
-archives and changed library bytes are rejected. Profiles600/601 are the exact
+archives and changed library bytes are rejected. Profiles600–602 are the exact
 named-constant exception described below; arbitrary specialization remains unsupported.
 
 The source-only generator reads the actual compiler outputs and reflected
@@ -29,6 +29,9 @@ python3 tools/a5mali-compiled-registry.py \
   --generic-metallib PRIVATE/default.metallib \
   --generic-cph-receipt PRIVATE/generic-cph/receipt.json \
   --generic-cph-capture PRIVATE/captured-cph.json \
+  --generic-fixed-receipt PRIVATE/generic-fixed/receipt.json \
+  --generic-fixed-fragment-capture PRIVATE/captured-cph.json \
+  --generic-fixed-vertex-capture PRIVATE/captured-fixed-vertex.json \
   --output-dir PRIVATE/compiled-registry
 ```
 
@@ -67,6 +70,7 @@ it does not by itself make a pipeline executable.
 |302|Original stroke attachment contract; genuine inline RGBA16Float source-over only on logical RT0|Native capability; RT1/RT2 writes disabled|
 |400–403|Actual original path MRT/ordered-fetch metadata|Explicitly nonexecutable|
 |600,601|Genuine fixed_frag_lph_cpf / fixed_frag_lph_cph with captured58 named constants|Exact specialization, std_vert0_lph packing0, one BGRA8 RT0 and copy-only state|
+|602|Actual fixed_vert_lph_spc + fixed_frag_lph_cph with independent4+58 typed constants|Exact stage identities, full original packing0, one BGRA8 RT0 and copy-only state|
 
 The two generic profiles are independently translated from their real stock
 functions and exact typed captures. Their optimized native programs happen to
@@ -76,6 +80,14 @@ and ColorWriteRule at UBO0 byte68. The candidate vertex reads VB1 Float4 positio
 and Half4 color (stride48), plus the VB2 matrix. This vertex/attachment/blend
 combination has not yet been observed after live fragment specialization; a
 different stock pipeline must reject rather than silently use this contract.
+
+Profile602 uses the actual vertex name observed in0187. Its genuine native
+vertex code optimizes to the same bytes as the candidate, but the function
+objects remain distinct. Vertex constants are checked separately from fragment
+constants; sharing the identical CPH fragment across601/602 requires the same
+name, stage and complete typed constant table. Full attachment/blend state is
+still checked independently. See [0188 automatic requests](../../docs/a5xelte-0188-native-vertex-and-compiler-requests.md)
+for the bounded on-device compilation, publication and known602 cache loader.
 
 Original path metadata retains all actual attachment formats, including RT2.
 Coverage300/301 only enables RT2 Red with sourceOne + destinationOne/Add;
@@ -97,10 +109,10 @@ R8 uses the actual RG8Unorm RT1 format. Clear retains BGRA RT0 but disables it
 and writes BGRA RT1. Format0 slots beyond A2/A3 retain Metal's default All mask.
 A later disable of cubic RT0 leaves its earlier source-over factors intact;
 these values are recorded instead of reset or ignored. Only passes for enabled
-logical targets are submitted: with both generic profiles, the24 registry passes
-comprise20 executable passes and4 host-only original metadata entries.
+logical targets are submitted: with all three generic profiles, the25 registry
+passes comprise21 executable passes and4 host-only original metadata entries.
 
-The native renderer admits99–108, the five logical misc profiles,300–302 and600/601.
+The native renderer admits99–108, the five logical misc profiles,300–302 and600–602.
 Uniform bindings preserve
 Metal slot numbers and dynamic contents: vertex buffers2/3 map to hardware
 UBOs1/2; fragment buffers1/6 map to UBOs3/4; texture3 and sampler0 map to native

@@ -32,6 +32,8 @@ static NSString *const cacheRoot = @A5_TEST_CACHE;
 static NSString *const sourceLibrary = @A5_TEST_LIBRARY;
 #endif
 static NSString *activeWork;
+static NSString *activeRequestKey;
+static void a5WriteStatus(NSString *key, NSString *status, NSString *reason);
 static void fail(NSString *reason);
 
 static void showSuccess(void)
@@ -66,6 +68,11 @@ static void fail(NSString *reason)
             }
         }
         [NSFileManager.defaultManager removeItemAtPath:activeWork error:NULL];
+    }
+    if (activeRequestKey) {
+        NSString *key = activeRequestKey;
+        activeRequestKey = nil;
+        a5WriteStatus(key,@"failed",reason);
     }
     exit(1);
 }
@@ -362,12 +369,14 @@ static void compilePair(NSString *self, NSString *pair)
         (unsigned long)[report[@"frag"][@"bytes"] unsignedLongValue],key.UTF8String);
 }
 
+#include "a5shader_requests.inc.m"
+
 int main(int argc, char **argv)
 {
     @autoreleasepool {
       @try {
         if (argc > 1 && !strcmp(argv[1],"--worker")) return worker(argc,argv);
-        if (argc != 2 && argc != 3) { fprintf(stderr,"usage: %s --selftest | --pair read_surf|downsample_4\n",argv[0]); return 2; }
+        if (argc != 2 && argc != 3) { fprintf(stderr,"usage: %s --serve | --selftest | --pair read_surf|downsample_4\n",argv[0]); return 2; }
         NSString *self = NSBundle.mainBundle.executablePath;
         if (!NSFileManager.defaultManager) fail(@"file manager unavailable");
 #ifndef A5_SHADER_HOST_TEST
@@ -382,12 +391,24 @@ int main(int argc, char **argv)
         int lockfd = open(lock.fileSystemRepresentation,O_RDWR|O_CREAT|O_NOFOLLOW,0600);
         if (lockfd < 0 || flock(lockfd,LOCK_EX|LOCK_NB)) fail(@"compiler cache is busy");
         fprintf(stderr,"A5XELTE shader compiler: native iOS ARM64 service start no_time_limit=1\n");
-        if (argc == 2 && !strcmp(argv[1],"--selftest")) {
+        if (argc == 2 && !strcmp(argv[1],"--serve")) {
+            a5PrepareRequestRoots();
+            if (setpriority(PRIO_PROCESS,0,10))
+                fprintf(stderr,"A5XELTE shader compiler: priority adjustment unavailable errno=%d\n",errno);
+        }
+        if (argc == 2 && (!strcmp(argv[1],"--selftest") || !strcmp(argv[1],"--serve"))) {
+#ifdef A5_SHADER_HOST_TEST
+            if (strcmp(argv[1],"--serve")) {
+#endif
             for (NSString *pair in @[@"read_surf",@"downsample_4"]) {
                 compilePair(self,pair);
                 compilePair(self,pair);
             }
             showSuccess();
+#ifdef A5_SHADER_HOST_TEST
+            }
+#endif
+            if (!strcmp(argv[1],"--serve")) a5Serve(self);
         } else if (argc == 3 && !strcmp(argv[1],"--pair")) {
             compilePair(self,[NSString stringWithUTF8String:argv[2]]);
         } else return 2;

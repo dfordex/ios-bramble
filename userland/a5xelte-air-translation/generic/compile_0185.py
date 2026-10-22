@@ -22,6 +22,8 @@ PINNED_VERTEX = {
     'spirv': '0528d04cf9a3ff58fb8fb239c8d0cc3a68d8f92655933ee2ae3e0eef9f4d9ea0',
     'midgard': '3cdf2b0db0b9992ce887242e7cac282cd70c3f8051e3ace3e791a0b676193a79',
 }
+PINNED_REAL_VERTEX_SPIRV = 'c022ec8724edf2fba6c7860686d07bf3c47c22577804f868f61ebf145018ecbc'
+PINNED_REAL_VERTEX_CAPTURE = '4a22ff76f6f39a50069498ca7a81e2a34a15b693f610ab70ec15f2d82164eb13'
 PINNED_FRAGMENT_NATIVE = 'e66041333f6452510cda4d0ee1f1c1edf443a12007a989871a1546791deb0834'
 PROFILES = {
     'fixed_frag_lpf_cpf': {
@@ -39,6 +41,39 @@ PROFILES = {
         'reason': '0186 real stock LPH CPH function requested by QuartzCore',
     },
 }
+PROFILE_602 = dict(PROFILES['fixed_frag_lph_cph'],
+    profile_id=602, vertex='fixed_vert_lph_spc',
+    vertex_spirv_sha256=PINNED_REAL_VERTEX_SPIRV,
+    reason='0187 actual stock vertex paired with 0186 actual stock fragment')
+
+
+def profile_for_capture(fragment_path, vertex_path=None):
+    fragment = json.loads(Path(fragment_path).read_text())
+    captured_constants(Path(fragment_path))
+    profile = PROFILES[fragment['function']]
+    if vertex_path is None:
+        return dict(profile, vertex='std_vert0_lph',
+                    vertex_spirv_sha256=PINNED_VERTEX['spirv'])
+    if fragment['function'] != 'fixed_frag_lph_cph':
+        raise ValueError('real vertex 0187 can only pair with actual CPH fragment 0186')
+    vertex = json.loads(Path(vertex_path).read_text())
+    if sha(Path(vertex_path)) != PINNED_REAL_VERTEX_CAPTURE or \
+            vertex.get('function') != 'fixed_vert_lph_spc' or \
+            vertex.get('indexed_count') != 0 or vertex.get('truncated'):
+        raise ValueError('0187 vertex capture identity differs')
+    expected = {'fc_generic': 53, 'fc_texcoord_count0': 49,
+                'fc_texcoord_count1': 49, 'fc_vertex_layout': 49}
+    if set(vertex['constants']) != set(expected):
+        raise ValueError('0187 vertex constant names differ')
+    for name, ty in expected.items():
+        item = vertex['constants'][name]
+        if item['type'] != ty or item['values'] != [0] or item['raw'] != '00':
+            raise ValueError(f'0187 vertex constant differs: {name}')
+    fragment_constants = fragment['constants']
+    if any(vertex['constants'][name]['values'] !=
+           fragment_constants[name]['values'] for name in expected):
+        raise ValueError('fragment and vertex constants conflict')
+    return PROFILE_602
 CONSTANT_CONTRACT_SHA256 = 'ce2da02786df035dba926c6959c2c03aeddf4737577538bd168e1b7921f6341b'
 PACKING0 = {
     'layouts': {'1': {'stride': 48, 'step_function': 'PerVertex', 'step_rate': 1}},
@@ -171,7 +206,7 @@ static const struct a5_stage_profile kStages[] = {
     return header
 
 
-def native_receipt(log):
+def native_receipt(log, real_vertex=False):
     text = log.read_text()
     # Mesa's `MIDGARD_MESA_DEBUG=shaders` final NIR follows a unique marker.
     vertex_marker = 'MESA: info: shader: MESA_SHADER_VERTEX'
@@ -184,6 +219,8 @@ def native_receipt(log):
             'VARYING_SLOT_VAR0' not in vertex or
             'VARYING_SLOT_POS' not in vertex):
         raise ValueError('candidate vertex I/O contract changed')
+    if real_vertex and 'VARYING_SLOT_VAR1' in vertex:
+        raise ValueError('real 0187 vertex unexpectedly reads/writes VAR1')
     vertex_ubos = re.findall(r'@load_ubo \(([^\n]+)', vertex)
     if not any('0x1' in load for load in vertex_ubos):
         raise ValueError('vertex matrix buffer no longer survives')
@@ -217,16 +254,17 @@ def native_receipt(log):
                 'hardware UBO1 Metal Vertex Buffer2 64 byte matrix',
                 'hardware UBO0 viewport scale +0x200, offset +0x210'],
             'candidate_vertex_outputs': ['POS', 'PSIZ', 'VAR0 float4'],
-            'vertex_candidate': True}
+            'vertex_candidate': not real_vertex}
 
 
-def validate_receipt(receipt_path, capture_path, metallib_path):
+def validate_receipt(receipt_path, capture_path, metallib_path,
+                     vertex_capture_path=None):
     """Allow an integrator to reject stale, substituted or partial host output."""
     receipt_path = Path(receipt_path)
     receipt = json.loads(receipt_path.read_text())
     capture_path = Path(capture_path)
     capture = json.loads(capture_path.read_text())
-    profile = PROFILES[capture['function']]
+    profile = profile_for_capture(capture_path, vertex_capture_path)
     if (receipt['schema'] != 1 or
             receipt['profile_id'] != profile['profile_id'] or
             receipt['compiled_function'] != profile['compiled'] or
@@ -245,9 +283,18 @@ def validate_receipt(receipt_path, capture_path, metallib_path):
     verify_reflection(reflection)
     if receipt['reflected_vertex_input'] != reflection['vertex_input'] or \
             receipt['reflected_layout'] != reflection['layout'] or \
-            receipt['reflected_color_write_rules'] != reflection['graphics']['color_write_rules']:
+            receipt['reflected_color_write_rules'] != reflection['graphics']['color_write_rules'] or \
+            receipt['configured_vertex_packing0'] != PACKING0:
         raise ValueError('receipt differs from validated reflection')
-    native = native_receipt(receipt_path.parent / 'midgard.log')
+    if receipt['vertex_function'] != profile['vertex']:
+        raise ValueError('vertex function identity differs')
+    if profile['profile_id'] == 602:
+        vertex_capture = json.loads(Path(vertex_capture_path).read_text())
+        if receipt['vertex_capture_sha256'] != sha(Path(vertex_capture_path)) or \
+                receipt['vertex_captured_constants'] != vertex_capture['constants']:
+            raise ValueError('real vertex capture differs')
+    native = native_receipt(receipt_path.parent / 'midgard.log',
+                            profile['profile_id'] == 602)
     if any(receipt[k] != value for k, value in native.items()):
         raise ValueError('receipt differs from native shader inspection')
     for stage in ('vert', 'frag'):
@@ -256,7 +303,8 @@ def validate_receipt(receipt_path, capture_path, metallib_path):
             path = receipt_path.parent / f'{stage}.{ext}'
             if kind == 'spirv':
                 path = receipt_path.parent / f"{profile['compiled']}.{stage}.spv"
-            expected = (PINNED_VERTEX[kind] if stage == 'vert' else
+            expected = ((profile['vertex_spirv_sha256'] if kind == 'spirv' else
+                         PINNED_VERTEX['midgard']) if stage == 'vert' else
                         profile['fragment_spirv_sha256'] if kind == 'spirv' else
                         PINNED_FRAGMENT_NATIVE)
             if item[f'{kind}_bytes'] != path.stat().st_size or \
@@ -271,6 +319,8 @@ def main():
     for name in ('capture', 'metallib', 'translator', 'validator', 'profile',
                  'mesa-build', 'output'):
         p.add_argument('--' + name, type=Path, required=True)
+    p.add_argument('--vertex-capture', type=Path,
+                   help='0187 actual vertex capture; enables strict profile 602')
     a = p.parse_args()
     out = a.output.resolve()
     if out == ROOT or ROOT in out.parents:
@@ -280,7 +330,7 @@ def main():
         p.error('output must be empty to prevent stale compilation artifacts')
     constants = captured_constants(a.capture)
     captured_name = json.loads(a.capture.read_text())['function']
-    profile = PROFILES[captured_name]
+    profile = profile_for_capture(a.capture, a.vertex_capture)
     if sha(a.metallib) != PINNED_METALLIB_SHA256:
         p.error('this recipe requires the measured stock QuartzCore metallib')
     descriptor = out / 'packing0.json'
@@ -288,7 +338,7 @@ def main():
     prefix = out / profile['compiled']
     meta_path = out / 'reflection.json'
     cmd = [str(a.translator), str(a.metallib), str(prefix) + '.spv',
-           '--profile', str(a.profile), '--function', 'std_vert0_lph',
+           '--profile', str(a.profile), '--function', profile['vertex'],
            '--fragment', profile['compiled'], '--color-format',
            '0:BGRA8Unorm', '--vertex-descriptor', str(descriptor),
            '--emit-meta', str(meta_path), '--no-timeout'] + constants
@@ -312,7 +362,7 @@ def main():
     env['MIDGARD_MESA_DEBUG'] = 'shaders'
     run([str(executable), str(stages['vert']), str(stages['frag']),
          str(native['vert']), str(native['frag'])], out / 'midgard.log', env)
-    receipt = native_receipt(out / 'midgard.log')
+    receipt = native_receipt(out / 'midgard.log', profile['profile_id'] == 602)
     info_lines = re.findall(
         r'Midgard bytes=(\d+) first_tag=(\d+) textures=(\d+) work_regs=(\d+) '
         r'tls=(\d+) wls=(\d+) attributes=(\d+) ubos=(\d+) samplers=(\d+)',
@@ -327,6 +377,7 @@ def main():
                    host_only=True, device_pair_verified=False,
                    captured_function=captured_name,
                    compiled_function=profile['compiled'],
+                   vertex_function=profile['vertex'],
                    reason=profile['reason'],
                    named_constant_count=58,
                    capture_sha256=sha(a.capture), metallib_sha256=sha(a.metallib),
@@ -334,8 +385,12 @@ def main():
                    candidate_color_format='BGRA8Unorm (host assumption; not live captured)',
                    candidate_topology='triangle (host assumption; not live captured)',
                    reflected_vertex_input=meta['vertex_input'],
+                   configured_vertex_packing0=PACKING0,
                    reflected_layout=meta['layout'],
                    reflected_color_write_rules=meta['graphics']['color_write_rules'],
+                   vertex_capture_sha256=sha(a.vertex_capture) if a.vertex_capture else None,
+                   vertex_captured_constants=json.loads(a.vertex_capture.read_text())['constants']
+                       if a.vertex_capture else None,
                    stages={stage: {'spirv_sha256': sha(stages[stage]),
                                    'spirv_bytes': stages[stage].stat().st_size,
                                    'midgard_sha256': sha(native[stage]),
@@ -343,7 +398,8 @@ def main():
                                    'native_info': infos[stage]}
                            for stage in stages})
     (out / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
-    validate_receipt(out / 'receipt.json', a.capture, a.metallib)
+    validate_receipt(out / 'receipt.json', a.capture, a.metallib,
+                     a.vertex_capture)
     print(json.dumps(receipt, indent=2))
 
 

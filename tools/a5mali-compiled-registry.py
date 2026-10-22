@@ -298,14 +298,14 @@ def array(symbol,data):
     return 'static const uint8_t '+symbol+'[] = {\n'+''.join('  '+','.join(f'0x{x:02x}' for x in data[i:i+24])+',\n' for i in range(0,len(data),24))+'};\n'
 
 
-def generic_profile(receipt_path, capture_path, metallib_path):
+def generic_profile(receipt_path, capture_path, metallib_path, vertex_capture_path=None):
     recipe=Path(__file__).resolve().parents[1]/'userland/a5xelte-air-translation/generic/compile_0185.py'
     spec=importlib.util.spec_from_file_location('generic_recipe',recipe)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-    j=module.validate_receipt(receipt_path,capture_path,metallib_path)
+    j=module.validate_receipt(receipt_path,capture_path,metallib_path,vertex_capture_path)
     if j['metallib_sha256']!=METALLIB_SHA:fail('unreviewed generic library')
     fragment=j['compiled_function']
-    pid={'fixed_frag_lph_cpf':600,'fixed_frag_lph_cph':601}.get(fragment)
+    pid=602 if vertex_capture_path else {'fixed_frag_lph_cpf':600,'fixed_frag_lph_cph':601}.get(fragment)
     if pid is None:fail('unreviewed generic precision variant')
     passes={}
     for key,stage in [('vertex','vert'),('fragment','frag')]:
@@ -318,7 +318,7 @@ def generic_profile(receipt_path, capture_path, metallib_path):
                 first_tag=info['first_tag'],work_regs=info['work_regs'],tls=info['tls'],wls=info['wls']))
     # This is a narrow supported API contract for a genuine host-compiled pair,
     # not a reconstruction of the still-unobserved live vertex/target state.
-    p={'id':pid,'name':fragment+'_bgra8','vertex':'std_vert0_lph',
+    p={'id':pid,'name':fragment+'_bgra8','vertex':j.get('vertex_function','std_vert0_lph'),
        'fragment':fragment,'formats':[80]+[0]*7,'flags':0,'viewport':[0,0],
        'resources':[[1,1,2,0,1,1,0,64,0,0]],
        'push':[[1,1,2,0,4,0],[2,2,0,68,4,0x2222]],
@@ -327,6 +327,10 @@ def generic_profile(receipt_path, capture_path, metallib_path):
        'attachment_contracts':[[[15,0,0,0,1,0,1,0] for _ in range(8)]],
        'function_constants':j['captured_constants'],
        'proof':'Exact typed fragment specialization and pinned host compilation; live pair not yet verified'}
+    if pid==602:
+        if j['vertex_function']!='fixed_vert_lph_spc' or fragment!='fixed_frag_lph_cph':fail('unreviewed specialized vertex pair')
+        p['vertex_function_constants']=j['vertex_captured_constants']
+        p['proof']='Both observed stage names and exact typed constants; full render state not yet captured'
     return p
 
 
@@ -357,17 +361,19 @@ def emit(profiles,output):
         rows.append('{'+','.join(values)+'}')
     lines.append('static const A5MaliCompiledProfile kA5MaliCompiledProfiles[] = {\n'+',\n'.join(rows)+'\n};\n')
     for p in profiles:
-        constants=p.get('function_constants')
-        if not constants:continue
-        if p['id'] not in (600,601) or len(constants)!=58:fail('unreviewed specialized function profile')
-        values=[]
-        for key,item in sorted(constants.items()):
-            raw=list(bytes.fromhex(item['raw']))
-            width={49:1,51:3,53:1}.get(item['type'])
-            if width!=len(raw) or raw!=item['values']:fail('invalid typed generic constant')
-            values.append('{'+','.join([json.dumps(name(key)),str(item['type']),str(width),
-                '{'+','.join(map(str,raw+[0]*(3-width)))+'}'])+'}')
-        lines.append(f'#define A5_MALI_HAS_GENERIC_{p["id"]} 1\nstatic const A5MaliCompiledFunctionConstant kA5MaliProfile{p["id"]}Constants[] = {{\n'+',\n'.join(values)+'\n};\n')
+        for field,suffix,expected in [('function_constants','Constants',58),('vertex_function_constants','VertexConstants',4)]:
+            constants=p.get(field)
+            if not constants:continue
+            if p['id'] not in (600,601,602) or (field=='vertex_function_constants' and p['id']!=602) or len(constants)!=expected:fail('unreviewed specialized function profile')
+            values=[]
+            for key,item in sorted(constants.items()):
+                raw=list(bytes.fromhex(item['raw']))
+                width={49:1,51:3,53:1}.get(item['type'])
+                if width!=len(raw) or raw!=item['values']:fail('invalid typed generic constant')
+                values.append('{'+','.join([json.dumps(name(key)),str(item['type']),str(width),
+                    '{'+','.join(map(str,raw+[0]*(3-width)))+'}'])+'}')
+            if field=='function_constants':lines.append(f'#define A5_MALI_HAS_GENERIC_{p["id"]} 1\n')
+            lines.append(f'static const A5MaliCompiledFunctionConstant kA5MaliProfile{p["id"]}{suffix}[] = {{\n'+',\n'.join(values)+'\n};\n')
     output.write_text(''.join(lines))
 
 
@@ -384,6 +390,9 @@ def main():
     p.add_argument('--generic-metallib',type=Path)
     p.add_argument('--generic-cph-receipt',type=Path)
     p.add_argument('--generic-cph-capture',type=Path)
+    p.add_argument('--generic-fixed-receipt',type=Path)
+    p.add_argument('--generic-fixed-fragment-capture',type=Path)
+    p.add_argument('--generic-fixed-vertex-capture',type=Path)
     p.add_argument('--ds4-vertex',type=Path);p.add_argument('--ds4-fragment',type=Path)
     p.add_argument('--quartzcore-image',type=Path,required=True)
     p.add_argument('--output-dir',type=Path,required=True)
@@ -411,10 +420,13 @@ def main():
     if any((a.generic_cph_receipt,a.generic_cph_capture)):
         if not all((a.generic_cph_receipt,a.generic_cph_capture,a.generic_metallib)):fail('CPH recipe needs receipt, capture and actual library')
         profiles.append(generic_profile(a.generic_cph_receipt.resolve(),a.generic_cph_capture.resolve(),a.generic_metallib.resolve()))
+    if any((a.generic_fixed_receipt,a.generic_fixed_fragment_capture,a.generic_fixed_vertex_capture)):
+        if not all((a.generic_fixed_receipt,a.generic_fixed_fragment_capture,a.generic_fixed_vertex_capture,a.generic_metallib)):fail('fixed vertex recipe needs receipt, both captures and actual library')
+        profiles.append(generic_profile(a.generic_fixed_receipt.resolve(),a.generic_fixed_fragment_capture.resolve(),a.generic_metallib.resolve(),a.generic_fixed_vertex_capture.resolve()))
     out.mkdir(parents=True,exist_ok=True);include=out/'A5MaliCompiledRegistryData.inc';emit(profiles,include)
     receipt={'schema':2,'quartzcore_attachment_audit':qc,'metallib_sha256':METALLIB_SHA,'include_sha256':sha(include.read_bytes()),
              'generator_sha256':sha(Path(__file__).read_bytes()),
-             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest,a.raw204_runtime_manifest,a.generic_receipt,a.generic_capture,a.generic_cph_receipt,a.generic_cph_capture) if path},'profiles':profiles,
+             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest,a.raw204_runtime_manifest,a.generic_receipt,a.generic_capture,a.generic_cph_receipt,a.generic_cph_capture,a.generic_fixed_receipt,a.generic_fixed_fragment_capture,a.generic_fixed_vertex_capture) if path},'profiles':profiles,
              'claim':'Authenticated native program and binding registry; pipeline/runtime acceptance is separately gated.'}
     (out/'compiled-registry.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps({'profiles':len(profiles),'native_passes':sum(len(x['passes']) for x in profiles),'include':str(include),'sha256':receipt['include_sha256']}))
