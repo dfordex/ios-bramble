@@ -117,8 +117,13 @@ static unsigned missingRequiredMethods(Class cls, Protocol *protocol)
     limits->maxPointSize = 1.0f;
     limits->minConstantBufferAlignmentBytes = 16;
     limits->minBufferNoCopyAlignmentBytes = 4096;
-    limits->maxTextureWidth2D = 1080;
-    limits->maxTextureHeight2D = 1920;
+    /* These are texture capacity limits, not panel dimensions. iOS16
+     * QuartzCore uses maxTextureWidth2D for BOTH axes of its current surface
+     * gate; advertising the portrait panel width rejects its 1920px height
+     * before any texture factory or command buffer is reached. The resource
+     * allocator already validates logical 2D dimensions up to 2048 per axis. */
+    limits->maxTextureWidth2D = 2048;
+    limits->maxTextureHeight2D = 2048;
     limits->maxTextureLayers = 1;
     limits->linearTextureAlignmentBytes = 64;
     limits->iosurfaceTextureAlignmentBytes = 64;
@@ -128,7 +133,8 @@ static unsigned missingRequiredMethods(Class cls, Protocol *protocol)
     limits->maxViewportCount = 1;
     limits->maxBufferLength = A5MaliMaxPrivateBufferLength;
     _limitsInitialized = YES;
-    fprintf(stderr, "A5XELTE Metal: initLimits complete; registered profiles, FT slots=5 FB slots=10 private buffers=4x8MiB\n");
+    fprintf(stderr, "A5XELTE Metal: initLimits complete; registered profiles, FT slots=5 FB slots=10 private buffers=4x8MiB max2D=%u/%u\n",
+        limits->maxTextureWidth2D, limits->maxTextureHeight2D);
 }
 
 - (void)initFeatureQueries
