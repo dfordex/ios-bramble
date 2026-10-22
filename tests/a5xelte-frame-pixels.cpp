@@ -38,5 +38,12 @@ int main()
     uint32_t one=0xff000000;
     assert(a5frame_pixels(&one,4,1,1,4,nullptr,0,0,&p));
     assert(p.samples==1&&!p.rgbNonzero&&p.alphaNonzero==1);
+    std::vector<uint8_t> smallDot((uint64_t)srcStride*h,0);
+    uint32_t green=0xff00ff00;
+    __builtin_memcpy(smallDot.data()+srcStride+4,&green,4);
+    assert(a5frame_pixels(smallDot.data(),smallDot.size(),w,h,srcStride,nullptr,0,0,&p));
+    assert(p.rgbNonzero==0); /* This point falls between grid samples. */
+    assert(a5frame_pixels(smallDot.data(),smallDot.size(),w,h,srcStride,nullptr,0,0,&p,0));
+    assert(p.samples==w*h&&p.rgbNonzero==1&&p.alphaNonzero==1);
     puts("frame pixel sampling: black/opaque/color, source-panel strides, RGB/alpha differences and invalid spans PASS (host memory only)");
 }

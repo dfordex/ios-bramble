@@ -18,8 +18,15 @@ def main():
     source = ''.join(line[1:] + '\n' for line in section.splitlines() if line.startswith('+'))
     with tempfile.TemporaryDirectory(prefix='a5-frame-pixels-') as directory:
         directory = Path(directory)
-        header = directory / 'A5XELTEFramePixels.h'
+        header = directory / REL
+        header.parent.mkdir(parents=True)
         header.write_text(source)
+        extension = (ROOT / 'xnu/patches/0192-a5xelte-swap-ingress-and-full-pixels.patch').read_text()
+        prefix = '--- a/' + str(REL) + '\n'
+        diff = prefix + extension.split(prefix, 1)[1].split('\n--- ', 1)[0] + '\n'
+        extra = directory / 'full-pixels.patch'
+        extra.write_text(diff)
+        subprocess.run(['patch', '-p1', '--batch', '--fuzz=0', '-i', str(extra)], cwd=directory, check=True)
         if args.kernel_source:
             assert header.read_bytes() == (args.kernel_source / REL).read_bytes(), 'staged header differs'
         binary = directory / 'test'

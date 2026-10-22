@@ -46,6 +46,7 @@ static atomic_uint callbackDiagnosticCount,waitDiagnosticCount;
 static atomic_uint queueConfigDiagnosticCount;
 #if A5_MALI_NATIVE_RENDER
 static atomic_uint indexedDrawDiagnosticCount;
+static atomic_uint inputImageDiagnosticCount,inputVertexDiagnosticCount;
 #endif
 static void logQueuePhase(const char *phase,unsigned bufferID,BOOL created,atomic_uint *counter,unsigned limit)
 {
@@ -1428,6 +1429,23 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 kern_return_t kr=[backing readBytesForSubmission:bytes.mutableBytes offset:0
                     length:bytes.length client:client];
                 if(kr)return kr;
+                if(profile->profileID==603 && diagnosticTake(&inputImageDiagnosticCount,8)){
+                    A5MaliTextureLevelLayout l={0};
+                    if([image getLevelLayout:&l level:0] && image.pixelFormat==80 &&
+                       l.width && l.height && l.byteOffset<=bytes.length &&
+                       (uint64_t)l.rowBytes*l.height<=bytes.length-l.byteOffset &&
+                       (uint64_t)l.width*4<=l.rowBytes){
+                        uint64_t nonblack=0,alpha=0;
+                        const uint8_t *base=(const uint8_t *)bytes.bytes+l.byteOffset;
+                        for(NSUInteger y=0;y<l.height;y++)for(NSUInteger x=0;x<l.width;x++){
+                            uint32_t pixel=0;memcpy(&pixel,base+y*l.rowBytes+x*4,4);
+                            nonblack+=(pixel&0xffffff)!=0;alpha+=(pixel>>24)!=0;
+                        }
+                        fprintf(stderr,"A5XELTE Metal input image: cb=%u profile=603 width=%u height=%u row=%u pixels=%llu rgb_nonzero=%llu alpha_nonzero=%llu\n",
+                            diagnosticID,l.width,l.height,l.rowBytes,(unsigned long long)l.width*l.height,
+                            (unsigned long long)nonblack,(unsigned long long)alpha);
+                    }
+                }
                 uint64_t handle=0;
                 kr=A5MaliCreateNativeBuffer(client,(uint32_t)bytes.length,bytes.bytes,
                     (uint32_t)bytes.length,&handle);
@@ -1448,6 +1466,26 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                             submittedVertexCount*48:windows[stage][slot].unsignedIntegerValue;
                         NSData *data=[binding capturePrefixBytesForSubmission:required error:NULL];
                         if(!data)return kIOReturnBadArgument;
+                        if(!stage && slot.unsignedIntegerValue==1 &&
+                           (profile->profileID==602 || profile->profileID==603) &&
+                           diagnosticTake(&inputVertexDiagnosticCount,8)){
+                            NSUInteger rgb=0,alpha=0,finite=0,zeroW=0;
+                            float minUV[2]={INFINITY,INFINITY},maxUV[2]={-INFINITY,-INFINITY};
+                            for(NSUInteger v=0;v<submittedVertexCount;v++){
+                                const uint8_t *vertex=(const uint8_t *)data.bytes+v*48;
+                                uint16_t c[4];float pos[4],uv[2];
+                                memcpy(c,vertex+32,sizeof(c));memcpy(pos,vertex,sizeof(pos));
+                                memcpy(uv,vertex+16,sizeof(uv));
+                                rgb+=((c[0]|c[1]|c[2])&0x7fff)!=0;alpha+=(c[3]&0x7fff)!=0;
+                                for(unsigned n=0;n<4;n++)finite+=isfinite(pos[n]);
+                                zeroW+=pos[3]==0;
+                                for(unsigned n=0;n<2;n++)if(isfinite(uv[n])){minUV[n]=fminf(minUV[n],uv[n]);maxUV[n]=fmaxf(maxUV[n],uv[n]);}
+                            }
+                            fprintf(stderr,"A5XELTE Metal input vertices: cb=%u profile=%u vertices=%lu rgb_half_nonzero=%lu alpha_half_nonzero=%lu position_finite=%lu zero_w=%lu uv_bounds=%g,%g..%g,%g\n",
+                                diagnosticID,profile->profileID,(unsigned long)submittedVertexCount,
+                                (unsigned long)rgb,(unsigned long)alpha,(unsigned long)finite,(unsigned long)zeroW,
+                                minUV[0],minUV[1],maxUV[0],maxUV[1]);
+                        }
                         [snapshots addObject:data];
                         if([storageSlots[stage] containsObject:slot]){
                             kern_return_t kr=A5MaliCreateNativeBuffer(client,(uint32_t)data.length,data.bytes,(uint32_t)data.length,&handle);

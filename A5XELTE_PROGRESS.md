@@ -455,3 +455,10 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Host checks:** Exact patch/staged-source match, ASan/UBSan helper cases, full native transport suite and Cortex-A53 provider build pass. See `docs/a5xelte-0196-black-screen-progress.md` for scope and interpretation.
 
 - **0196 installed:** Complete XNU build and installer preflight pass. Source `3f9bd3e`; BOOT p10 byte receipt30,308,368, sync/reboot complete; no backup/hash/readback as requested. Pixel, callback and HID queue measurements await the next run; black-screen cause remains unproven.
+
+
+## 2026-10-23 — 0196 callback/input boundaries and 0197 actual pixel inputs
+
+- **0196 device capture:** Flush28, all119,824 bytes (decoded119,579/1,487lines), no crash or kernel panic. Both audit results are errors0. Six native GPU jobs complete; CB2/3/4 scheduled waits finish and all three completion callbacks begin/end. HID head catches up after a temporary backlog and continues advancing; input consumption is observed.
+- **Rendering/presentation:** 602/603 target23 has0/4096 RGB samples and4096/4096 alpha samples. This is a grid, not a full-frame count. Selected SwapEnd2/4 records reference defaultpanel1; superseded records are not yet identified. No full-panel copy executes in this run. No new shader/layout/queue root cause is claimed.
+- **0197 preparation:** Patch0192 logs all first32 SwapEnd ingress/overwrite/selected records and counts complete output images for first six terminal BGRA native outputs. Actual buffer-backed Texture3 and CPU vertex snapshots add RGB/alpha and UV/finite-position summaries. No shader, callback or surface-selection semantics are changed. Full native transport suite, Cortex-A53 compilation, full-pixel ASan/UBSan test and exact patch/staged-source application pass. See `docs/a5xelte-0196-log-review.md`.
