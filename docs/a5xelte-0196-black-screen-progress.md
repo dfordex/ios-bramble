@@ -69,3 +69,11 @@ installation receipt are recorded below when available.
 Initial and final complete XNU make both exit zero. The final BOOT image is
 30,308,368 bytes, within p10's33,554,432-byte capacity. Provider/probe signature
 page checks pass. Device pixel/HID/callback results remain pending.
+
+## Installation
+
+From source `3f9bd3e`, Mac ADB confirmed the authorized lab a5xelte in TWRP
+and BOOT p10's32MiB capacity, streamed30,308,368 bytes with matching dd receipt,
+synced and requested reboot. No BOOT backup or post-write hash/readback was
+taken, following the user's instruction. Recovery/EFS/radio/GPT were not
+written; no raw USERDATA transfer. Runtime measurement results are pending.
