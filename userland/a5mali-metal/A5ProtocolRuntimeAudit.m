@@ -41,6 +41,9 @@ static char typeClass(const char *type)
 
 static BOOL sameType(const char *want, const char *got)
 {
+    /* Foundation cannot size every valid ObjC bitfield aggregate encoding.
+     * Exact encodings already prove equal calling types without that parser. */
+    if (strcmp(want,got)==0) return YES;
     char wc=typeClass(want), gc=typeClass(got);
     if (wc=='?' || gc=='?' || wc!=gc) return NO;
     if (wc=='v') return YES;
@@ -72,6 +75,10 @@ static unsigned checkProtocol(Class cls, Protocol *proto, unsigned *checked)
             fprintf(stderr,"NO_ENCODING %s %s\n",class_getName(cls),name);
             ++errors; continue;
         }
+        /* Compare the full encoding before NSMethodSignature. On iOS 16 its
+         * parser rejects the inherited IndirectArgumentBufferCapabilities
+         * bitfield return even when both encodings are byte-identical. */
+        if (strcmp(methods[i].types,actual)==0) continue;
         @try {
             NSMethodSignature *w=[NSMethodSignature signatureWithObjCTypes:methods[i].types];
             NSMethodSignature *g=[NSMethodSignature signatureWithObjCTypes:actual];
@@ -119,7 +126,7 @@ BOOL A5MaliAuditRuntimeMetalSurface(void)
             totalChecked+=checked;
             totalErrors+=errors;
         }
-        printf("A5XELTE Metal ABI audit: classes=%zu methods=%u errors=%u\n",
+        fprintf(stderr,"A5XELTE Metal ABI audit: classes=%zu methods=%u errors=%u\n",
             sizeof(targets)/sizeof(targets[0]),totalChecked,totalErrors);
         return totalErrors==0;
     }

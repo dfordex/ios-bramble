@@ -430,3 +430,10 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Device result pending:** No claim that the black screen or later shader specialization errors are fixed. See `docs/a5xelte-0194-metal-method-surface.md` for scope, tests and remaining issues.
 
 - **0194 installation:** Mac ADB streamed exactly 30,289,936 bytes to the confirmed lab phone's BOOT p10, received the matching dd byte count, synced and rebooted. Source `6d39b3a`; no backup or post-write readback/hash as requested. Runtime audit and rendered screen result remain pending.
+
+
+## 2026-10-23 — 0194 readout and 0195 ABI audit repair
+
+- **Device evidence:** SYSTEM flush669 recovered all870,950 ring bytes (decoded870,705/12,341lines). The private21-case GPU suite passes. The new runtime gate rejects `indirectArgumentBufferCapabilities` despite byte-identical expected/actual bitfield encodings; provider registration fails, with111 backboardd SIGSEGV records and no stock native draw or framebuffer presentation. No kernel panic. This run does not exercise/verify the new purge method.
+- **Compiler evidence:** One profile602 phone compilation exits0 and publishes its result; midgard-generic602 takes1101.036s wall/41.980sCPU. Five other requests are unsupported. Publication does not establish backboardd use.
+- **Repair:** Exact matching method/type encodings are accepted before Foundation parsing; all real mismatch checks remain. The audit summary now uses stderr. Focused real Objective-C protocol/class tests accept the bitfield case and reject differing return/argument widths and missing selector; Cortex-A53 compile passes. See `docs/a5xelte-0194-log-review.md`.
