@@ -66,3 +66,10 @@ backboardd crash reason, framebuffer swaps and actual displayed output. For
 phone compilation check PUBLISHED/cache-bound after the legacy selftests finish.
 Host tests, matching and private GPU fixtures do not establish successful live
 compositing or a functioning on-phone compiler service.
+
+## Installation
+
+Implementation `fe9943a` was pushed to GitHub, then explicit Mac ADB rechecked
+A5XELTE/TWRP3.3.0-0 and BOOTp10/capacity. Direct streaming acknowledged
+30,257,168 bytes; sync completed and reboot was requested. No BOOT backup,
+post-write hash/readback or whole root image transfer. Runtime remains pending.
