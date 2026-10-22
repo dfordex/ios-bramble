@@ -67,3 +67,10 @@ acceptance and subsequent resource/command behavior.
 checks and actual installer preflight pass. The 16-file payload is39,515,422
 raw/9,445,385 compressed bytes. BOOT is30,289,936 bytes, retaining the tested
 four-core configuration, 21 GPU fixtures and existing compiler/registry.
+
+## 0195 installation
+
+After source commit `3c35fd6`, Mac ADB confirmed the same authorized lab phone
+in TWRP and BOOT p10 capacity, streamed30,289,936 bytes to p10, received the
+exact dd byte count, synced and requested reboot. No backup or post-write
+hash/readback was taken, as requested. Device acceptance/rendering is pending.
