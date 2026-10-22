@@ -80,6 +80,20 @@ const A5MaliCompiledProfile *A5MaliCompiledProfileForID(uint32_t profileID)
     return NULL;
 }
 
+const A5MaliCompiledFunctionConstant *A5MaliCompiledConstantsForProfile(uint32_t profileID,size_t *count)
+{
+    if(count)*count=0;
+#ifdef A5_MALI_HAS_GENERIC_600
+    if(profileID==600 && A5MaliCompiledProfileForID(600)) {
+        if(count)*count=sizeof(kA5MaliProfile600Constants)/sizeof(kA5MaliProfile600Constants[0]);
+        return kA5MaliProfile600Constants;
+    }
+#else
+    (void)profileID;
+#endif
+    return NULL;
+}
+
 static NSError *libraryError(NSString *reason)
 {
     return [NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
@@ -177,6 +191,35 @@ static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *
     logConstantArray(indexed,YES,request);
 }
 
+static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t profileID)
+{
+    size_t count=0;
+    const A5MaliCompiledFunctionConstant *expected=A5MaliCompiledConstantsForProfile(profileID,&count);
+    if(!expected || !count || count>64 ||
+        ![values isKindOfClass:[MTLFunctionConstantValues class]] ||
+        ![values respondsToSelector:@selector(newNamedConstantArray)] ||
+        ![values respondsToSelector:@selector(newIndexedConstantArray)])return NO;
+    MTLFunctionConstantValues *snapshot=[values copy];
+    NSArray *named=[snapshot newNamedConstantArray],*indexed=[snapshot newIndexedConstantArray];
+    if(![named isKindOfClass:[NSArray class]] || ![indexed isKindOfClass:[NSArray class]] ||
+        named.count!=count || indexed.count)return NO;
+    Class valueClass=NSClassFromString(@"MTLNamedConstantValue");
+    NSMutableSet<NSString *> *seen=[NSMutableSet new];
+    for(id<A5MaliConstantRecord> entry in named) {
+        if(!valueClass || ![(id)entry isMemberOfClass:valueClass])return NO;
+        NSString *name=entry.name;
+        if(![name isKindOfClass:[NSString class]] || !name.length || name.length>128 || [seen containsObject:name])return NO;
+        [seen addObject:name];
+        const A5MaliCompiledFunctionConstant *match=NULL;
+        for(size_t i=0;i<count;++i)if([name isEqualToString:[NSString stringWithUTF8String:expected[i].name]]){match=expected+i;break;}
+        if(!match || entry.dataType!=match->dataType || !entry.data ||
+            !((match->dataType==MTLDataTypeUChar3 && match->byteCount==3) ||
+              ((match->dataType==MTLDataTypeBool || match->dataType==MTLDataTypeUChar) && match->byteCount==1)) ||
+            memcmp(entry.data,match->raw,match->byteCount))return NO;
+    }
+    return YES;
+}
+
 @interface A5MaliMetalLibrary () {
     A5MaliRestrictedDevice *_device;
 }
@@ -188,10 +231,13 @@ static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *
     A5MaliMetalLibrary *_library;
     NSString *_name;
     MTLFunctionType _functionType;
+    uint32_t _specializationProfileID;
 }
 - (instancetype)initWithLibrary:(A5MaliMetalLibrary *)library
                            name:(NSString *)name
                            type:(MTLFunctionType)type;
+- (instancetype)initWithLibrary:(A5MaliMetalLibrary *)library name:(NSString *)name
+    type:(MTLFunctionType)type specializationProfileID:(uint32_t)profileID;
 @end
 
 @implementation A5MaliRestrictedDevice (ExactQuartzCoreLibrary)
@@ -292,6 +338,9 @@ static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *
                 type = MTLFunctionTypeVertex; found = YES; break;
             }
             if ([name isEqualToString:[NSString stringWithUTF8String:profiles[i].fragmentName]]) {
+                size_t constants=0;
+                A5MaliCompiledConstantsForProfile(profiles[i].profileID,&constants);
+                if(constants)continue; /* Required specialization cannot be omitted. */
                 type = MTLFunctionTypeFragment; found = YES; break;
             }
         }
@@ -308,13 +357,10 @@ static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *
         if (error) *error = libraryError(@"a plain function descriptor is required");
         return nil;
     }
-    /* QuartzCore uses this selector for both ordinary and specialized shaders.
-     * Only authenticated, unspecialized translations in the private registry
-     * (plus the original read_surf pair) exist.
-     * In particular, an empty constants object is not evidence that all of a
-     * shader's specialization defaults match our translated program. */
+    /* Unsupported options never bypass the authenticated function contract.
+     * A nonnil constants object is compared by name, type and complete bytes. */
     MTLFunctionDescriptor *snapshot = [descriptor copy];
-    if (snapshot.constantValues || snapshot.specializedName || snapshot.options ||
+    if (snapshot.specializedName || snapshot.options ||
         snapshot.binaryArchives.count ||
         ([snapshot respondsToSelector:@selector(pipelineOptions)] &&
          snapshot.pipelineOptions) ||
@@ -326,7 +372,8 @@ static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *
         if (error) *error = libraryError(@"function specialization and archives are unsupported");
         return nil;
     }
-    A5MaliMetalFunction *function = [self newFunctionWithName:snapshot.name];
+    A5MaliMetalFunction *function = [self newFunctionWithName:snapshot.name
+        constantValues:snapshot.constantValues error:error];
     if (!function && error)
         *error = libraryError(@"function is outside the authenticated compiled library profiles");
     return function;
@@ -337,6 +384,17 @@ static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *
                                     error:(NSError **)error
 {
     if (constants) {
+        const A5MaliCompiledProfile *profile=A5MaliCompiledProfileForID(600);
+        if(profile && !(profile->flags&A5MaliProfileNotExecutable) &&
+            [name isEqualToString:[NSString stringWithUTF8String:profile->fragmentName]] &&
+            constantsMatchProfile(constants,profile->profileID)) {
+            static atomic_uint accepted;
+            if(atomic_fetch_add_explicit(&accepted,1,memory_order_relaxed)<16)
+                fprintf(stderr,"A5XELTE Metal specialize: accepted profile=600 function=%s constants=58\n",name.UTF8String);
+            if(error)*error=nil;
+            return [[A5MaliMetalFunction alloc]initWithLibrary:self name:name
+                type:MTLFunctionTypeFragment specializationProfileID:profile->profileID];
+        }
         logFunctionSpecialization(name,constants);
         if (error) *error = libraryError(@"no compiled AIR function-constant variant matches");
         return nil;
@@ -353,10 +411,16 @@ static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *
                            name:(NSString *)name
                            type:(MTLFunctionType)type
 {
+    return [self initWithLibrary:library name:name type:type specializationProfileID:0];
+}
+- (instancetype)initWithLibrary:(A5MaliMetalLibrary *)library name:(NSString *)name
+    type:(MTLFunctionType)type specializationProfileID:(uint32_t)profileID
+{
     if ((self = [super init])) {
         _library = library;
         _name = [name copy];
         _functionType = type;
+        _specializationProfileID=profileID;
     }
     return self;
 }
@@ -364,6 +428,7 @@ static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *
 - (MTLFunctionType)functionType { return _functionType; }
 - (A5MaliMetalLibrary *)library { return _library; }
 - (A5MaliRestrictedDevice *)device { return _library.device; }
+- (uint32_t)specializationProfileID { return _specializationProfileID; }
 @end
 
 static NSString *compiledDescriptorMismatch(const A5MaliCompiledProfile *p,
@@ -446,6 +511,10 @@ const A5MaliCompiledProfile *A5MaliSelectCompiledProfile(
         if (p->flags&A5MaliProfileNotExecutable) continue;
         if ([[vertex name] isEqualToString:[NSString stringWithUTF8String:p->vertexName]] &&
             [[fragment name] isEqualToString:[NSString stringWithUTF8String:p->fragmentName]]) {
+            size_t constantCount=0;A5MaliCompiledConstantsForProfile(p->profileID,&constantCount);
+            if([vertex specializationProfileID] || [fragment specializationProfileID]!=(constantCount?p->profileID:0)) {
+                knownPair=YES;reason=@"function specialization identity differs from the compiled profile";continue;
+            }
             knownPair=YES;NSString *mismatch=compiledDescriptorMismatch(p,descriptor);
             if(!mismatch)return p;
             int score=0;for(NSUInteger a=0;a<8;++a)

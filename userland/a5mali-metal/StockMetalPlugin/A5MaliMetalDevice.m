@@ -153,6 +153,11 @@ static unsigned missingRequiredMethods(Class cls, Protocol *protocol)
 - (BOOL)isHeadless { return NO; }
 - (BOOL)isRemovable { return NO; }
 - (BOOL)hasUnifiedMemory { return YES; }
+/* Midgard supports native FP16 arithmetic. This individual capability is
+ * independent of Apple GPU families and of FP16 derivative support. Stock
+ * QuartzCore uses it to select its supplied lph shaders; advertising NO
+ * selects fixed_frag_lpf_cpf, absent from the supplied iOS16 metallib. */
+- (BOOL)supportsNativeHardwareFP16 { return YES; }
 - (BOOL)isDepth24Stencil8PixelFormatSupported { return NO; }
 - (BOOL)supportsFamily:(MTLGPUFamily)family { (void)family; return NO; }
 - (BOOL)supportsFeatureSet:(NSUInteger)feature { (void)feature; return NO; }

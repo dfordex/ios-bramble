@@ -91,6 +91,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable, copy, atomic) NSString *label;
 @property (nonatomic, readonly) NSArray<NSString *> *functionNames;
 - (nullable A5MaliMetalFunction *)newFunctionWithName:(NSString *)name;
+- (nullable A5MaliMetalFunction *)newFunctionWithName:(NSString *)name
+    constantValues:(nullable MTLFunctionConstantValues *)constants
+    error:(NSError * _Nullable * _Nullable)error;
 - (nullable A5MaliMetalFunction *)newFunctionWithDescriptor:
     (nullable MTLFunctionDescriptor *)descriptor
     error:(NSError * _Nullable * _Nullable)error;
@@ -101,6 +104,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) MTLFunctionType functionType;
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
 @property (nonatomic, readonly) A5MaliMetalLibrary *library;
+@property (nonatomic, readonly) uint32_t specializationProfileID;
 @property (nullable, copy, atomic) NSString *label;
 @end
 

@@ -34,6 +34,12 @@ typedef struct {
 } A5MaliCompiledShader;
 
 typedef struct {
+    const char *name;
+    uint32_t dataType, byteCount;
+    uint8_t raw[3];
+} A5MaliCompiledFunctionConstant;
+
+typedef struct {
     /* bindingIndex is the actual SPIR-V descriptor binding. Uniform words
      * use nativeIndex=bindingIndex+1. Storage records occupy stage UBO0 at
      * sysvalOffset, and contain GPUVA:u64, bytes:u32, reserved:u32. */
@@ -93,6 +99,8 @@ extern "C" {
 #endif
 const A5MaliCompiledProfile * A5_MALI_NULLABLE A5MaliCompiledProfiles(size_t *count);
 const A5MaliCompiledProfile * A5_MALI_NULLABLE A5MaliCompiledProfileForID(uint32_t profileID);
+const A5MaliCompiledFunctionConstant * A5_MALI_NULLABLE
+A5MaliCompiledConstantsForProfile(uint32_t profileID, size_t *count);
 
 #ifdef __OBJC__
 @class A5MaliMetalFunction;

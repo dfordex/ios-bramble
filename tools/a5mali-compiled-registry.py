@@ -298,6 +298,35 @@ def array(symbol,data):
     return 'static const uint8_t '+symbol+'[] = {\n'+''.join('  '+','.join(f'0x{x:02x}' for x in data[i:i+24])+',\n' for i in range(0,len(data),24))+'};\n'
 
 
+def generic_profile(receipt_path, capture_path, metallib_path):
+    recipe=Path(__file__).resolve().parents[1]/'userland/a5xelte-air-translation/generic/compile_0185.py'
+    spec=importlib.util.spec_from_file_location('generic_recipe',recipe)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    j=module.validate_receipt(receipt_path,capture_path,metallib_path)
+    if j['metallib_sha256']!=METALLIB_SHA:fail('unreviewed generic library')
+    passes={}
+    for key,stage in [('vertex','vert'),('fragment','frag')]:
+        r=j['stages'][stage];info=r['native_info']
+        expected={'vert':(1808,5,8,0,0,2,2),'frag':(848,5,6,0,0,0,3)}[stage]
+        actual=tuple(info[k] for k in ('bytes','first_tag','work_regs','tls','wls','attributes','ubos'))
+        if actual!=expected or info['textures'] or info['samplers']:fail('generic native ABI changed')
+        passes[key]=shader(receipt_path.parent/(stage+'.midgard'),
+            dict(bytes=r['midgard_bytes'],sha256=r['midgard_sha256'],
+                first_tag=info['first_tag'],work_regs=info['work_regs'],tls=info['tls'],wls=info['wls']))
+    # This is a narrow supported API contract for a genuine host-compiled pair,
+    # not a reconstruction of the still-unobserved live vertex/target state.
+    p={'id':600,'name':'generic_color_lph_cpf_bgra8','vertex':'std_vert0_lph',
+       'fragment':'fixed_frag_lph_cpf','formats':[80]+[0]*7,'flags':0,'viewport':[0,0],
+       'resources':[[1,1,2,0,1,1,0,64,0,0]],
+       'push':[[1,1,2,0,4,0],[2,2,0,68,4,0x2222]],
+       'attributes':ATTRIBUTES,'layouts':LAYOUTS,
+       'passes':[dict(id=600,target=0,**passes)],
+       'attachment_contracts':[[[15,0,0,0,1,0,1,0] for _ in range(8)]],
+       'function_constants':j['captured_constants'],
+       'proof':'Exact typed fragment specialization and pinned host compilation; live pair not yet verified'}
+    return p
+
+
 def emit(profiles,output):
     if not profiles or len(profiles)>32:fail('registry profile count invalid')
     lines=['/* Generated private compiler outputs. Never commit. */\n'];rows=[];seen=set();blobs={}
@@ -324,6 +353,18 @@ def emit(profiles,output):
         values += [contracts,str(len(p['attachment_contracts']))]
         rows.append('{'+','.join(values)+'}')
     lines.append('static const A5MaliCompiledProfile kA5MaliCompiledProfiles[] = {\n'+',\n'.join(rows)+'\n};\n')
+    for p in profiles:
+        constants=p.get('function_constants')
+        if not constants:continue
+        if p['id']!=600 or len(constants)!=58:fail('unreviewed specialized function profile')
+        values=[]
+        for key,item in sorted(constants.items()):
+            raw=list(bytes.fromhex(item['raw']))
+            width={49:1,51:3,53:1}.get(item['type'])
+            if width!=len(raw) or raw!=item['values']:fail('invalid typed generic constant')
+            values.append('{'+','.join([json.dumps(name(key)),str(item['type']),str(width),
+                '{'+','.join(map(str,raw+[0]*(3-width)))+'}'])+'}')
+        lines.append('#define A5_MALI_HAS_GENERIC_600 1\nstatic const A5MaliCompiledFunctionConstant kA5MaliProfile600Constants[] = {\n'+',\n'.join(values)+'\n};\n')
     output.write_text(''.join(lines))
 
 
@@ -335,6 +376,9 @@ def main():
     p.add_argument('--path-manifest',type=Path)
     p.add_argument('--path-runtime-manifest',type=Path)
     p.add_argument('--raw204-runtime-manifest',type=Path)
+    p.add_argument('--generic-receipt',type=Path)
+    p.add_argument('--generic-capture',type=Path)
+    p.add_argument('--generic-metallib',type=Path)
     p.add_argument('--ds4-vertex',type=Path);p.add_argument('--ds4-fragment',type=Path)
     p.add_argument('--quartzcore-image',type=Path,required=True)
     p.add_argument('--output-dir',type=Path,required=True)
@@ -356,10 +400,13 @@ def main():
         for profile in profiles:
             if profile['id']==204:profile['flags'] |= 32
     qc=apply_actual_qc_contracts(profiles,a.quartzcore_image.resolve())
+    if any((a.generic_receipt,a.generic_capture,a.generic_metallib)):
+        if not all((a.generic_receipt,a.generic_capture,a.generic_metallib)):fail('generic recipe needs receipt, capture and actual library')
+        profiles.append(generic_profile(a.generic_receipt.resolve(),a.generic_capture.resolve(),a.generic_metallib.resolve()))
     out.mkdir(parents=True,exist_ok=True);include=out/'A5MaliCompiledRegistryData.inc';emit(profiles,include)
     receipt={'schema':2,'quartzcore_attachment_audit':qc,'metallib_sha256':METALLIB_SHA,'include_sha256':sha(include.read_bytes()),
              'generator_sha256':sha(Path(__file__).read_bytes()),
-             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest,a.raw204_runtime_manifest) if path},'profiles':profiles,
+             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest,a.raw204_runtime_manifest,a.generic_receipt,a.generic_capture) if path},'profiles':profiles,
              'claim':'Authenticated native program and binding registry; pipeline/runtime acceptance is separately gated.'}
     (out/'compiled-registry.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps({'profiles':len(profiles),'native_passes':sum(len(x['passes']) for x in profiles),'include':str(include),'sha256':receipt['include_sha256']}))

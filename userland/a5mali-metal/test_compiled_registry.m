@@ -19,6 +19,15 @@ static kern_return_t noGPU(void *context, uint32_t selector, const void *in,
     (void)context;(void)selector;(void)in;(void)inBytes;(void)out;(void)outBytes;
     assert(0 && "registry lookup cannot submit a GPU command");return KERN_FAILURE;
 }
+static MTLFunctionConstantValues *profileConstants(uint32_t profileID)
+{
+    size_t count=0;const A5MaliCompiledFunctionConstant *constants=A5MaliCompiledConstantsForProfile(profileID,&count);
+    if(!count)return nil;
+    MTLFunctionConstantValues *values=[MTLFunctionConstantValues new];
+    for(size_t i=0;i<count;++i)[values setConstantValue:constants[i].raw
+        type:(MTLDataType)constants[i].dataType withName:[NSString stringWithUTF8String:constants[i].name]];
+    return values;
+}
 static MTLRenderPipelineDescriptor *descriptor(const A5MaliCompiledProfile *p,
                                                A5MaliMetalLibrary *library)
 {
@@ -26,7 +35,7 @@ static MTLRenderPipelineDescriptor *descriptor(const A5MaliCompiledProfile *p,
     d.vertexFunction = (id)[library newFunctionWithName:
         [NSString stringWithUTF8String:p->vertexName]];
     d.fragmentFunction = (id)[library newFunctionWithName:
-        [NSString stringWithUTF8String:p->fragmentName]];
+        [NSString stringWithUTF8String:p->fragmentName] constantValues:profileConstants(p->profileID) error:NULL];
     for (NSUInteger i=0;i<8;++i) d.colorAttachments[i].pixelFormat=p->colorFormats[i];
     if (p->attributeCount || p->layoutCount) {
         d.vertexDescriptor = [MTLVertexDescriptor vertexDescriptor];
@@ -125,7 +134,7 @@ int main(void)
             assert(pipelineError.code==kIOReturnUnsupported);
             MTLRenderPipelineDescriptor *nativeDescriptor=descriptor(p,nativeLibrary);
             id pipeline=[nativeDevice newRenderPipelineStateWithDescriptor:nativeDescriptor error:&pipelineError];
-            if ((p->profileID>=99 && p->profileID<=108)||p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||(p->profileID>=300&&p->profileID<=302))
+            if ((p->profileID>=99 && p->profileID<=108)||p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||(p->profileID>=300&&p->profileID<=302))
                 assert([pipeline isKindOfClass:NSClassFromString(@"A5MaliCompiledPipeline")]&&!pipelineError);
             else assert(!pipeline&&pipelineError.code==kIOReturnUnsupported);
 
@@ -133,6 +142,7 @@ int main(void)
             NSError *error=nil;
             MTLFunctionDescriptor *f=[MTLFunctionDescriptor functionDescriptor];
             f.name=[NSString stringWithUTF8String:p->fragmentName];
+            f.constantValues=profileConstants(p->profileID);
             assert([library newFunctionWithDescriptor:f error:&error]&&!error);
             f.constantValues=[MTLFunctionConstantValues new];
             assert(![library newFunctionWithDescriptor:f error:&error]);
@@ -140,7 +150,22 @@ int main(void)
             error=nil;
             assert(![library newFunctionWithName:f.name constantValues:f.constantValues error:&error]);
             assert(error.code==kIOReturnUnsupported);
-            assert([library newFunctionWithName:f.name constantValues:nil error:&error]&&!error);
+            if(p->profileID==600){
+                assert(![library newFunctionWithName:f.name constantValues:nil error:&error]);
+                assert(error.code==kIOReturnUnsupported);
+                size_t nc=0;const A5MaliCompiledFunctionConstant *values=A5MaliCompiledConstantsForProfile(600,&nc);
+                assert(nc==58);
+                for(size_t ci=0;ci<nc;++ci){
+                    MTLFunctionConstantValues *changed=profileConstants(600);
+                    uint8_t raw[3];memcpy(raw,values[ci].raw,3);raw[values[ci].byteCount-1]^=1;
+                    [changed setConstantValue:raw type:(MTLDataType)values[ci].dataType
+                        withName:[NSString stringWithUTF8String:values[ci].name]];
+                    assert(![library newFunctionWithName:f.name constantValues:changed error:&error]);
+                }
+                MTLFunctionConstantValues *extra=profileConstants(600);uint8_t value=0;
+                [extra setConstantValue:&value type:MTLDataTypeBool atIndex:0];
+                assert(![library newFunctionWithName:f.name constantValues:extra error:&error]);
+            }else assert([library newFunctionWithName:f.name constantValues:nil error:&error]&&!error);
             d.maxVertexAmplificationCount=2;reject(d);d.maxVertexAmplificationCount=1;
             d.supportIndirectCommandBuffers=YES;reject(d);d.supportIndirectCommandBuffers=NO;
             d.rasterSampleCount=4;reject(d);d.rasterSampleCount=1;
@@ -161,13 +186,13 @@ int main(void)
                 assert(A5MaliSelectCompiledProfile(d,NULL)==p);
                 d.colorAttachments[1].writeMask^=MTLColorWriteMaskRed;reject(d);
             }
-            d=descriptor(p,library);d.colorAttachments[1].pixelFormat=MTLPixelFormatInvalid;
+            d=descriptor(p,library);d.colorAttachments[1].pixelFormat=p->colorFormats[1]?MTLPixelFormatInvalid:MTLPixelFormatR8Unorm;
             NSError *formatError=nil;assert(!A5MaliSelectCompiledProfile(d,&formatError));
             assert([formatError.localizedDescription containsString:@"attachment1.pixelFormat"]);
             d=descriptor(p,library);d.colorAttachments[1].blendingEnabled=!d.colorAttachments[1].blendingEnabled;reject(d);
             d=descriptor(p,library);
             A5MaliMetalLibrary *other=[device newLibraryWithURL:url error:NULL];
-            d.fragmentFunction=(id)[other newFunctionWithName:[NSString stringWithUTF8String:p->fragmentName]];
+            d.fragmentFunction=descriptor(p,other).fragmentFunction;
             reject(d);
         }
         const A5MaliCompiledProfile *ds4=A5MaliCompiledProfileForID(99);assert(ds4);
