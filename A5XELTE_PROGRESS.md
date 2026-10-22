@@ -446,3 +446,10 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Recovered device evidence:** Flush28, all108,016 ring bytes (decoded107,771/1,257lines). Both target runtime audits pass14 mappings/751methods/errors0. Stock Metal accepts the device. Backboardd binds602/603 phone-compiled caches; two command buffers complete five native jobs with status0/header1/MMU0. Shared purge Volatile/NonVolatile transitions succeed. No process crash or kernel panic in this capture.
 - **Presentation limit:** One surface23 full-panel GPU copy completes (8,294,400bytes, CPUcopy0), but full-screen pixel correctness is unverified and the user sees black. iOS subsequently requests display off. `a5fb_keep_on` only ignores the physical off request; it does not demonstrate compositor wakefulness.
 - **Next observation:** User had not tried Home/power. Rebooted the same0195 installation without a new BOOT write for a short-button wake test. This is a hypothesis test, not a claimed black-screen fix. See `docs/a5xelte-0195-log-review.md`.
+
+
+## 2026-10-23 — wake attempt fails; 0196 boundary measurements
+
+- **Second0195 capture:** User repeatedly pressed Home/power with no image. Flush51 recovers all148,994 bytes (decoded148,749/1,968lines). Key GPIO and HID dispatch record Home/power/volume with one client, but client consumption is not established. No process crash/kernel panic. Two command buffers/five native jobs complete again; two GPU full-panel copies and one CPU copy are counted. Physical screen remains black.
+- **0196 source:** Patch0191 adds bounded post-fence output pixel counts, source-versus-panel pixel comparison and keyboard queue head/tail/notification statistics. Provider logs waits and callback phases/configuration; backboardd tee budget remains bounded at1024chunks. No shader/queue behavior is changed and no black-screen fix is claimed.
+- **Host checks:** Exact patch/staged-source match, ASan/UBSan helper cases, full native transport suite and Cortex-A53 provider build pass. See `docs/a5xelte-0196-black-screen-progress.md` for scope and interpretation.

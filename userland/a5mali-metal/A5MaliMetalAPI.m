@@ -42,6 +42,8 @@ static atomic_uint encoderDiagnosticCount,commitDiagnosticCount,nativePhaseDiagn
 static atomic_uint commandDiagnosticNext,queueCreationDiagnosticCount,bufferCreationDiagnosticCount,unretainedDiagnosticCount;
 static atomic_uint copyRejectionDiagnosticCount;
 static atomic_uint protectionDiagnosticCount;
+static atomic_uint callbackDiagnosticCount,waitDiagnosticCount;
+static atomic_uint queueConfigDiagnosticCount;
 #if A5_MALI_NATIVE_RENDER
 static atomic_uint indexedDrawDiagnosticCount;
 #endif
@@ -434,6 +436,8 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     _serialSubmissionQueue = queue ? dispatch_queue_create_with_target(
         "com.orhunnx.a5xelte.mali.submit", DISPATCH_QUEUE_SERIAL, queue) : nil;
     [_configurationLock unlock];
+    if(diagnosticTake(&queueConfigDiagnosticCount,32))
+        fprintf(stderr,"A5XELTE Metal queue: phase=submission-config async=%u\n",queue!=nil);
 }
 - (dispatch_queue_t)submissionQueue
 {
@@ -447,6 +451,8 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     [_configurationLock lock];
     _completionQueue = queue;
     [_configurationLock unlock];
+    if(diagnosticTake(&queueConfigDiagnosticCount,32))
+        fprintf(stderr,"A5XELTE Metal queue: phase=completion-config async=%u\n",queue!=nil);
 }
 - (dispatch_queue_t)completionQueue
 {
@@ -829,12 +835,19 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         _diagnosticID,(unsigned long)resultStatus,(unsigned)resultError,submit);
     /* The kernel batch is synchronous; software scheduling and callbacks
      * obey the dispatch queues retained from QuartzCore. */
+    if(diagnose)fprintf(stderr,"A5XELTE Metal callbacks: cb=%u phase=queued scheduled=%lu completed=%lu async=%u\n",
+        _diagnosticID,(unsigned long)scheduled.count,(unsigned long)completed.count,
+        _queue.completionQueue!=nil);
     [_queue dispatchCompletion:^{
+    BOOL traceCallbacks=diagnosticTake(&callbackDiagnosticCount,64);
+    if(traceCallbacks)fprintf(stderr,"A5XELTE Metal callbacks: cb=%u phase=begin scheduled=%lu completed=%lu\n",
+        _diagnosticID,(unsigned long)scheduled.count,(unsigned long)completed.count);
     if (succeeded)
         for (MTLCommandBufferHandler handler in scheduled)
             handler((id<MTLCommandBuffer>)self);
     for (MTLCommandBufferHandler handler in completed)
         handler((id<MTLCommandBuffer>)self);
+    if(traceCallbacks)fprintf(stderr,"A5XELTE Metal callbacks: cb=%u phase=end\n",_diagnosticID);
     }];
     }];
 }
@@ -855,16 +868,22 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 
 - (void)waitUntilScheduled
 {
+    BOOL traceWait=diagnosticTake(&waitDiagnosticCount,64);
     [_condition lock];
+    if(traceWait)fprintf(stderr,"A5XELTE Metal wait: cb=%u kind=scheduled phase=begin status=%lu\n",_diagnosticID,(unsigned long)_status);
     while (_status < MTLCommandBufferStatusScheduled)
         [_condition wait];
+    if(traceWait)fprintf(stderr,"A5XELTE Metal wait: cb=%u kind=scheduled phase=end status=%lu\n",_diagnosticID,(unsigned long)_status);
     [_condition unlock];
 }
 - (void)waitUntilCompleted
 {
+    BOOL traceWait=diagnosticTake(&waitDiagnosticCount,64);
     [_condition lock];
+    if(traceWait)fprintf(stderr,"A5XELTE Metal wait: cb=%u kind=completed phase=begin status=%lu\n",_diagnosticID,(unsigned long)_status);
     while (_status < MTLCommandBufferStatusCompleted)
         [_condition wait];
+    if(traceWait)fprintf(stderr,"A5XELTE Metal wait: cb=%u kind=completed phase=end status=%lu\n",_diagnosticID,(unsigned long)_status);
     [_condition unlock];
 }
 - (void)addScheduledHandler:(MTLCommandBufferHandler)handler

@@ -1,0 +1,151 @@
+--- a/iokit/Kernel/arm/A5XELTEFramePixels.h
++++ b/iokit/Kernel/arm/A5XELTEFramePixels.h
+@@ -0,0 +1,52 @@
++/* SPDX-License-Identifier: MIT
++ * Bounded, read-only BGRA pixel sampling. No pixel values or screen content
++ * are logged; statistics distinguish black output from failed presentation.
++ */
++#ifndef A5XELTE_FRAME_PIXELS_H
++#define A5XELTE_FRAME_PIXELS_H
++#include <stdint.h>
++
++struct A5FramePixels {
++    uint32_t samples, rgbNonzero, alphaNonzero, rgbMismatch, alphaMismatch;
++};
++
++static inline bool a5frame_pixel_span(uint64_t bytes, uint32_t width,
++    uint32_t height, uint32_t stride)
++{
++    return width && height && width <= 16384 && height <= 16384 &&
++        (uint64_t)width * 4 <= stride &&
++        (uint64_t)(height - 1) * stride + (uint64_t)width * 4 <= bytes;
++}
++
++static inline bool a5frame_pixels(const void *input, uint64_t bytes,
++    uint32_t width, uint32_t height, uint32_t stride, const void *comparison,
++    uint64_t comparisonBytes, uint32_t comparisonStride, A5FramePixels *out)
++{
++    if (!out) return false;
++    *out = {};
++    if (!input || !a5frame_pixel_span(bytes,width,height,stride) ||
++        (comparison && !a5frame_pixel_span(comparisonBytes,width,height,comparisonStride)))
++        return false;
++    const uint8_t *src = static_cast<const uint8_t *>(input);
++    const uint8_t *cmp = static_cast<const uint8_t *>(comparison);
++    const uint32_t nx = width < 64 ? width : 64;
++    const uint32_t ny = height < 64 ? height : 64;
++    for (uint32_t iy=0; iy<ny; ++iy) {
++        const uint32_t y = ny == 1 ? 0 : (uint64_t)iy * (height-1) / (ny-1);
++        for (uint32_t ix=0; ix<nx; ++ix) {
++            const uint32_t x = nx == 1 ? 0 : (uint64_t)ix * (width-1) / (nx-1);
++            uint32_t value=0, other=0;
++            __builtin_memcpy(&value,src+(uint64_t)y*stride+(uint64_t)x*4,4);
++            ++out->samples;
++            out->rgbNonzero += (value & 0x00ffffffu) != 0;
++            out->alphaNonzero += (value >> 24) != 0;
++            if (cmp) {
++                __builtin_memcpy(&other,cmp+(uint64_t)y*comparisonStride+(uint64_t)x*4,4);
++                out->rgbMismatch += ((value ^ other) & 0x00ffffffu) != 0;
++                out->alphaMismatch += ((value ^ other) >> 24) != 0;
++            }
++        }
++    }
++    return true;
++}
++#endif
+--- a/iokit/Kernel/arm/A5XELTENativeQueue.inc
++++ b/iokit/Kernel/arm/A5XELTENativeQueue.inc
+@@ -1,3 +1,4 @@
++#include "A5XELTEFramePixels.h"
+ /* Privileged opt-in native graphics jobs. The signed provider constructs v4
+  * descriptors from its authenticated shader registry and actual Metal binds.
+  * GPU virtual addresses refer only to this client's pinned AS1 windows.
+@@ -94,6 +95,22 @@
+             if ((writes&(1u<<i)) && ctx->surface[i]->memory->performOperation(
+                 kIOMemoryIncoherentIOFlush,0,ctx->mappedBytes[i])!=kIOReturnSuccess)
+                 status=kAS1SubmitIOError;
++    /* Sample only after a genuine terminal fence and output cache flush.
++     * Bounded statistics, not caller pixels, go to the kernel log. */
++    static uint32_t pixelReports=0; /* AS1 lock held */
++    if (status==kAS1SubmitCompleted && pixelReports<16) {
++        for (uint32_t i=0;i<4;i++) if (writes&(1u<<i)) {
++            SweetSurface *s=ctx->surface[i];
++            if (s->pixelFormat!=kAS1BGRA || s->bytesPerElement!=4) continue;
++            A5FramePixels pixels={};
++            const bool sampled=a5frame_pixels(
++                reinterpret_cast<const void *>(s->kernelAddress()),ctx->mappedBytes[i],
++                s->width,s->height,s->bytesPerRow,nullptr,0,0,&pixels);
++            IOLog("A5XELTE G3D pixels: profile=%u surface=%u sampled=%u count=%u rgb_nonzero=%u alpha_nonzero=%u\n",
++                r.profileID,s->id,sampled,pixels.samples,pixels.rgbNonzero,pixels.alphaNonzero);
++            ++pixelReports;
++        }
++    }
+     if (status==kAS1SubmitCompleted) ctx->completedFence=out->fragmentFence;
+     if (started || status==kAS1SubmitFault || status==kAS1SubmitTimeout) {
+         ctx->poisoned=true;a5g3d_queue_poison(owner,token);
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -35,6 +35,9 @@
+  * the first swap on (it still reaches the persistent log; panics draw).
+  */
+ #include "SweetSurface.h"
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++#include "A5XELTEFramePixels.h"
++#endif
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ #include "A5XELTEGPUResources.h"
+ #include "A5XELTEGPUFramePresent.h"
+@@ -616,6 +619,21 @@
+ 				a5g3d_resource_probe_swap(s->id);
+ 				const A5G3DFramePresentStatus status =
+ 				    a5g3d_frame_present(s);
++				/* The panel mapping is write-combined (no cached CPU alias).
++				 * At terminal completion compare a bounded grid read-only. */
++				static uint32_t pixelReports = 0; /* framebuffer workloop */
++				if (status == kA5G3DFramePresentCompleted && pixelReports < 8) {
++					A5FramePixels pixels = {};
++					const bool sampled = a5frame_pixels(
++					    reinterpret_cast<const void *>(s->kernelAddress()),s->allocSize,
++					    fWidth,fHeight,s->bytesPerRow,
++					    reinterpret_cast<const void *>(fPixels),fSurface->allocSize,
++					    fRowBytes,&pixels);
++					IOLog("A5XELTE FB pixels: source=%u sampled=%u count=%u rgb_nonzero=%u alpha_nonzero=%u panel_rgb_mismatch=%u panel_alpha_mismatch=%u\n",
++					    s->id,sampled,pixels.samples,pixels.rgbNonzero,pixels.alphaNonzero,
++					    pixels.rgbMismatch,pixels.alphaMismatch);
++					++pixelReports;
++				}
+ 				s->release();
+ 				if (status == kA5G3DFramePresentCompleted) {
+ 					if (fPerfLog) {
+--- a/iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp
++++ b/iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp
+@@ -219,6 +219,17 @@
+         }
+     }
+     
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++    if (event->getType() == kIOHIDEventTypeKeyboard) {
++        static volatile SInt32 keyReports = 0;
++        const UInt32 report = (UInt32)OSIncrementAtomic(&keyReports);
++        if (report < 32 || (report < 256 && (report & 31) == 0))
++            IOLog("A5XELTE HID queue: key result=%u head=%u tail_before=%u tail_after=%u notifications=%u full=%u\n",
++                result,head,tail,
++                __c11_atomic_load((_Atomic UInt32 *)&dataQueue->tail,__ATOMIC_RELAXED),
++                _notificationCount,queueFull);
++    }
++#endif
+     return result;
+ }
+ 
+--- a/bsd/dev/mem.c
++++ b/bsd/dev/mem.c
+@@ -199,6 +199,9 @@
+ 			/* Saturate so an unbounded producer cannot wrap and resume logging. */
+ 			volatile UInt32 *chunks = &a5_null_chunks;
+ 			UInt32 limit = 256, old;
++			/* Preserve the first real frame and callback/wait evidence past
++			 * routine startup output; keep the producer budget bounded. */
++			if (!strcmp(name, "backboardd")) limit = 1024;
+ 			if (!strcmp(name, "a5mali-metal-probe")) {
+ 				chunks = &a5_probe_null_chunks;
+ 				limit = 64;
