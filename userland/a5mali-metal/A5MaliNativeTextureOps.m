@@ -44,6 +44,23 @@ static __attribute__((unused)) void resourcePhase(unsigned operation,const char 
         fprintf(stderr,"A5XELTE Metal resource op: kind=%u phase=%s result=%x\n",
             operation,phase,(unsigned)result);break;}}
 }
+static __attribute__((unused)) BOOL rejectCopy(A5MaliMetalTexture *src,NSUInteger sl,A5MaliMetalTexture *dst,
+    NSUInteger dl,MTLOrigin so,MTLSize size,MTLOrigin to,const char *reason)
+{
+    static atomic_uint count;
+    unsigned n=atomic_load_explicit(&count,memory_order_relaxed);
+    while(n<64){if(atomic_compare_exchange_weak_explicit(&count,&n,n+1,
+        memory_order_relaxed,memory_order_relaxed)){
+        fprintf(stderr,"A5XELTE Metal copy reject: reason=%s src={type:%lu fmt:%lu storage:%lu width:%lu height:%lu level:%lu origin:%lu,%lu,%lu} dst={type:%lu fmt:%lu storage:%lu width:%lu height:%lu level:%lu origin:%lu,%lu,%lu} size=%lu,%lu,%lu\n",
+            reason,(unsigned long)src.textureType,(unsigned long)src.pixelFormat,
+            (unsigned long)src.storageMode,(unsigned long)src.width,(unsigned long)src.height,
+            (unsigned long)sl,(unsigned long)so.x,(unsigned long)so.y,(unsigned long)so.z,
+            (unsigned long)dst.textureType,(unsigned long)dst.pixelFormat,
+            (unsigned long)dst.storageMode,(unsigned long)dst.width,(unsigned long)dst.height,
+            (unsigned long)dl,(unsigned long)to.x,(unsigned long)to.y,(unsigned long)to.z,
+            (unsigned long)size.width,(unsigned long)size.height,(unsigned long)size.depth);break;}}
+    return NO;
+}
 static BOOL encode(A5MaliCommandBuffer *commands,A5MaliMetalTexture *src,
     NSUInteger sl,A5MaliMetalTexture *dst,NSUInteger dl,MTLOrigin so,
     MTLSize size,MTLOrigin to,unsigned operation)
@@ -56,16 +73,43 @@ static BOOL encode(A5MaliCommandBuffer *commands,A5MaliMetalTexture *src,
         src.storageMode==MTLStorageModeMemoryless||dst.storageMode==MTLStorageModeMemoryless||
         src.pixelFormat!=dst.pixelFormat||so.z||to.z||size.depth!=1||
         !size.width||!size.height||size.width>UINT32_MAX||size.height>UINT32_MAX||
-        so.x>UINT32_MAX||so.y>UINT32_MAX||to.x>UINT32_MAX||to.y>UINT32_MAX)return NO;
+        so.x>UINT32_MAX||so.y>UINT32_MAX||to.x>UINT32_MAX||to.y>UINT32_MAX)
+        return rejectCopy(src,sl,dst,dl,so,size,to,"contract");
     A5MaliTextureLevelLayout a={0},b={0};
     A5MaliSurface *source=[src surfaceForLevel:sl memorylessLease:nil];
     A5MaliSurface *destination=[dst surfaceForLevel:dl memorylessLease:nil];
-    if(!source||!destination||![src getLevelLayout:&a level:sl]||![dst getLevelLayout:&b level:dl])return NO;
+    if(!source||!destination||![src getLevelLayout:&a level:sl]||![dst getLevelLayout:&b level:dl])
+        return rejectCopy(src,sl,dst,dl,so,size,to,"backing-level");
     if(so.x>a.width||so.y>a.height||size.width>a.width-so.x||size.height>a.height-so.y||
-        to.x>b.width||to.y>b.height||size.width>b.width-to.x||size.height>b.height-to.y)return NO;
+        to.x>b.width||to.y>b.height||size.width>b.width-to.x||size.height>b.height-to.y)
+        return rejectCopy(src,sl,dst,dl,so,size,to,"bounds");
     if(source.resource.token==destination.resource.token){
         uint64_t ae=(uint64_t)a.byteOffset+a.byteLength,be=(uint64_t)b.byteOffset+b.byteLength;
-        if(a.byteOffset<be&&b.byteOffset<ae)return NO; /* no in-place overlapping copy */
+        if(a.byteOffset<be&&b.byteOffset<ae){
+            /* A same-level disjoint rectangle is a legal Metal blit, but the
+             * Midgard emitter must never sample and render the same backing.
+             * Preserve ordering with two real GPU copies through private RAM.
+             * Different mip windows remain eligible for the direct path. */
+            if(operation!=A5ResourceCopy || a.byteOffset!=b.byteOffset ||
+                a.rowBytes!=b.rowBytes || a.width!=b.width || a.height!=b.height)
+                return rejectCopy(src,sl,dst,dl,so,size,to,"alias-layout");
+            if(so.x==to.x && so.y==to.y)return YES; /* exact self-copy */
+            if(so.x<to.x+size.width && to.x<so.x+size.width &&
+                so.y<to.y+size.height && to.y<so.y+size.height)
+                return rejectCopy(src,sl,dst,dl,so,size,to,"overlapping-rectangles");
+            MTLTextureDescriptor *descriptor=[MTLTextureDescriptor new];
+            descriptor.textureType=src.textureType;descriptor.pixelFormat=src.pixelFormat;
+            descriptor.width=size.width;descriptor.height=size.height;
+            descriptor.depth=1;descriptor.arrayLength=1;descriptor.mipmapLevelCount=1;
+            descriptor.storageMode=MTLStorageModePrivate;
+            descriptor.usage=MTLTextureUsageShaderRead|MTLTextureUsageRenderTarget;
+            A5MaliMetalTexture *temporary=[src.device newTextureWithDescriptor:descriptor];
+            if(!temporary)return rejectCopy(src,sl,dst,dl,so,size,to,"scratch-allocation");
+            /* Queued blocks retain all backing. If either enqueue fails, the
+             * public encoder records an error and does not submit this buffer. */
+            return encode(commands,src,sl,temporary,0,so,size,MTLOriginMake(0,0,0),operation) &&
+                encode(commands,temporary,0,dst,dl,MTLOriginMake(0,0,0),size,to,operation);
+        }
     }
     return [commands encodeNativeWork:^kern_return_t(A5MaliClient *client,A5MaliFence *fence){
         A5NativeQueryRequest query={.header={1,sizeof(query),0,0}};

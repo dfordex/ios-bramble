@@ -12,6 +12,13 @@
 #include <unistd.h>
 #include <stdio.h>
 
+@interface A5MaliMetalBuffer (StockSelectorForwardTest)
+- (BOOL)commitAndWaitUntilSubmitted;
+@end
+@interface A5MaliMetalRenderEncoder (StockSelectorForwardTest)
+- (void)setFragmentTexture:(A5MaliMetalTexture *)texture atTextureIndex:(NSUInteger)textureIndex
+    samplerState:(A5MaliSamplerState *)sampler atSamplerIndex:(NSUInteger)samplerIndex;
+@end
 typedef struct {
     unsigned queries,submits,releases;
     BOOL badFormat,badFence,badDestinationRead;
@@ -115,9 +122,9 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     [r setFragmentBytes:inlineFilter length:undersized?71:72 atIndex:1];
     memset(inlineFilter,0xff,sizeof(inlineFilter)); /* setBytes owns the old copy */
     [r setFragmentBytes:t->edr length:2 atIndex:6];
-    [r setFragmentTexture:source atIndex:3];
-    if(!samplerMissing)[r setFragmentSamplerState:[device newSamplerStateWithDescriptor:
-        [MTLSamplerDescriptor new]] atIndex:0];
+    if(samplerMissing)[r setFragmentTexture:source atIndex:3];
+    else [r setFragmentTexture:source atTextureIndex:3 samplerState:[device newSamplerStateWithDescriptor:
+        [MTLSamplerDescriptor new]] atSamplerIndex:0];
     [r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [r endEncoding];
     memcpy((uint8_t *)vertices.contents+17,t->vertex,144); /* visible at commit */
@@ -170,7 +177,7 @@ int main(void)
         A5MaliMetalTexture *destination=[device hostTestTextureWithResource:
             (A5MaliResource){0x100000002,32,32,128,A5MaliWrite}];
         A5MaliMetalBuffer *b=encode(device,pipeline,source,destination,&t,NO,NO);
-        assert(t.queries==0&&t.submits==0);[b commit];[b waitUntilCompleted];
+        assert(t.queries==0&&t.submits==0);assert([b commitAndWaitUntilSubmitted]);[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusCompleted&&!b.error&&t.queries==1&&t.submits==1);
         b=encode(device,pipeline,source,destination,&t,YES,NO);[b commit];[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusError&&t.queries==1&&t.submits==1);
@@ -194,11 +201,27 @@ int main(void)
         [b commit];[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusError&&t.queries==2&&t.submits==1);
         t.badFormat=NO;t.badFence=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);
-        [b commit];[b waitUntilCompleted];
+        assert(![b commitAndWaitUntilSubmitted]);[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusError&&t.queries==3&&t.submits==2);
         t.badFence=NO;t.badDestinationRead=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);
         [b commit];[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusError&&t.queries==4&&t.submits==2);
+        /* The SPI waits for work on an independently configured async queue,
+         * rather than returning a fabricated submission/completion status. */
+        A5MaliMetalQueue *asyncQueue=[device newCommandQueue];
+        [asyncQueue setSubmissionQueue:dispatch_queue_create("a5.stock-selector-test",DISPATCH_QUEUE_SERIAL)];
+        A5MaliMetalBuffer *async=[asyncQueue commandBuffer];
+        assert([async respondsToSelector:@selector(commitAndWaitUntilSubmitted)]);
+        assert([async commitAndWaitUntilSubmitted]&&async.status==MTLCommandBufferStatusCompleted);
+        /* Nil is a real unbind; invalid combined sampler slots retain the
+         * existing explicit command error, with no native query/submission. */
+        A5MaliMetalBuffer *combined=[asyncQueue commandBuffer];
+        A5MaliMetalRenderEncoder *combinedEncoder=[combined renderCommandEncoderWithDescriptor:statePass];assert(combinedEncoder);
+        [combinedEncoder setFragmentTexture:source atTextureIndex:3 samplerState:nil atSamplerIndex:0];
+        [combinedEncoder setFragmentTexture:nil atTextureIndex:3 samplerState:nil atSamplerIndex:0];
+        [combinedEncoder setFragmentTexture:source atTextureIndex:3 samplerState:nil atSamplerIndex:16];
+        [combinedEncoder endEncoding];assert(![combined commitAndWaitUntilSubmitted]);
+        assert(combined.status==MTLCommandBufferStatusError&&t.queries==4&&t.submits==2);
         puts("native render: authenticated code, caller binding snapshots, mapping epoch, format checks, fences and unsupported state passed (mock transport)");
     }
     return 0;

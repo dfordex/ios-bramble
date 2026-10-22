@@ -20,7 +20,7 @@ typedef struct {
  IOSurfaceRef surfaces[64];uint32_t usage[64];BOOL mapped[64];
  unsigned imports,releases,queries,submits,epoch,lastEpoch;
  uint64_t expectedSource,expectedDestination,mipSource[9],mipDestination[9];
- unsigned expectedProfile;BOOL sameAllocation,badFence;
+ unsigned expectedProfile,failAtSubmit;BOOL sameAllocation,badFence,scratchCopy;
  __unsafe_unretained A5MaliTexturePassBacking *lease;
 } State;
 static unsigned indexFor(State*s,uint64_t token)
@@ -53,6 +53,13 @@ static kern_return_t wire(void*context,uint32_t selector,const void*input,size_t
     (uint32_t)IOSurfaceGetBytesPerRow(v),IOSurfaceGetPixelFormat(v),s->usage[i]};}
   if(s->sameAllocation)assert(q->surfaces[0]&&q->surfaces[0]==q->surfaces[1]&&
    r.surfaces[0].gpuVA==r.surfaces[1].gpuVA);
+  if(s->scratchCopy){
+   assert(s->submits<2&&q->surfaces[0]!=q->surfaces[1]&&!q->surfaces[2]&&!q->surfaces[3]);
+   uint64_t original=UINT64_C(0x100000001),scratch=UINT64_C(0x100000002);
+   assert(q->surfaces[0]==(s->submits?scratch:original));
+   assert(q->surfaces[1]==(s->submits?original:scratch));
+   assert(s->imports==2&&!s->releases&&s->surfaces[0]&&s->surfaces[1]);
+  }
   r.flags=s->epoch;s->lastEpoch=r.flags;++s->queries;
   if(s->lease)assert(s->lease.valid);
   memcpy(output,&r,sizeof(r));*outBytes=sizeof(r);return KERN_SUCCESS;}
@@ -65,14 +72,23 @@ static kern_return_t wire(void*context,uint32_t selector,const void*input,size_t
   uint64_t source;memcpy(&source,jobs+0x620,8);
   uint64_t expectedSource=s->sameAllocation?s->mipSource[s->submits]:s->expectedSource;
   uint64_t expectedDestination=s->sameAllocation?s->mipDestination[s->submits]:s->expectedDestination;
+  if(s->scratchCopy){
+   assert(s->submits<2&&q->surfaces[0]!=q->surfaces[1]);
+   expectedSource=gpuVA(s->submits?1:0);
+   expectedDestination=gpuVA(s->submits?0:1);
+   assert(!s->releases&&s->surfaces[0]&&s->surfaces[1]);
+  }
   assert(source==expectedSource);assert(contains64(jobs+0x300,0x140,expectedDestination));
-  assert(A5NativeCheckJobChain(jobs,A5NativeJobBytes,A5NativeJobVA,0,0x100,0x200,NO)==(q->profileID==500?1:0));
+  /* The first scratch draw fills its whole new target; the second writes
+   * a region of the original and must preload its untouched destination. */
+  int preload=q->profileID==500&&(!s->scratchCopy||s->submits!=0);
+  assert(A5NativeCheckJobChain(jobs,A5NativeJobBytes,A5NativeJobVA,0,0x100,0x200,NO)==preload);
  }else{assert(q->vertexOffset==UINT32_MAX&&q->tilerOffset==UINT32_MAX&&q->fragmentOffset==0);
   assert(!q->readSurfaces&&q->writeSurfaces==1);if(s->lease)assert(s->lease.valid);
   if(s->expectedDestination)assert(contains64(jobs+0x300,0x140,s->expectedDestination));}
  ++s->submits;A5NativeSubmitResult r={.header={1,sizeof(r),0,0},
   .tilerFence=q->profileID?1000+2*s->submits:0,.fragmentFence=1001+2*s->submits};
- if(s->badFence)r.fragmentFence=0;
+ if(s->badFence||(s->failAtSubmit&&s->submits==s->failAtSubmit))r.fragmentFence=0;
  assert(*outBytes==sizeof(r));memcpy(output,&r,sizeof(r));*outBytes=sizeof(r);return KERN_SUCCESS;
 }
 static A5MaliRestrictedDevice *device(State*s)
@@ -125,6 +141,44 @@ static void testPartialCopy(void)
  assert(cb.privateBuffer.completedFence.fragmentFence==1003);
  }assert(s.imports==s.releases);
 }
+/* A same-level atlas relocation must never feed one allocation to both
+ * source and target of a single hardware job. The temporary texture is real
+ * IOSurface storage, and both terminal fences are validated by the real bridge. */
+static void testSameLevelScratchCopy(unsigned failAtSubmit)
+{
+ State s={.epoch=1,.expectedProfile=500,.scratchCopy=YES,.failAtSubmit=failAtSubmit};
+ @autoreleasepool{A5MaliRestrictedDevice*d=device(&s);
+ A5MaliMetalTexture*t=texture(d,80,63,31,NO,MTLStorageModePrivate);
+ A5MaliMetalBuffer*cb=[[d newCommandQueue]commandBuffer];
+ A5MaliMetalBlitEncoder*e=[cb blitCommandEncoder];
+ [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(2,3,0)
+  sourceSize:MTLSizeMake(17,11,1) toTexture:t destinationSlice:0 destinationLevel:0
+  destinationOrigin:MTLOriginMake(31,7,0)];[e endEncoding];
+ assert(!s.queries&&!s.submits&&!s.releases);
+ [cb commit];[cb waitUntilCompleted];
+ unsigned submitted=failAtSubmit?failAtSubmit:2;
+ assert(s.queries==submitted&&s.submits==submitted&&s.imports==2);
+ assert(cb.status==(failAtSubmit?MTLCommandBufferStatusError:MTLCommandBufferStatusCompleted));
+ assert((cb.error!=nil)==(failAtSubmit!=0));
+ assert(cb.privateBuffer.completedFence.fragmentFence==(failAtSubmit==1?0:failAtSubmit==2?1003:1005));
+ }assert(s.imports==s.releases);
+}
+static void testSameLevelRejectedOrNoop(BOOL exact)
+{
+ State s={.epoch=1,.expectedProfile=500};@autoreleasepool{A5MaliRestrictedDevice*d=device(&s);
+ A5MaliMetalTexture*t=texture(d,80,63,31,NO,MTLStorageModePrivate);
+ A5MaliMetalBuffer*cb=[[d newCommandQueue]commandBuffer];
+ A5MaliMetalBlitEncoder*e=[cb blitCommandEncoder];
+ [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(2,3,0)
+  sourceSize:MTLSizeMake(17,11,1) toTexture:t destinationSlice:0 destinationLevel:0
+  destinationOrigin:exact?MTLOriginMake(2,3,0):MTLOriginMake(10,7,0)];[e endEncoding];
+ assert(s.imports==1&&!s.queries&&!s.submits);
+ [cb commit];[cb waitUntilCompleted];
+ assert(!s.queries&&!s.submits&&s.imports==1&&!cb.privateBuffer.completedFence.fragmentFence);
+ assert(cb.status==(exact?MTLCommandBufferStatusCompleted:MTLCommandBufferStatusError));
+ assert((cb.error!=nil)==!exact);
+ }assert(s.imports==s.releases);
+}
 static void testMipChain(void)
 {
  State s={.epoch=1,.expectedProfile=501,.sameAllocation=YES};@autoreleasepool{A5MaliRestrictedDevice*d=device(&s);
@@ -171,5 +225,5 @@ static void testMemoryless(BOOL badFence)
  assert(cb.privateBuffer.completedFence.fragmentFence==(badFence?0:1003));s.lease=nil;
  }assert(s.imports==s.releases);
 }
-int main(void){testBytesAndIdentity();testPartialCopy();testMipChain();testLevelClear();testMemoryless(NO);testMemoryless(YES);
- puts("native texture ops: real typed1D storage, subresource bounds/identity, queued partialcopy+9mips, epochs/fences and memoryless completion cleanup passed; kernel transport mocked, no GPU pixels claimed");return 0;}
+int main(void){testBytesAndIdentity();testPartialCopy();testSameLevelScratchCopy(0);testSameLevelScratchCopy(1);testSameLevelScratchCopy(2);testSameLevelRejectedOrNoop(YES);testSameLevelRejectedOrNoop(NO);testMipChain();testLevelClear();testMemoryless(NO);testMemoryless(YES);
+ puts("native texture ops: real typed1D storage, subresource bounds/identity, queued partialcopy+samelevel scratchcopy+9mips, epochs/fences and memoryless completion cleanup passed; kernel transport mocked, no GPU pixels claimed");return 0;}

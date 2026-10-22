@@ -37,6 +37,7 @@ static BOOL diagnosticTake(atomic_uint *counter,unsigned limit)
 }
 static atomic_uint encoderDiagnosticCount,commitDiagnosticCount,nativePhaseDiagnosticCount;
 static atomic_uint commandDiagnosticNext,queueCreationDiagnosticCount,bufferCreationDiagnosticCount,unretainedDiagnosticCount;
+static atomic_uint copyRejectionDiagnosticCount;
 static void logQueuePhase(const char *phase,unsigned bufferID,BOOL created,atomic_uint *counter,unsigned limit)
 {
     if(diagnosticTake(counter,limit))fprintf(stderr,
@@ -626,6 +627,20 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     }];
 }
 
+/* iOS16 Metal's private SPI returns BOOL after committing and asking the
+ * queue to submit the buffer. Our kernel work is synchronous within the real
+ * submission queue; wait on its actual status, never synthesize a GPU fence. */
+- (BOOL)commitAndWaitUntilSubmitted
+{
+    [self commit];
+    [self waitUntilScheduled];
+    [_condition lock];
+    BOOL submitted=_status>=MTLCommandBufferStatusScheduled &&
+        _status!=MTLCommandBufferStatusError && !_error;
+    [_condition unlock];
+    return submitted;
+}
+
 - (void)waitUntilScheduled
 {
     [_condition lock];
@@ -779,6 +794,16 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
         !(texture.usage & MTLTextureUsageShaderRead))
         [_buffer markEncodingError:kIOReturnBadArgument selector:_cmd];
     else { _textures[@(index)]=texture; if(!index)_source=texture; }
+}
+
+/* QuartzCore's combined SPI has the same binding semantics as the two
+ * public setters. Delegate both so ownership, nil unbind and validation remain
+ * identical; this is not a synthetic sampler or alternate resource path. */
+- (void)setFragmentTexture:(A5MaliMetalTexture *)texture atTextureIndex:(NSUInteger)textureIndex
+    samplerState:(A5MaliSamplerState *)sampler atSamplerIndex:(NSUInteger)samplerIndex
+{
+    [self setFragmentTexture:texture atIndex:textureIndex];
+    [self setFragmentSamplerState:sampler atIndex:samplerIndex];
 }
 
 - (void)setVertexBuffer:(A5MaliPrivateBuffer *)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
@@ -1363,6 +1388,13 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     if (![self validateActiveForSelector:_cmd] || ![self validateTexture:sourceTexture selector:_cmd] ||
         ![self validateTexture:destinationTexture selector:_cmd]) return;
     if(sourceSlice||destinationSlice||sourceTexture.pixelFormat!=destinationTexture.pixelFormat){
+        if(diagnosticTake(&copyRejectionDiagnosticCount,64))
+            fprintf(stderr,"A5XELTE Metal copy: rejected reason=slice-or-format source_format=%lu destination_format=%lu source=%lux%lu source_mips=%lu source_slice=%lu source_level=%lu destination=%lux%lu destination_mips=%lu destination_slice=%lu destination_level=%lu\n",
+                (unsigned long)sourceTexture.pixelFormat,(unsigned long)destinationTexture.pixelFormat,
+                (unsigned long)sourceTexture.width,(unsigned long)sourceTexture.height,
+                (unsigned long)sourceTexture.mipmapLevelCount,(unsigned long)sourceSlice,(unsigned long)sourceLevel,
+                (unsigned long)destinationTexture.width,(unsigned long)destinationTexture.height,
+                (unsigned long)destinationTexture.mipmapLevelCount,(unsigned long)destinationSlice,(unsigned long)destinationLevel);
         [_buffer markEncodingError:kIOReturnBadArgument selector:_cmd];return;
     }
     if([[_buffer.device privateDevice]supportsNativePrograms]){
