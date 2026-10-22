@@ -1,0 +1,11 @@
+--- a/iokit/Kernel/arm/A5XELTENativeQueue.inc
++++ b/iokit/Kernel/arm/A5XELTENativeQueue.inc
+@@ -39,7 +39,7 @@
+     bool clear=r.profileID==0;
+     bool profile=clear || (r.profileID>=99 && r.profileID<=108) ||
+         (r.profileID>=200 && r.profileID<=208) || (r.profileID>=300 && r.profileID<=302) ||
+-        r.profileID==500 || r.profileID==501 || r.profileID==600;
++        r.profileID==500 || r.profileID==501 || r.profileID==600 || r.profileID==601;
+     int chain=A5NativeCheckJobChain(input,r.jobBytes,kAS1JobVA,
+         r.vertexOffset,r.tilerOffset,r.fragmentOffset,clear);
+     if (!ctx || !input || !out || !a5g3d_as1_native_available() || !profile ||

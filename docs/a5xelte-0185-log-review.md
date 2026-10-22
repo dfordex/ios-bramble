@@ -29,9 +29,14 @@ This analysis is bound to QuartzCore UUID
    | Native FP16 enabled | `fixed_frag_lph_cph` | `fixed_frag_lph_cpf` |
    | Native FP16 disabled | NULL | `fixed_frag_lpf_cpf` |
 
-The observed `lpf_cpf` proves the CP-float bit is one. Enabling native FP16
-therefore predicts **`fixed_frag_lph_cpf`**, preserving CP precision. This is
-a capability correction, not a function-name substitution.
+**Historical prediction, corrected by 0186:** this review originally predicted
+`fixed_frag_lph_cpf` by preserving the observed CP-float bit. That prediction
+omitted the later branch at `0x188483a70–acc`. Without native FP16 that branch
+forces bit12 to one; with native FP16 it instead reads an initialized precision
+configuration byte. The actual 0186 request is **`fixed_frag_lph_cph`**, with the
+same 58 constants. Configuration zero selects `cph`; configuration one can
+select `cpf`. See [the complete 0186 correction](a5xelte-0186-log-review.md).
+The capability correction is genuine; neither name is an alias for the other.
 
 ## Hardware/compiler evidence and scope
 
@@ -66,10 +71,12 @@ fragment-only capture.
 ## Local verification
 
 `tools/test-a5mali-qc-fp16.py` verifies the operator image UUID, exact instructions,
-precision table and the production provider override. It checks that the same
-CP-float request changes from `lpf_cpf` to `lph_cpf`, while Apple-family support
-remains false. This is a host/static regression. Device verification of the new
-capability selection and subsequent live draw remains outstanding.
+precision table and the production provider override. **Updated after 0186:**
+it now guards the complete later precision branch and models both configuration
+values with native FP16 enabled and disabled. The previous regression incorrectly
+held CP-float constant; that limited model is superseded. Apple-family support
+remains false. This is a host/static regression; 0186 separately establishes the
+actual `lph_cph` request, without establishing a successful live draw.
 
 ## Full recovered capture census
 
@@ -149,9 +156,11 @@ by itself evidence that the physical button driver stopped working.
 
 ### Remaining verification boundary
 
-The next trial must first confirm actual selection of `fixed_frag_lph_cpf` with
-the same CP precision and typed constants, then real function and pipeline
-acceptance. A changed name alone is insufficient. No alias, dummy function,
+The historical next-trial prediction was `fixed_frag_lph_cpf`. **0186 correction:**
+the phone actually requests `fixed_frag_lph_cph`, with unchanged typed constants,
+because the later configuration branch also changes CP precision. Real function
+and pipeline acceptance remain required. A changed name alone is insufficient.
+No alias, dummy function,
 dropped constant or fabricated success may substitute for an executable
 specialized variant and its actual resource contract. Stock encoder creation,
 commit, native submissions, terminal completion and a changed live frame remain
@@ -162,6 +171,11 @@ Git commit, build or device write.
 
 
 ## 0186 implementation after this capture
+
+**Historical host implementation, not the observed 0186 request:** the following
+LPH/CP-float profile600 work preceded the phone evidence. The phone subsequently
+requested LPH/CP-half, so this compiled CP-float variant cannot be substituted for
+that request. A genuine CP-half specialization is required separately.
 
 A source-only recipe reproduces the real LPH/CP-float specialization using the
 complete captured typed constant contract. SPIR-V validation and released Mesa

@@ -59,7 +59,7 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
     assert(selector==A5NativeSubmitSelector);
     const A5NativeSubmitRequest *q=input;
     assert(inputBytes==sizeof(*q)+A5NativeJobBytes&&q->header.version==1&&q->header.size==sizeof(*q));
-    assert(q->profileID==600&&q->mappingEpoch==79&&q->jobBytes==A5NativeJobBytes);
+    assert(q->profileID==s->profile->profileID&&q->mappingEpoch==79&&q->jobBytes==A5NativeJobBytes);
     assert(q->vertexOffset==0&&q->tilerOffset==0x100&&q->fragmentOffset==0x200);
     assert(q->readSurfaces==1&&q->writeSurfaces==1&&!q->readBuffers);
     assert(q->surfaces[0]==UINT64_C(0x100000001));
@@ -67,7 +67,7 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
     for(unsigned i=0;i<A5NativeSlots;++i)assert(!q->buffers[i]);
     const uint8_t *jobs=(const uint8_t *)input+sizeof(*q);
     const A5MaliCompiledPass *pass=s->profile->passes;
-    assert(pass->passID==600&&pass->logicalTarget==0);
+    assert(pass->passID==s->profile->profileID&&pass->logicalTarget==0);
     assert(pass->vertex.byteCount==1808&&pass->fragment.byteCount==848);
     assert(!memcmp(jobs+0x6000,pass->vertex.bytes,pass->vertex.byteCount));
     assert(!memcmp(jobs+0x8000,pass->fragment.bytes,pass->fragment.byteCount));
@@ -83,10 +83,10 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
     memcpy(output,&result,sizeof(result));*outputBytes=sizeof(result);return KERN_SUCCESS;
 }
 
-static MTLFunctionConstantValues *constants(BOOL changed)
+static MTLFunctionConstantValues *constants(uint32_t profileID,BOOL changed)
 {
     size_t count=0;
-    const A5MaliCompiledFunctionConstant *values=A5MaliCompiledConstantsForProfile(600,&count);
+    const A5MaliCompiledFunctionConstant *values=A5MaliCompiledConstantsForProfile(profileID,&count);
     assert(values&&count==58);
     MTLFunctionConstantValues *result=[MTLFunctionConstantValues new];
     BOOL changedOne=NO;
@@ -105,12 +105,12 @@ static MTLFunctionConstantValues *constants(BOOL changed)
 static MTLRenderPipelineDescriptor *descriptor(A5MaliMetalLibrary *library,
     const A5MaliCompiledProfile *profile,BOOL changed,NSError **error)
 {
-    assert(profile->profileID==600&&!strcmp(profile->vertexName,"std_vert0_lph")&&
-        !strcmp(profile->fragmentName,"fixed_frag_lph_cpf"));
+    assert((profile->profileID==600||profile->profileID==601)&&!strcmp(profile->vertexName,"std_vert0_lph")&&
+        !strcmp(profile->fragmentName,profile->profileID==600?"fixed_frag_lph_cpf":"fixed_frag_lph_cph"));
     MTLRenderPipelineDescriptor *d=[MTLRenderPipelineDescriptor new];
     d.vertexFunction=(id)[library newFunctionWithName:@"std_vert0_lph"];
-    d.fragmentFunction=(id)[library newFunctionWithName:@"fixed_frag_lph_cpf"
-        constantValues:constants(changed) error:error];
+    d.fragmentFunction=(id)[library newFunctionWithName:[NSString stringWithUTF8String:profile->fragmentName]
+        constantValues:constants(profile->profileID,changed) error:error];
     if(!d.fragmentFunction)return nil;
     assert(d.vertexFunction&&profile->attributeCount==4&&profile->layoutCount==1);
     d.vertexDescriptor=[MTLVertexDescriptor vertexDescriptor];
@@ -164,11 +164,11 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     memcpy(vertices.contents,s->vertices,sizeof(s->vertices)); /* shared buffer captured at commit */
     return command;
 }
-int main(void)
+static int run(uint32_t profileID)
 {
     State s={0};
     @autoreleasepool{
-        s.profile=A5MaliCompiledProfileForID(600);assert(s.profile);
+        s.profile=A5MaliCompiledProfileForID(profileID);assert(s.profile);
         const float xy[4][2]={{0,0},{32,0},{0,32},{32,32}};
         for(unsigned i=0;i<4;++i){
             s.vertices[i].position[0]=xy[i][0];s.vertices[i].position[1]=xy[i][1];
@@ -207,3 +207,5 @@ int main(void)
     puts("native generic600: exact58 typed specialization, authenticated real shader bytes, original packing0, CPU caller snapshots, RT0-only query/submit, constants rejection and terminal/error fences passed (mock transport; no GPU pixels claimed)");
     return 0;
 }
+
+int main(void) { assert(!run(600));assert(!run(601));puts("generic CPF and CPH native wrapper paths passed; GPU pixels unverified");return 0; }

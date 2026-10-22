@@ -278,7 +278,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     BOOL executable=profile && ((profile->profileID>=99 && profile->profileID<=108) ||
         profile->profileID==200 || profile->profileID==202 || profile->profileID==204 ||
         profile->profileID==206 || profile->profileID==207 ||
-        profile->profileID==600 ||
+        profile->profileID==600 || profile->profileID==601 ||
         (profile->profileID>=300 && profile->profileID<=302));
     if(executable && [[self privateDevice]supportsNativePrograms]){
         if(error)*error=nil;
@@ -1050,7 +1050,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     const A5MaliCompiledProfile *profile=pipeline.profile;
     if(!profile || !(profile->profileID==200 || profile->profileID==202 ||
         profile->profileID==204 || profile->profileID==206 || profile->profileID==207 ||
-        profile->profileID==600 ||
+        profile->profileID==600 || profile->profileID==601 ||
         (profile->profileID>=300 && profile->profileID<=302)) ||
         !profile->passCount || profile->passCount>2 || count<3 || count>A5RuntimeMaxVertices ||
         (primitiveType!=MTLPrimitiveTypeTriangle && primitiveType!=MTLPrimitiveTypeTriangleStrip) ||
@@ -1095,7 +1095,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
         [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
     NSMutableArray<NSMutableSet<NSNumber *> *> *storageSlots=
         [NSMutableArray arrayWithObjects:[NSMutableSet new],[NSMutableSet new],nil];
-    if(profile->profileID==206 || profile->profileID==600)windows[0][@1]=@(count*48);
+    if(profile->profileID==206 || profile->profileID==600 || profile->profileID==601)windows[0][@1]=@(count*48);
     for(uint32_t i=0;i<profile->resourceCount;++i){const A5MaliCompiledResource*r=profile->resources+i;
         if(r->kind!=A5MaliResourceBuffer)continue;
         if(r->metalIndex>=31 || r->windowOffset || (r->flags&A5MaliResourceWrite) ||

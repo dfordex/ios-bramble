@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the exact captured QuartzCore 0185 fragment privately on the host.
+"""Compile the exact captured QuartzCore 0185/0186 fragments privately.
 
 The metallib, captured constants, SPIR-V and native Midgard bytes are inputs or
 outputs outside the checkout. The vertex stage is only a host candidate until
@@ -17,11 +17,27 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PINNED_SHA256 = {
-    'vert': {'spirv': '0528d04cf9a3ff58fb8fb239c8d0cc3a68d8f92655933ee2ae3e0eef9f4d9ea0',
-             'midgard': '3cdf2b0db0b9992ce887242e7cac282cd70c3f8051e3ace3e791a0b676193a79'},
-    'frag': {'spirv': '99c1da83118acbc443b29f4a6db75e6f9abaaaabe6bee568a2711c929f6d1f6e',
-             'midgard': 'e66041333f6452510cda4d0ee1f1c1edf443a12007a989871a1546791deb0834'},
+PINNED_METALLIB_SHA256 = '11c74cc42ce5137b73d44d427f75764f886656d4ddb374422d56b609ed2762d9'
+PINNED_VERTEX = {
+    'spirv': '0528d04cf9a3ff58fb8fb239c8d0cc3a68d8f92655933ee2ae3e0eef9f4d9ea0',
+    'midgard': '3cdf2b0db0b9992ce887242e7cac282cd70c3f8051e3ace3e791a0b676193a79',
+}
+PINNED_FRAGMENT_NATIVE = 'e66041333f6452510cda4d0ee1f1c1edf443a12007a989871a1546791deb0834'
+PROFILES = {
+    'fixed_frag_lpf_cpf': {
+        'profile_id': 600,
+        'compiled': 'fixed_frag_lph_cpf',
+        'capture_sha256': 'e2f809f528beff1876b1bdfbb4305fd750fd70fc587d804bb7bc071417bc21f1',
+        'fragment_spirv_sha256': '99c1da83118acbc443b29f4a6db75e6f9abaaaabe6bee568a2711c929f6d1f6e',
+        'reason': '0185 unavailable LPF; offline stock LPH CPF probe, not observed at runtime',
+    },
+    'fixed_frag_lph_cph': {
+        'profile_id': 601,
+        'compiled': 'fixed_frag_lph_cph',
+        'capture_sha256': '3b2325f832c093b38b2ea1fdfe153509669c99b3bc3134cbe5d14255e5a17bf8',
+        'fragment_spirv_sha256': 'f271a311587f085c95eae36250cba6466308135691fcf04d8adbabd167d55ac1',
+        'reason': '0186 real stock LPH CPH function requested by QuartzCore',
+    },
 }
 CONSTANT_CONTRACT_SHA256 = 'ce2da02786df035dba926c6959c2c03aeddf4737577538bd168e1b7921f6341b'
 PACKING0 = {
@@ -54,8 +70,9 @@ def run(command, log, env=None):
 
 def captured_constants(path):
     capture = json.loads(path.read_text())
-    if capture['function'] != 'fixed_frag_lpf_cpf':
-        raise ValueError('0185 must be the captured lpf lookup; do not alias it')
+    if capture['function'] not in PROFILES or \
+            sha(path) != PROFILES[capture['function']]['capture_sha256']:
+        raise ValueError('capture must exactly match documented 0185 or 0186')
     constants = capture['constants']
     contract = json.dumps({key: {'type': item['type'], 'raw': item['raw']}
                            for key, item in sorted(constants.items())},
@@ -207,18 +224,22 @@ def validate_receipt(receipt_path, capture_path, metallib_path):
     """Allow an integrator to reject stale, substituted or partial host output."""
     receipt_path = Path(receipt_path)
     receipt = json.loads(receipt_path.read_text())
+    capture_path = Path(capture_path)
+    capture = json.loads(capture_path.read_text())
+    profile = PROFILES[capture['function']]
     if (receipt['schema'] != 1 or
-            receipt['compiled_function'] != 'fixed_frag_lph_cpf' or
-            receipt['captured_function'] != 'fixed_frag_lpf_cpf' or
+            receipt['profile_id'] != profile['profile_id'] or
+            receipt['compiled_function'] != profile['compiled'] or
+            receipt['captured_function'] != capture['function'] or
             not receipt['host_only'] or receipt['device_pair_verified']):
         raise ValueError('wrong generic profile receipt')
-    capture = json.loads(Path(capture_path).read_text())
-    if (receipt['capture_sha256'] != sha(Path(capture_path)) or
+    if (receipt['capture_sha256'] != sha(capture_path) or
             receipt['captured_constants'] != capture['constants'] or
             receipt['named_constant_count'] != 58 or
-            not captured_constants(Path(capture_path))):
+            not captured_constants(capture_path)):
         raise ValueError('capture identity differs')
-    if receipt['metallib_sha256'] != sha(Path(metallib_path)):
+    if receipt['metallib_sha256'] != sha(Path(metallib_path)) or \
+            receipt['metallib_sha256'] != PINNED_METALLIB_SHA256:
         raise ValueError('QuartzCore metallib identity differs')
     reflection = json.loads((receipt_path.parent / 'reflection.json').read_text())
     verify_reflection(reflection)
@@ -234,10 +255,13 @@ def validate_receipt(receipt_path, capture_path, metallib_path):
         for kind, ext in (('spirv', 'spv'), ('midgard', 'midgard')):
             path = receipt_path.parent / f'{stage}.{ext}'
             if kind == 'spirv':
-                path = receipt_path.parent / f'fixed_frag_lph_cpf.{stage}.spv'
+                path = receipt_path.parent / f"{profile['compiled']}.{stage}.spv"
+            expected = (PINNED_VERTEX[kind] if stage == 'vert' else
+                        profile['fragment_spirv_sha256'] if kind == 'spirv' else
+                        PINNED_FRAGMENT_NATIVE)
             if item[f'{kind}_bytes'] != path.stat().st_size or \
                     item[f'{kind}_sha256'] != sha(path) or \
-                    item[f'{kind}_sha256'] != PINNED_SHA256[stage][kind]:
+                    item[f'{kind}_sha256'] != expected:
                 raise ValueError(f'{stage} {kind} differs from pinned compiler result')
     return receipt
 
@@ -255,13 +279,17 @@ def main():
     if any(out.iterdir()):
         p.error('output must be empty to prevent stale compilation artifacts')
     constants = captured_constants(a.capture)
+    captured_name = json.loads(a.capture.read_text())['function']
+    profile = PROFILES[captured_name]
+    if sha(a.metallib) != PINNED_METALLIB_SHA256:
+        p.error('this recipe requires the measured stock QuartzCore metallib')
     descriptor = out / 'packing0.json'
     descriptor.write_text(json.dumps(PACKING0, indent=2) + '\n')
-    prefix = out / 'fixed_frag_lph_cpf'
+    prefix = out / profile['compiled']
     meta_path = out / 'reflection.json'
     cmd = [str(a.translator), str(a.metallib), str(prefix) + '.spv',
            '--profile', str(a.profile), '--function', 'std_vert0_lph',
-           '--fragment', 'fixed_frag_lph_cpf', '--color-format',
+           '--fragment', profile['compiled'], '--color-format',
            '0:BGRA8Unorm', '--vertex-descriptor', str(descriptor),
            '--emit-meta', str(meta_path), '--no-timeout'] + constants
     env = {**os.environ, 'METAL2VULKAN_SPIRV_VAL': str(a.validator)}
@@ -295,10 +323,11 @@ def main():
              'attributes', 'ubos', 'samplers')
     infos = {stage: dict(zip(names, map(int, info_lines[index])))
              for index, stage in enumerate(('vert', 'frag'))}
-    receipt.update(schema=1, host_only=True, device_pair_verified=False,
-                   captured_function='fixed_frag_lpf_cpf',
-                   compiled_function='fixed_frag_lph_cpf',
-                   reason='FP16 capability selects stock LPH variant, no name alias',
+    receipt.update(schema=1, profile_id=profile['profile_id'],
+                   host_only=True, device_pair_verified=False,
+                   captured_function=captured_name,
+                   compiled_function=profile['compiled'],
+                   reason=profile['reason'],
                    named_constant_count=58,
                    capture_sha256=sha(a.capture), metallib_sha256=sha(a.metallib),
                    captured_constants=json.loads(a.capture.read_text())['constants'],

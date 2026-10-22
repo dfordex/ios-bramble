@@ -88,7 +88,14 @@ const A5MaliCompiledFunctionConstant *A5MaliCompiledConstantsForProfile(uint32_t
         if(count)*count=sizeof(kA5MaliProfile600Constants)/sizeof(kA5MaliProfile600Constants[0]);
         return kA5MaliProfile600Constants;
     }
-#else
+#endif
+#ifdef A5_MALI_HAS_GENERIC_601
+    if(profileID==601 && A5MaliCompiledProfileForID(601)) {
+        if(count)*count=sizeof(kA5MaliProfile601Constants)/sizeof(kA5MaliProfile601Constants[0]);
+        return kA5MaliProfile601Constants;
+    }
+#endif
+#if !defined(A5_MALI_HAS_GENERIC_600) && !defined(A5_MALI_HAS_GENERIC_601)
     (void)profileID;
 #endif
     return NULL;
@@ -344,7 +351,7 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
                 type = MTLFunctionTypeFragment; found = YES; break;
             }
         }
-        if (!found) return nil;
+        if (!found) { logFunctionSpecialization(name,nil);return nil; }
     }
     return [[A5MaliMetalFunction alloc] initWithLibrary:self name:name type:type];
 }
@@ -368,6 +375,14 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
          snapshot.pluginData) ||
         ([snapshot respondsToSelector:@selector(privateFunctions)] &&
          snapshot.privateFunctions.count)) {
+        static atomic_uint rejectedDescriptors;
+        if(atomic_fetch_add_explicit(&rejectedDescriptors,1,memory_order_relaxed)<4)
+            fprintf(stderr,"A5XELTE Metal function descriptor: function=%s specialized_name=%u options=%llu archives=%lu pipeline_options=%llu plugin_data=%u private_functions=%lu result=unsupported\n",
+                boundedFunctionIdentifier(snapshot.name).UTF8String,snapshot.specializedName!=nil,
+                (unsigned long long)snapshot.options,(unsigned long)snapshot.binaryArchives.count,
+                (unsigned long long)([snapshot respondsToSelector:@selector(pipelineOptions)]?snapshot.pipelineOptions:0),
+                [snapshot respondsToSelector:@selector(pluginData)]&&snapshot.pluginData!=nil,
+                (unsigned long)([snapshot respondsToSelector:@selector(privateFunctions)]?snapshot.privateFunctions.count:0));
         logFunctionSpecialization(snapshot.name,snapshot.constantValues);
         if (error) *error = libraryError(@"function specialization and archives are unsupported");
         return nil;
@@ -384,16 +399,19 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
                                     error:(NSError **)error
 {
     if (constants) {
-        const A5MaliCompiledProfile *profile=A5MaliCompiledProfileForID(600);
-        if(profile && !(profile->flags&A5MaliProfileNotExecutable) &&
-            [name isEqualToString:[NSString stringWithUTF8String:profile->fragmentName]] &&
-            constantsMatchProfile(constants,profile->profileID)) {
-            static atomic_uint accepted;
-            if(atomic_fetch_add_explicit(&accepted,1,memory_order_relaxed)<16)
-                fprintf(stderr,"A5XELTE Metal specialize: accepted profile=600 function=%s constants=58\n",name.UTF8String);
-            if(error)*error=nil;
-            return [[A5MaliMetalFunction alloc]initWithLibrary:self name:name
-                type:MTLFunctionTypeFragment specializationProfileID:profile->profileID];
+        size_t profileCount=0;const A5MaliCompiledProfile *profiles=A5MaliCompiledProfiles(&profileCount);
+        for(size_t i=0;i<profileCount;++i) {
+            const A5MaliCompiledProfile *profile=profiles+i;
+            if(!(profile->flags&A5MaliProfileNotExecutable) &&
+                [name isEqualToString:[NSString stringWithUTF8String:profile->fragmentName]] &&
+                constantsMatchProfile(constants,profile->profileID)) {
+                static atomic_uint accepted;
+                if(atomic_fetch_add_explicit(&accepted,1,memory_order_relaxed)<16)
+                    fprintf(stderr,"A5XELTE Metal specialize: accepted profile=%u function=%s constants=58\n",profile->profileID,name.UTF8String);
+                if(error)*error=nil;
+                return [[A5MaliMetalFunction alloc]initWithLibrary:self name:name
+                    type:MTLFunctionTypeFragment specializationProfileID:profile->profileID];
+            }
         }
         logFunctionSpecialization(name,constants);
         if (error) *error = libraryError(@"no compiled AIR function-constant variant matches");

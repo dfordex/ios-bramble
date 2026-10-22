@@ -17,10 +17,7 @@
 #endif
 #endif
 
-static uint8_t descriptor[A5RuntimeJobBytes];
-#ifdef A5_TEST_REAL_PROFILE
-static uint8_t syntheticDescriptor[A5RuntimeJobBytes];
-#endif
+static uint8_t descriptor[A5RuntimeJobBytes],syntheticDescriptor[A5RuntimeJobBytes];
 static uint8_t vertices[4*48],matrix[64];
 static int zeroed(void){for(size_t i=0;i<sizeof(descriptor);++i)if(descriptor[i])return 0;return 1;}
 static uint8_t*program(const char*path,size_t expected){
@@ -45,7 +42,9 @@ int main(int argc,char**argv){
  A5MaliCompiledAttachmentContract attachment={0};
  for(unsigned i=0;i<8;++i){attachment.attachments[i].writeMask=15;
   attachment.attachments[i].sourceRGB=1;attachment.attachments[i].sourceAlpha=1;}
- A5MaliCompiledProfile profile={0};profile.profileID=600;profile.colorFormats[0]=80;
+ A5MaliCompiledProfile profile={0};profile.profileID=600;
+ profile.vertexName="std_vert0_lph";profile.fragmentName="fixed_frag_lph_cpf";
+ profile.colorFormats[0]=80;
  profile.passes=&pass;profile.passCount=1;profile.resources=&res;profile.resourceCount=1;
  profile.pushFields=push;profile.pushFieldCount=2;profile.attributes=attr;profile.attributeCount=4;
  profile.layouts=&layout;profile.layoutCount=1;
@@ -58,8 +57,8 @@ int main(int argc,char**argv){
  m.draw.vertexBuffers[2]=(A5RuntimeBuffer){0,sizeof(matrix),0,matrix};
  m.colorAttachments[0]=(A5RuntimeImage){0x22000000,4096,32,32,128,80};
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
-#ifdef A5_TEST_REAL_PROFILE
  memcpy(syntheticDescriptor,descriptor,sizeof(descriptor));
+#ifdef A5_TEST_REAL_PROFILE
  const A5MaliCompiledProfile*real=NULL;
  for(size_t i=0;i<sizeof(kA5MaliCompiledProfiles)/sizeof(kA5MaliCompiledProfiles[0]);++i)
   if(kA5MaliCompiledProfiles[i].profileID==600)real=&kA5MaliCompiledProfiles[i];
@@ -85,10 +84,31 @@ int main(int argc,char**argv){
  assert(outcolor.buffer_index==2&&(outcolor.format>>12)==MALI_RGBA32UI);
  assert(incolor.buffer_index==0&&(incolor.format>>12)==MALI_RGBA32F);
  uint32_t rule;memcpy(&rule,descriptor+0x1400+68,4);assert(rule==0x2222);
+ /* The real CPH fragment translates to the same native code, but its
+  * original function identity remains a separate exact profile. */
+ profile.profileID=601;pass.passID=601;profile.fragmentName="fixed_frag_lph_cph";
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ assert(!memcmp(syntheticDescriptor,descriptor,sizeof(descriptor)));
+#ifdef A5_TEST_REAL_PROFILE
+ real=NULL;
+ for(size_t i=0;i<sizeof(kA5MaliCompiledProfiles)/sizeof(kA5MaliCompiledProfiles[0]);++i)
+  if(kA5MaliCompiledProfiles[i].profileID==601)real=&kA5MaliCompiledProfiles[i];
+ assert(real);m.draw.profile=real;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ assert(!memcmp(syntheticDescriptor,descriptor,sizeof(descriptor)));
+ m.draw.profile=&profile;
+#endif
+ profile.fragmentName="fixed_frag_lph_cpf";
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ profile.profileID=600;pass.passID=600;
  m.draw.blend=A5RuntimeBlendPremultipliedSourceOver;
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
  m.draw.blend=A5RuntimeBlendCopy;m.draw.vertexBuffers[1].bytes=sizeof(vertices)-1;
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeBounds&&zeroed());
+ m.draw.vertexBuffers[1]=(A5RuntimeBuffer){m.colorAttachments[0].gpuVA,
+  sizeof(vertices),0,NULL};
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeBounds&&zeroed());
+ m.draw.vertexBuffers[1]=(A5RuntimeBuffer){0,sizeof(vertices),0,vertices};
  m.draw.vertexBuffers[1].bytes=sizeof(vertices);attr[3].offset=16;
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
  attr[3].offset=32;res.uniformBytes=168;
@@ -96,6 +116,6 @@ int main(int argc,char**argv){
  res.uniformBytes=64;pass.fragment.sha256="wrong";
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
  free(vs);free(fs);
- puts("PASS generic600 exact host pair descriptor/ABI and unsupported-state gates; device pixels unverified");
+ puts("PASS generic600/601 exact host pair descriptor/ABI and unsupported-state gates; device pixels unverified");
  return 0;
 }
