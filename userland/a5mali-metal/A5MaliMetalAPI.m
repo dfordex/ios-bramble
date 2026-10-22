@@ -42,6 +42,7 @@ static atomic_uint encoderDiagnosticCount,commitDiagnosticCount,nativePhaseDiagn
 static atomic_uint commandDiagnosticNext,queueCreationDiagnosticCount,bufferCreationDiagnosticCount,unretainedDiagnosticCount;
 static atomic_uint copyRejectionDiagnosticCount;
 static atomic_uint protectionDiagnosticCount;
+static atomic_uint indexedDrawDiagnosticCount;
 static void logQueuePhase(const char *phase,unsigned bufferID,BOOL created,atomic_uint *counter,unsigned limit)
 {
     if(diagnosticTake(counter,limit))fprintf(stderr,
@@ -270,6 +271,9 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
                    attachments:(NSDictionary<NSNumber *,A5MaliMetalTexture *> *)attachments;
 - (BOOL)encodeCompiledDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count;
 - (BOOL)encodeCompiledMiscDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count;
+- (BOOL)encodeCompiledMiscDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count
+    indexBinding:(nullable A5MaliBufferBinding *)indexBinding indexCount:(NSUInteger)indexCount
+    indexSize:(NSUInteger)indexSize;
 - (BOOL)validateActiveForSelector:(SEL)selector;
 - (void)setBoundBuffer:(nullable A5MaliPrivateBuffer *)buffer offset:(NSUInteger)offset
     index:(NSUInteger)index vertex:(BOOL)vertex selector:(SEL)selector;
@@ -1013,6 +1017,8 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     BOOL sourceOver=pipeline.sourceOver;
     unsigned diagnosticID=_buffer.diagnosticID;
     return [[_buffer privateBuffer] encodeNativeWork:^kern_return_t(A5MaliClient *client,A5MaliFence *fence) {
+        __attribute__((objc_precise_lifetime)) A5MaliCompiledPipeline *retainedPipeline=pipeline;
+        (void)retainedPipeline; /* Own cached native code until its terminal fence. */
         A5NativeQueryRequest query={.header={1,sizeof(query),0,0}};
         query.surfaces[0]=source.privateSurface.resource.token;
         query.surfaces[1]=destination.privateSurface.resource.token;
@@ -1090,18 +1096,31 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 
 - (BOOL)encodeCompiledMiscDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count
 {
+    return [self encodeCompiledMiscDraw:primitiveType vertexCount:count
+        indexBinding:nil indexCount:0 indexSize:0];
+}
+- (BOOL)encodeCompiledMiscDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count
+    indexBinding:(A5MaliBufferBinding *)indexBinding indexCount:(NSUInteger)indexCount
+    indexSize:(NSUInteger)indexSize
+{
 #if !A5_MALI_NATIVE_RENDER
-    (void)primitiveType;(void)count;return NO;
+    (void)primitiveType;(void)count;(void)indexBinding;(void)indexCount;(void)indexSize;return NO;
 #else
     A5MaliCompiledPipeline *pipeline=(id)_pipeline;
     const A5MaliCompiledProfile *profile=pipeline.profile;
+    BOOL indexed=indexBinding!=nil;
+    NSUInteger primitiveCount=indexed?indexCount:count;
     if(!profile || !(profile->profileID==200 || profile->profileID==202 ||
         profile->profileID==204 || profile->profileID==206 || profile->profileID==207 ||
         profile->profileID==600 || profile->profileID==601 || profile->profileID==602 ||
         (profile->profileID>=300 && profile->profileID<=302)) ||
-        !profile->passCount || profile->passCount>2 || count<3 || count>A5RuntimeMaxVertices ||
+        !profile->passCount || profile->passCount>2 || primitiveCount<3 ||
+        (!indexed && count>A5RuntimeMaxVertices) ||
+        (indexed && (profile->profileID!=602 || indexCount>A5RuntimeMaxIndices ||
+            (indexSize!=2 && indexSize!=4) || indexBinding.device!=_buffer.device ||
+            indexBinding.length!=indexCount*indexSize || !indexBinding.buffer.readyForRead)) ||
         (primitiveType!=MTLPrimitiveTypeTriangle && primitiveType!=MTLPrimitiveTypeTriangleStrip) ||
-        (primitiveType==MTLPrimitiveTypeTriangle && count%3))return NO;
+        (primitiveType==MTLPrimitiveTypeTriangle && primitiveCount%3))return NO;
     BOOL path=profile->profileID>=300 && profile->profileID<=302;
     if(path && (count!=4 || primitiveType!=MTLPrimitiveTypeTriangleStrip))return NO;
     NSDictionary<NSNumber *,A5MaliMetalTexture *> *attachments=[_attachments copy];
@@ -1142,7 +1161,8 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
         [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
     NSMutableArray<NSMutableSet<NSNumber *> *> *storageSlots=
         [NSMutableArray arrayWithObjects:[NSMutableSet new],[NSMutableSet new],nil];
-    if(profile->profileID==206 || profile->profileID==600 || profile->profileID==601 || profile->profileID==602)windows[0][@1]=@(count*48);
+    if(profile->profileID==206 || profile->profileID==600 || profile->profileID==601 || profile->profileID==602)
+        windows[0][@1]=@((indexed?1:count)*48);
     for(uint32_t i=0;i<profile->resourceCount;++i){const A5MaliCompiledResource*r=profile->resources+i;
         if(r->kind!=A5MaliResourceBuffer)continue;
         if(r->metalIndex>=31 || r->windowOffset || (r->flags&A5MaliResourceWrite) ||
@@ -1164,15 +1184,46 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     A5MaliRestrictedDevice *device=_buffer.device;
     unsigned diagnosticID=_buffer.diagnosticID;
     return [[_buffer privateBuffer] encodeNativeWork:^kern_return_t(A5MaliClient *client,A5MaliFence*fence){
+        __attribute__((objc_precise_lifetime)) A5MaliCompiledPipeline *retainedPipeline=pipeline;
+        (void)retainedPipeline;
         NSMutableArray<NSNumber *> *temporaryHandles=[NSMutableArray new];
         kern_return_t (^execute)(void)=^kern_return_t{
-            A5RuntimeMiscDraw command={.draw={.profile=profile,.vertexCount=(uint32_t)count,
+            NSUInteger submittedVertexCount=count;
+            __attribute__((objc_precise_lifetime)) NSMutableData *indices=nil;
+            if(indexed){
+                /* Index and vertex identities are retained at draw time;
+                 * contents are captured under the connection's commit lock.
+                 * Read private BOs through the already-locked transport to
+                 * avoid recursively locking the public readBytes path. */
+                indices=[NSMutableData dataWithLength:indexBinding.length];
+                kern_return_t kr=[indexBinding.buffer readBytesForSubmission:indices.mutableBytes
+                    offset:indexBinding.offset length:indexBinding.length client:client];
+                if(kr)return kr;
+                uint32_t maximum=0;
+                for(NSUInteger i=0;i<indexCount;++i){
+                    uint32_t value=0;memcpy(&value,(const uint8_t *)indices.bytes+i*indexSize,indexSize);
+                    if(value>=A5RuntimeMaxVertices)return kIOReturnBadArgument;
+                    maximum=MAX(maximum,value);
+                }
+                submittedVertexCount=(NSUInteger)maximum+1;
+                A5MaliBufferBinding *vertices=bindings[0][@1];
+                if(vertices.length<submittedVertexCount*48)return kIOReturnBadArgument;
+                if(diagnosticTake(&indexedDrawDiagnosticCount,32))fprintf(stderr,
+                    "A5XELTE Metal indexed: cb=%u profile=%u indices=%lu width=%lu offset=%lu vertices=%lu\n",
+                    diagnosticID,profile->profileID,(unsigned long)indexCount,(unsigned long)indexSize,
+                    (unsigned long)indexBinding.offset,(unsigned long)submittedVertexCount);
+            }
+            A5RuntimeMiscDraw command={.draw={.profile=profile,.vertexCount=(uint32_t)submittedVertexCount,
                 .primitive=primitiveType==MTLPrimitiveTypeTriangle?A5RuntimeTriangle:A5RuntimeTriangleStrip,
                 .blend=sourceOver?A5RuntimeBlendPremultipliedSourceOver:A5RuntimeBlendCopy,
                 .scissorX=(uint32_t)scissor.x,.scissorY=(uint32_t)scissor.y,
                 .scissorWidth=(uint32_t)scissor.width,.scissorHeight=(uint32_t)scissor.height,
                 .viewportX=viewport.originX,.viewportY=viewport.originY,.viewportWidth=viewport.width,
                 .viewportHeight=viewport.height,.viewportNear=viewport.znear,.viewportFar=viewport.zfar}};
+            if(indexed){
+                command.draw.indexBuffer=(A5RuntimeBuffer){0,(uint32_t)indices.length,0,indices.bytes};
+                command.draw.indexCount=(uint32_t)indexCount;command.draw.indexSize=(uint32_t)indexSize;
+            }
             A5NativeQueryRequest query={.header={1,sizeof(query),0,0}};
             for(NSUInteger i=0;i<mappedImages.count;++i)query.surfaces[i]=mappedImages[i].privateSurface.resource.token;
             NSMutableArray<NSData *> *snapshots=[NSMutableArray new];
@@ -1186,7 +1237,9 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
                     uint64_t handle=binding.privateKernelHandle;
                     A5RuntimeBuffer native={0};
                     if(!handle){
-                        NSData *data=[binding capturePrefixBytesForSubmission:windows[stage][slot].unsignedIntegerValue error:NULL];
+                        NSUInteger required=(indexed && !stage && slot.unsignedIntegerValue==1)?
+                            submittedVertexCount*48:windows[stage][slot].unsignedIntegerValue;
+                        NSData *data=[binding capturePrefixBytesForSubmission:required error:NULL];
                         if(!data)return kIOReturnBadArgument;
                         [snapshots addObject:data];
                         if([storageSlots[stage] containsObject:slot]){
@@ -1286,6 +1339,48 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 - (void)drawPrimitives:(MTLPrimitiveType)type vertexStart:(NSUInteger)start
     vertexCount:(NSUInteger)count instanceCount:(NSUInteger)instances
 { if(instances!=1){[_buffer noteDrawCall];[_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];}else[self drawPrimitives:type vertexStart:start vertexCount:count]; }
+
+- (void)drawIndexedPrimitives:(MTLPrimitiveType)type indexCount:(NSUInteger)count
+    indexType:(MTLIndexType)indexType indexBuffer:(A5MaliPrivateBuffer *)indexBuffer
+    indexBufferOffset:(NSUInteger)offset
+{
+    [_buffer noteDrawCall];
+    NSUInteger width=indexType==MTLIndexTypeUInt16?2:indexType==MTLIndexTypeUInt32?4:0;
+    if(_ended || !width || offset%width || count>A5RuntimeMaxIndices ||
+        ![indexBuffer isKindOfClass:[A5MaliPrivateBuffer class]] ||
+        indexBuffer.device!=_buffer.device || !indexBuffer.readyForRead ||
+        offset>indexBuffer.length || count>(indexBuffer.length-offset)/width){
+        [_buffer markEncodingError:kIOReturnBadArgument selector:_cmd];return;
+    }
+    if(!count)return; /* Metal zero-count draw has no work or synthetic fence. */
+    if(![_pipeline isKindOfClass:[A5MaliCompiledPipeline class]]){
+        [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];return;
+    }
+    A5MaliBufferBinding *binding=[A5MaliBufferBinding bindingWithBuffer:indexBuffer
+        offset:offset length:count*width device:_buffer.device error:NULL];
+    if(!binding || ![self encodeCompiledMiscDraw:type vertexCount:0
+        indexBinding:binding indexCount:count indexSize:width])
+        [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];
+    else { _hasDraw=YES;[_buffer noteQueuedDraw]; }
+}
+- (void)drawIndexedPrimitives:(MTLPrimitiveType)type indexCount:(NSUInteger)count
+    indexType:(MTLIndexType)indexType indexBuffer:(A5MaliPrivateBuffer *)indexBuffer
+    indexBufferOffset:(NSUInteger)offset instanceCount:(NSUInteger)instances
+{
+    [self drawIndexedPrimitives:type indexCount:count indexType:indexType indexBuffer:indexBuffer
+        indexBufferOffset:offset instanceCount:instances baseVertex:0 baseInstance:0];
+}
+- (void)drawIndexedPrimitives:(MTLPrimitiveType)type indexCount:(NSUInteger)count
+    indexType:(MTLIndexType)indexType indexBuffer:(A5MaliPrivateBuffer *)indexBuffer
+    indexBufferOffset:(NSUInteger)offset instanceCount:(NSUInteger)instances
+    baseVertex:(NSInteger)baseVertex baseInstance:(NSUInteger)baseInstance
+{
+    if(instances!=1 || baseVertex || baseInstance){
+        [_buffer noteDrawCall];[_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];return;
+    }
+    [self drawIndexedPrimitives:type indexCount:count indexType:indexType
+        indexBuffer:indexBuffer indexBufferOffset:offset];
+}
 
 - (void)endEncoding
 {

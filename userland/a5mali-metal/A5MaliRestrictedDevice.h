@@ -218,6 +218,16 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
           vertexStart:(NSUInteger)vertexStart vertexCount:(NSUInteger)vertexCount;
 - (void)drawPrimitives:(MTLPrimitiveType)primitiveType vertexStart:(NSUInteger)vertexStart
     vertexCount:(NSUInteger)vertexCount instanceCount:(NSUInteger)instanceCount;
+- (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexCount:(NSUInteger)indexCount
+    indexType:(MTLIndexType)indexType indexBuffer:(A5MaliPrivateBuffer *)indexBuffer
+    indexBufferOffset:(NSUInteger)indexBufferOffset;
+- (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexCount:(NSUInteger)indexCount
+    indexType:(MTLIndexType)indexType indexBuffer:(A5MaliPrivateBuffer *)indexBuffer
+    indexBufferOffset:(NSUInteger)indexBufferOffset instanceCount:(NSUInteger)instanceCount;
+- (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexCount:(NSUInteger)indexCount
+    indexType:(MTLIndexType)indexType indexBuffer:(A5MaliPrivateBuffer *)indexBuffer
+    indexBufferOffset:(NSUInteger)indexBufferOffset instanceCount:(NSUInteger)instanceCount
+    baseVertex:(NSInteger)baseVertex baseInstance:(NSUInteger)baseInstance;
 - (void)endEncoding;
 @end
 

@@ -27,35 +27,61 @@ entry. Unexpected live descendants are killed. Failed workspaces are removed;
 retained cache entries and bytes have finite limits. Outputs and directories
 are fsynced before publication. These bounds still need measurement on the A53.
 
-The opt-in launch job runs `--selftest`: compile both real pairs and immediately
-request each again to exercise the cache. It reports output byte counts and
-SHA256s to the bounded SYSTEM console tee. A successful native compilation
-does not prove a draw; compare its outputs with the existing validated shader
-reference, then test the runtime pipeline consuming them separately.
+The launch job runs `--serve`. It first compiles both real baseline pairs and
+checks their cache entries, then scans the bounded request spool. The exact
+captured QuartzCore `fixed_vert_lph_spc` + `fixed_frag_lph_cph` profile 602 can
+be translated and compiled on the phone. Unknown functions and pipeline
+contracts receive explicit unsupported results. A compiled stage does not
+prove that an arbitrary Metal pipeline can draw.
 
-Build the three tools with `build_air_translator.py`, `build_midgard_ios.py`
-and `build_spirv_tools_ios.py`. `prepare_package.py AIR MIDGARD VALIDATOR
-PROFILE OUTPUT` builds the runner, verifies device-platform Mach-O metadata,
-rejects macOS/simulator/non-system dependencies and signs all four executables
-with4KiB signature pages. No shader binaries are bundled.
+Build the explicit no-timeout translator with `build_air_no_timeout.py`, the
+Midgard tools with `build_midgard_ios.py`, and the validator with
+`build_spirv_tools_ios.py`. `prepare_package.py` requires the patched
+translator's paired host binary and provenance manifest. It verifies the
+patch, both artifact hashes and the host CLI's `--no-timeout` option before
+staging; the older optimized translator fails this gate. The package script
+also checks iOS-device Mach-O dependencies, signs all five executables and
+verifies 4 KiB signature pages. No shader binaries are bundled.
+
+Package invocation (all generated artifacts remain outside Git):
+
+```sh
+python3 prepare_package.py PATCHED_AIR_IOS MIDGARD_IOS SPIRV_VAL_IOS \
+  PROFILE_JSON OUTPUT_DIR \
+  --generic602 MIDGARD_GENERIC602_IOS \
+  --receipt602 VERIFIED_PRIVATE_602_RECEIPT_JSON \
+  --fragment-capture602 PRIVATE_0186_FRAGMENT_CAPTURE_JSON \
+  --vertex-capture602 PRIVATE_0187_VERTEX_CAPTURE_JSON \
+  --metallib PRIVATE_QUARTZCORE_METALLIB
+python3 test_package_air_gate.py PATCHED_TRANSLATOR_BUILD_DIR \
+  --old-translator OLD_OPTIMIZED_TRANSLATOR_IOS
+```
+
+The package contains only the runner, launchd plist, four tools and three JSON
+resources. The host-only provenance manifest is written beside it as
+`OUTPUT_DIR-package-manifest.json`, outside the embedder's exact member list.
 
 `tools/a5xelte-metal-bundle-embed.py --compiler-dir OUTPUT` adds this private
 package and its launchd-cache job to the existing payload. Patch0172 streams
 the zlib payload in64KiB chunks through the normal mounted HFS VFS, validates
 all streams before writes, and skips files with identical content. It neither
 formats a partition nor copies a whole root image. Patch0173 restricts the
-extra platform authorization to four signed identities/paths with compiler
+extra platform authorization to the signed identities/paths with compiler
 entitlements and the explicit `a5compiler=1` boot option.
 
-**Current evidence:** genuine iOS-device ARM64 artifacts and the host runner's
-real compile/cache regression are separate from execution on the phone.
+**Current evidence:** the corrected 0189 package passed the host request-to-
+publication regression and signing checks. Its on-phone `--no-timeout` path
+still needs device observation; the previous 0188b optimized translator lacked
+the option and failed before spool scanning.
 See `A5XELTE_PROGRESS.md` for the latest installation and device measurements.
 
 `build_air_translator.py` cross-builds the reviewed upstream `metal2vulkan`
 revision as a thin ARM64 **iOS device** executable with minimum OS 16.0 and
 Cortex-A53 code generation. It checks the Mach-O platform, architecture,
 deployment version and dynamic dependencies before publishing the artifact.
-The translator source is not modified. Generated binaries stay outside Git.
+The translator source is not modified by that baseline builder. It is useful
+for comparison but is rejected by the current package gate. Generated binaries
+stay outside Git.
 
 Requirements on the build Mac:
 

@@ -160,7 +160,7 @@ static int bind_buffer(const A5RuntimeMiscDraw*m,uint8_t*d,unsigned*arena,
  }
  unsigned folded=b->offset&~15u;*addr=b->gpuVA+folded;*push=b->offset&15u;*available=b->bytes-folded;return 1;
 }
-static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int generic_color){
+static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int generic_color,unsigned*outArena){
  const A5RuntimeDraw*r=&m->draw;const A5MaliCompiledProfile*p=r->profile;uint64_t VA=r->descriptorGPUVA;
  unsigned arena=ARENA,pushes[2][31]={{0}},seen[2][31]={{0}};
  for(unsigned i=0;i<8;++i){ubo(d,VS_UBOS,i,VA+VS_SYS,576);ubo(d,FS_UBOS,i,VA+FS_SYS,576);}
@@ -236,17 +236,51 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
    attr(d,FS_VARY+i*8,i,i?MALI_R32UI:MALI_RG32F,i?R_SWIZZLE:RG_SWIZZLE,0);buf(d,FS_VARY_BUFS+i*16,VA+off,stride,r->vertexCount*stride);
   }
  }
+ *outArena=arena;
  return A5RuntimeOK;
 }
 
-static void jobs(uint8_t*d,uint64_t VA,const A5RuntimeDraw*r){
+/* The index values are validated on the immutable commit-time snapshot. Mali
+ * JM consumes the arena copy directly; no external index GPU allocation or
+ * unchecked buffer handle enters the native queue. The VS runs vertices
+ * 0..maxIndex and the tiler indexes its position/varying arrays directly. */
+static int index_data(uint8_t*d,const A5RuntimeDraw*r,unsigned arena,uint64_t*gpuVA){
+ *gpuVA=0;
+ if(!r->indexCount)return r->indexSize?A5RuntimeUnsupported:A5RuntimeOK;
+ if((r->indexSize!=2&&r->indexSize!=4)||r->indexCount<3||
+    r->indexCount>A5RuntimeMaxIndices)return A5RuntimeUnsupported;
+ const A5RuntimeBuffer*b=&r->indexBuffer;
+ unsigned need=r->indexCount*r->indexSize;
+ if(!b->cpuBytes||b->offset>b->bytes||need>b->bytes-b->offset||
+    (b->offset&(r->indexSize-1)))return A5RuntimeBounds;
+ uint32_t max=0;
+ for(unsigned i=0;i<r->indexCount;++i){
+  uint32_t index=0;
+  memcpy(&index,b->cpuBytes+b->offset+i*r->indexSize,r->indexSize);
+  if(index>=r->vertexCount)return A5RuntimeBounds;
+  if(index>max)max=index;
+ }
+ if(max+1!=r->vertexCount)return A5RuntimeUnsupported;
+ unsigned at=(arena+63)&~63u;
+ if(at>ARENA_END||need>ARENA_END-at)return A5RuntimeBounds;
+ memcpy(d+at,b->cpuBytes+b->offset,need);
+ *gpuVA=r->descriptorGPUVA+at;
+ return A5RuntimeOK;
+}
+
+static void jobs(uint8_t*d,uint64_t VA,const A5RuntimeDraw*r,uint64_t indexVA){
  pan_pack((struct mali_job_header_packed*)d,JOB_HEADER,c){c.type=MALI_JOB_TYPE_VERTEX;c.index=1;c.next=VA+0x100;}
  pan_pack((struct mali_invocation_packed*)(d+32),INVOCATION,c){c.invocations=r->vertexCount-1;c.workgroups_z_shift=32;c.thread_group_split=2;}
  pan_pack((struct mali_compute_job_parameters_packed*)(d+MALI_COMPUTE_JOB_SECTION_PARAMETERS_OFFSET),COMPUTE_JOB_PARAMETERS,c){c.job_task_split=5;}
  pan_pack((struct mali_draw_packed*)(d+64),DRAW,c){c.state=VA+VS_RSD;c.attributes=VA+ATTRS;c.attribute_buffers=VA+ATTR_BUFS;c.uniform_buffers=VA+VS_UBOS;c.varyings=VA+VS_VARY;c.varying_buffers=VA+VS_VARY_BUFS;c.thread_storage=VA+FB;}
  pan_pack((struct mali_job_header_packed*)(d+0x100),JOB_HEADER,c){c.type=MALI_JOB_TYPE_TILER;c.index=2;c.dependency_1=1;c.enable_texture_mapper=true;}
  pan_pack((struct mali_invocation_packed*)(d+0x120),INVOCATION,c){c.invocations=r->vertexCount-1;c.workgroups_z_shift=32;c.thread_group_split=2;}
- pan_pack((struct mali_primitive_packed*)(d+0x128),PRIMITIVE,c){c.draw_mode=r->primitive==A5RuntimeTriangle?MALI_DRAW_MODE_TRIANGLES:MALI_DRAW_MODE_TRIANGLE_STRIP;c.index_count=r->vertexCount;c.job_task_split=6;}
+ pan_pack((struct mali_primitive_packed*)(d+0x128),PRIMITIVE,c){
+  c.draw_mode=r->primitive==A5RuntimeTriangle?MALI_DRAW_MODE_TRIANGLES:MALI_DRAW_MODE_TRIANGLE_STRIP;
+  c.index_count=r->indexCount?r->indexCount:r->vertexCount;
+  c.index_type=r->indexCount?(r->indexSize==2?MALI_INDEX_TYPE_UINT16:MALI_INDEX_TYPE_UINT32):MALI_INDEX_TYPE_NONE;
+  c.indices=indexVA;c.job_task_split=6;
+ }
  pan_pack((struct mali_draw_packed*)(d+0x140),DRAW,c){c.position=VA+POS;c.viewport=VA+VIEWPORT;c.varyings=VA+FS_VARY;c.varying_buffers=VA+FS_VARY_BUFS;c.uniform_buffers=VA+FS_UBOS;c.textures=VA+TEX_TABLE;c.samplers=VA+SAMPLERS;c.state=VA+FS_RSD;c.fbd=VA+FB;}
  pan_pack((struct mali_primitive_size_packed*)(d+0x1b8),PRIMITIVE_SIZE,c){c.fixed_sized=1;}
  pan_pack((struct mali_viewport_packed*)(d+VIEWPORT),VIEWPORT,c){c.scissor_minimum_x=r->scissorX;c.scissor_minimum_y=r->scissorY;c.scissor_maximum_x=r->scissorX+r->scissorWidth-1;c.scissor_maximum_y=r->scissorY+r->scissorHeight-1;}
@@ -270,9 +304,13 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   }
  }
  const A5RuntimeImage*out=&m->colorAttachments[pass->logicalTarget];
- if(r->vertexStart||r->vertexCount<3||r->vertexCount>A5RuntimeMaxVertices||
+ unsigned drawCount=r->indexCount?r->indexCount:r->vertexCount;
+ if(r->vertexStart||!r->vertexCount||(!r->indexCount&&r->vertexCount<3)||
+   r->vertexCount>A5RuntimeMaxVertices||(r->indexCount&&r->indexCount<3)||
+   (r->indexCount&&p->profileID!=602)||
+   (!r->indexCount&&r->indexSize)||r->indexCount>A5RuntimeMaxIndices||
    (r->primitive!=A5RuntimeTriangle&&r->primitive!=A5RuntimeTriangleStrip)||
-   (r->primitive==A5RuntimeTriangle&&r->vertexCount%3)||r->blend>A5RuntimeBlendPremultipliedSourceOver||
+   (r->primitive==A5RuntimeTriangle&&drawCount%3)||r->blend>A5RuntimeBlendPremultipliedSourceOver||
    (r->blend&&(!(p->flags&A5MaliProfileSourceOverBlend)||
      (out->metalPixelFormat==115&&!(p->flags&A5MaliProfileInlineSourceOver))))||
    ((p->flags&A5MaliProfileInlineSourceOver)&&r->blend!=A5RuntimeBlendPremultipliedSourceOver))return A5RuntimeUnsupported;
@@ -297,7 +335,11 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   struct MALI_RENDERER_STATE rs;MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
   rs.multisample_misc.load_destination=true;MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
  }
- int rc=resources(d,m,home,clear,generic_color);if(rc)return rc;jobs(d,r->descriptorGPUVA,r);return a5_runtime_preload(d,r->descriptorGPUVA,&m->colorAttachments[pass->logicalTarget]);
+ unsigned arena=0;
+ int rc=resources(d,m,home,clear,generic_color,&arena);if(rc)return rc;
+ uint64_t indexVA=0;rc=index_data(d,r,arena,&indexVA);if(rc)return rc;
+ jobs(d,r->descriptorGPUVA,r,indexVA);
+ return a5_runtime_preload(d,r->descriptorGPUVA,&m->colorAttachments[pass->logicalTarget]);
 }
 int A5MaliEncodeRuntimeMiscPass(const A5RuntimeMiscDraw*m,void*out,size_t n){
  if(!out||n!=SIZE)return A5RuntimeInvalid;memset(out,0,n);

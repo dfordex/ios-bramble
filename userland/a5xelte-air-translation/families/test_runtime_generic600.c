@@ -114,6 +114,62 @@ int main(int argc,char**argv){
  assert(!memcmp(syntheticDescriptor,descriptor,sizeof(descriptor)));
  m.draw.profile=&profile;
 #endif
+ uint16_t indices16[]={99,0,1,2,2,1,3};
+ m.draw.primitive=A5RuntimeTriangle;m.draw.indexCount=6;m.draw.indexSize=2;
+ m.draw.indexBuffer=(A5RuntimeBuffer){0,sizeof(indices16),2,(const uint8_t *)indices16};
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ pan_unpack((struct mali_primitive_packed*)(descriptor+0x128),PRIMITIVE,indexed16);
+ assert(indexed16.index_type==MALI_INDEX_TYPE_UINT16&&indexed16.index_count==6&&
+        indexed16.base_vertex_offset==0&&indexed16.primitive_restart==MALI_PRIMITIVE_RESTART_NONE);
+ assert(indexed16.indices>=m.draw.descriptorGPUVA+0x20000&&
+        indexed16.indices+12<=m.draw.descriptorGPUVA+0x30000&&
+        !memcmp(descriptor+(indexed16.indices-m.draw.descriptorGPUVA),indices16+1,12));
+ pan_unpack((struct mali_invocation_packed*)(descriptor+0x20),INVOCATION,indexedVS);
+ pan_unpack((struct mali_invocation_packed*)(descriptor+0x120),INVOCATION,indexedTiler);
+ assert(indexedVS.invocations==3&&indexedTiler.invocations==3);
+ uint16_t degenerate[]={0,0,0};
+ m.draw.vertexCount=1;m.draw.indexCount=3;
+ m.draw.indexBuffer=(A5RuntimeBuffer){0,sizeof(degenerate),0,(const uint8_t *)degenerate};
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ pan_unpack((struct mali_invocation_packed*)(descriptor+0x20),INVOCATION,oneVS);
+ pan_unpack((struct mali_invocation_packed*)(descriptor+0x120),INVOCATION,oneTiler);
+ assert(!oneVS.invocations&&!oneTiler.invocations);
+ degenerate[1]=1;degenerate[2]=1;m.draw.vertexCount=2;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ pan_unpack((struct mali_invocation_packed*)(descriptor+0x20),INVOCATION,twoVS);
+ pan_unpack((struct mali_invocation_packed*)(descriptor+0x120),INVOCATION,twoTiler);
+ assert(twoVS.invocations==1&&twoTiler.invocations==1);
+ m.draw.vertexCount=0;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ m.draw.vertexCount=4;m.draw.indexCount=6;
+ uint32_t indices32[]={99,0,1,2,2,1,3};
+ m.draw.indexSize=4;
+ m.draw.indexBuffer=(A5RuntimeBuffer){0,sizeof(indices32),4,(const uint8_t *)indices32};
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ pan_unpack((struct mali_primitive_packed*)(descriptor+0x128),PRIMITIVE,indexed32);
+ assert(indexed32.index_type==MALI_INDEX_TYPE_UINT32&&indexed32.index_count==6&&
+        indexed32.indices>=m.draw.descriptorGPUVA+0x20000&&
+        indexed32.indices+24<=m.draw.descriptorGPUVA+0x30000&&
+        !memcmp(descriptor+(indexed32.indices-m.draw.descriptorGPUVA),indices32+1,24));
+ profile.profileID=601;pass.passID=601;profile.vertexName="std_vert0_lph";
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ profile.profileID=602;pass.passID=602;profile.vertexName="fixed_vert_lph_spc";
+ indices32[6]=4;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeBounds&&zeroed());
+ indices32[6]=3;m.draw.indexBuffer.bytes--;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeBounds&&zeroed());
+ m.draw.indexBuffer.bytes++;m.draw.indexBuffer.offset++;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeBounds&&zeroed());
+ m.draw.indexBuffer.offset--;m.draw.indexBuffer.cpuBytes=NULL;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeBounds&&zeroed());
+ m.draw.indexBuffer.cpuBytes=(const uint8_t *)indices32;m.draw.indexSize=1;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ m.draw.indexSize=4;m.draw.indexCount=A5RuntimeMaxIndices+1;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ m.draw.indexCount=5;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ m.draw.indexCount=m.draw.indexSize=0;m.draw.indexBuffer=(A5RuntimeBuffer){0};
+ m.draw.primitive=A5RuntimeTriangleStrip;
  profile.vertexName="std_vert0_lph";
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
  profile.vertexName="fixed_vert_lph_spc";

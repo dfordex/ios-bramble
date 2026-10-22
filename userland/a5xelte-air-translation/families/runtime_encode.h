@@ -11,6 +11,7 @@
 extern "C" {
 #endif
 enum { A5RuntimeJobBytes=0x40000, A5RuntimeMaxVertices=256,
+       A5RuntimeMaxIndices=1536,
        A5RuntimeVertexOffset=0, A5RuntimeTilerOffset=0x100,
        A5RuntimeFragmentOffset=0x200 };
 enum { A5RuntimeOK=0, A5RuntimeInvalid=1, A5RuntimeUnsupported=2,
@@ -36,6 +37,12 @@ typedef struct {
     /* The application bindings, indexed by the ORIGINAL Metal slot number.
      * offset is the actual set*Buffer:offset: value, never folded into GPUVA. */
     A5RuntimeBuffer vertexBuffers[31], fragmentBuffers[31];
+    /* Indexed draws use an immutable commit-time index snapshot. offset is
+     * the Metal indexBufferOffset in bytes; the encoder copies the exact span
+     * into its mapped job arena and validates each referenced vertex. A GPUVA
+     * alone is insufficient because it cannot establish the maximum index. */
+    A5RuntimeBuffer indexBuffer;
+    uint32_t indexCount, indexSize; /* 0/0 nonindexed, or 2/4 bytes per index */
     uint32_t vertexStart, vertexCount, primitive, blend;
     uint32_t scissorX, scissorY, scissorWidth, scissorHeight;
     double viewportX, viewportY, viewportWidth, viewportHeight,

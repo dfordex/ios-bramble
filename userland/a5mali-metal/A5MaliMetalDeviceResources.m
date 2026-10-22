@@ -228,6 +228,26 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 - (kern_return_t)readBytes:(void *)bytes offset:(NSUInteger)offset
     length:(NSUInteger)length
 { return [self transferBytes:bytes offset:offset length:length write:NO]; }
+- (kern_return_t)readBytesForSubmission:(void *)bytes offset:(NSUInteger)offset
+    length:(NSUInteger)length client:(A5MaliClient *)client
+{
+    if (!bytes || !length || !self.readyForRead || offset>_length || length>_length-offset ||
+        client!=[_privateDevice client] || !hasSelector(client,ReadBuffer))return kIOReturnBadArgument;
+    /* The device lock already serializes transport. Taking _transferLock here
+     * would invert the public upload's transferLock -> deviceLock ordering. */
+    for(NSUInteger done=0;done<length;){
+        NSUInteger count=MIN((NSUInteger)TransferMax,length-done);
+        TransferRequest request={.h=wireHeader(sizeof(request)),.handle=_handle,
+            .offset=(uint32_t)(offset+done),.length=(uint32_t)count};
+        ReadReply reply={0};size_t actual=sizeof(reply);
+        kern_return_t status=client->call(client->context,ReadBuffer,&request,sizeof(request),&reply,&actual);
+        if(status)return status;
+        if(!validHeader(reply.h,sizeof(reply),actual)||reply.reserved||reply.length!=count)
+            return kIOReturnBadArgument;
+        memcpy((uint8_t *)bytes+done,reply.bytes,count);done+=count;
+    }
+    return KERN_SUCCESS;
+}
 @end
 
 @interface A5MaliSharedReadBuffer ()
@@ -291,6 +311,9 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 { return [self sharedTransfer:(void *)bytes offset:offset length:length write:YES]; }
 - (kern_return_t)readBytes:(void *)bytes offset:(NSUInteger)offset length:(NSUInteger)length
 { return [self sharedTransfer:bytes offset:offset length:length write:NO]; }
+- (kern_return_t)readBytesForSubmission:(void *)bytes offset:(NSUInteger)offset
+    length:(NSUInteger)length client:(A5MaliClient *)client
+{ (void)client;return [self sharedTransfer:bytes offset:offset length:length write:NO]; }
 @end
 
 static NSError *bindingError(kern_return_t status, NSString *message)

@@ -28,6 +28,11 @@ enum { A5MaliMaxPrivateBufferLength = 0x800000,
                      length:(NSUInteger)length;
 - (kern_return_t)readBytes:(void * _Nullable)bytes offset:(NSUInteger)offset
                    length:(NSUInteger)length;
+/* Internal submission path: caller already holds the device connection lock.
+ * Do not reacquire it through the public transfer API. Kernel transfers stay
+ * serialized with uploads and all jobs on this connection. */
+- (kern_return_t)readBytesForSubmission:(void *)bytes offset:(NSUInteger)offset
+    length:(NSUInteger)length client:(A5MaliClient *)client;
 - (nullable id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
                                            offset:(NSUInteger)offset
                                       bytesPerRow:(NSUInteger)bytesPerRow;

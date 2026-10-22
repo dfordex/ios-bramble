@@ -4,12 +4,48 @@
 No Apple shaders or generated machine code are included in this package.
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import shutil
 import struct
 import subprocess
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def verified_no_timeout_air(path, src):
+    """Bind the unexecutable iOS Mach-O to the tested host CLI and patch."""
+    manifest_path = path.parent / 'build-manifest.json'
+    if not manifest_path.is_file():
+        raise ValueError('translator is missing its no-timeout build manifest')
+    manifest = json.loads(manifest_path.read_text())
+    if (manifest.get('source_revision') != 'a2c440b8bcdcf20d34aa1694b61ae22c2a7ea68b' or
+            manifest.get('patch_sha256') != sha(src / 'metal2vulkan-no-timeout.patch') or
+            manifest.get('timeout_policy') !=
+            'default 20s; explicit --no-timeout selects Budget::with_deadline(None)' or
+            manifest.get('translation_algorithms_changed') is not False or
+            manifest.get('spirv_validation_changed') is not False):
+        raise ValueError('translator provenance lacks the verified no-timeout patch')
+    ios = manifest['artifacts']['ios']
+    host = manifest['artifacts']['host']
+    if (ios['target'] != 'aarch64-apple-ios' or
+            ios['sha256'] != sha(path) or ios['bytes'] != path.stat().st_size):
+        raise ValueError('packaged iOS translator differs from patched build')
+    host_path = path.parent / 'metal2vulkan-host'
+    if (host['target'] != 'aarch64-apple-darwin' or
+            host['sha256'] != sha(host_path) or host['bytes'] != host_path.stat().st_size):
+        raise ValueError('paired host translator differs from patched build')
+    help_text = subprocess.check_output([str(host_path), '--help'], text=True)
+    if '  --no-timeout ' not in help_text:
+        raise ValueError('patched host CLI does not support --no-timeout')
+    return {'ios_sha256': ios['sha256'], 'host_sha256': host['sha256'],
+            'patch_sha256': manifest['patch_sha256'],
+            'source_revision': manifest['source_revision'],
+            'no_timeout_cli_verified': True}
 
 
 def load(path, name):
@@ -64,6 +100,7 @@ def main():
     ap.add_argument('--metallib', type=Path, required=True)
     args = ap.parse_args()
     src = Path(__file__).resolve().parent
+    air_proof = verified_no_timeout_air(args.air, src)
     out = args.output.resolve()
     if out == src or src in out.parents:
         ap.error('generated files must stay outside source')
@@ -130,6 +167,15 @@ def main():
     (resources / 'generic602.json').write_text(json.dumps(known602, indent=2)+'\n')
     shutil.copyfile(args.profile, resources / 'profile.json')
     shutil.copyfile(src / 'compiler-launchdaemon.plist', out / 'compiler-launchdaemon.plist')
+    # Keep provenance beside the payload. The device embedder has an exact
+    # member allowlist and must not gain a new installed file by accident.
+    (out.parent / (out.name + '-package-manifest.json')).write_text(json.dumps({
+        'schema': 1, 'translator': air_proof,
+        'runner_sha256': sha(runner),
+        'generic602_midgard_sha256': sha(resources / 'midgard-generic602'),
+        'generic602_contract_sha256': sha(resources / 'generic602.json'),
+        'device_runtime_verified': False,
+    }, indent=2) + '\n')
     print(json.dumps({'output':str(out),'device_runtime_verified':False,
         'bytes':sum(p.stat().st_size for p in out.rglob('*') if p.is_file())},indent=2))
 
