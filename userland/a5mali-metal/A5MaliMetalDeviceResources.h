@@ -36,6 +36,11 @@ enum { A5MaliMaxPrivateBufferLength = 0x800000,
 - (nullable id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
                                            offset:(NSUInteger)offset
                                       bytesPerRow:(NSUInteger)bytesPerRow;
+/* iOS16 linear-texture SPI uses the same retained, real buffer alias as the
+ * public method. Only Shared single-level read textures are currently bound. */
+- (nullable id<MTLTexture>)newLinearTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
+    offset:(NSUInteger)offset bytesPerRow:(NSUInteger)bytesPerRow
+    bytesPerImage:(NSUInteger)bytesPerImage;
 @end
 
 /* CPU-visible storage for read-only shader bindings. It owns an allocation or

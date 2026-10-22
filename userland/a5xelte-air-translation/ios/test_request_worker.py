@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host test of a strict 602 or 603 request through the native spool worker.
+"""Host test of strict requests and idempotent status handling in the worker.
 
 All stock inputs and generated shaders stay outside the checkout. The test
 does not prove iOS execution or GPU submission.
@@ -28,6 +28,33 @@ def function(base, stage, capture):
                  for name, value in sorted(capture['constants'].items())]
     return dict(base, stage=stage, function=capture['function'],
                 named_constants=constants, indexed_constants=[])
+
+
+def enqueue(uid_dir, body):
+    key = sha(canonical(body))
+    request = dict(body, request_id=key)
+    path = uid_dir / f'{key}.request.json'
+    path.write_bytes(canonical(request))
+    path.chmod(0o600)
+    return key
+
+
+def wait_for(path, service, seconds=90):
+    for _ in range(seconds):
+        if path.exists() or service.poll() is not None:
+            break
+        time.sleep(1)
+    if not path.exists():
+        raise AssertionError(f'expected output missing: {path}; exit={service.poll()}')
+
+
+def stop(service):
+    service.terminate()
+    try:
+        service.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        service.kill()
+        service.wait()
 
 
 def main():
@@ -89,11 +116,6 @@ def main():
                 vertex=function(base, 'vertex', vertex),
                 fragment=function(base, 'fragment', fragment),
                 descriptor={'host_test': 1})
-    request_id = sha(canonical(body))
-    body['request_id'] = request_id
-    request = uid_dir / f'{request_id}.request.json'
-    request.write_bytes(canonical(body))
-    request.chmod(0o600)
     source = Path(__file__).with_name('a5shader_compile.m')
     runner = work / 'a5shader-compile-host'
     cache, published = work / 'cache', work / 'compiled'
@@ -103,17 +125,26 @@ def main():
         f'-DA5_TEST_REQUESTS="{request_root}"',
         f'-DA5_TEST_PUBLISHED="{published}"', str(source),
         '-framework', 'Foundation', '-o', str(runner)], check=True)
+    unsupported = []
+    for suffix in ('first', 'second'):
+        other = json.loads(json.dumps(body))
+        other['vertex']['function'] = 'unsupported_' + suffix
+        unsupported.append(enqueue(uid_dir, other))
     output = (work / 'service.log').open('w')
     service = subprocess.Popen([str(runner), '--serve'], stdout=output,
                                stderr=subprocess.STDOUT)
     try:
+        status_dir = cache / 'request-status'
+        for key in unsupported:
+            wait_for(status_dir / f'{key}.json', service, 20)
+            status = json.loads((status_dir / f'{key}.json').read_text())
+            if status['request_id'] != key or status['status'] != 'unsupported':
+                raise AssertionError('unsupported status differs')
+        if service.poll() is not None:
+            raise AssertionError('worker died while recording multiple statuses')
+        request_id = enqueue(uid_dir, body)
         result = published / request_id
-        for _ in range(90):
-            if (result.joinpath('receipt.json').exists() or service.poll() is not None):
-                break
-            time.sleep(1)
-        if not result.joinpath('receipt.json').exists():
-            raise AssertionError(f'no published {known["profile_id"]} result: {work / "service.log"}')
+        wait_for(result / 'receipt.json', service)
         receipt = json.loads(result.joinpath('receipt.json').read_text())
         if (receipt['request_id'] != request_id or
                 receipt['profile_id'] != known['profile_id'] or
@@ -129,17 +160,57 @@ def main():
             if info['bytes'] != pin['bytes'] or info['sha256'] != pin['sha256']:
                 raise AssertionError(f'{stage} does not match pinned native code')
         print(json.dumps({'host_end_to_end': True, 'device_verified': False,
+                          'multiple_unsupported_statuses': True,
                           'request_id': request_id, 'receipt': str(result / 'receipt.json'),
                           'vertex_sha256': receipt['vertex']['sha256'],
                           'fragment_sha256': receipt['fragment']['sha256']}, indent=2))
     finally:
-        service.terminate()
-        try:
-            service.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            service.kill()
-            service.wait()
+        stop(service)
         output.close()
+    # Restart must reuse the existing trusted status directory and keep both
+    # unsupported statuses terminal without re-running the compiled request.
+    with (work / 'restart.log').open('w') as log:
+        service = subprocess.Popen([str(runner), '--serve'], stdout=log,
+                                   stderr=subprocess.STDOUT)
+        try:
+            time.sleep(6)
+            if service.poll() is not None or not result.joinpath('receipt.json').is_file():
+                raise AssertionError('worker restart did not retain status/cache')
+        finally:
+            stop(service)
+    # Existing symlink, non-directory and wrong-mode objects must fail closed.
+    for name in ('symlink', 'file', 'mode'):
+        status_dir = cache / 'request-status'
+        if status_dir.is_symlink() or status_dir.is_file():
+            status_dir.unlink()
+        elif status_dir.exists():
+            shutil.rmtree(status_dir)
+        if name == 'symlink':
+            decoy = work / 'status-decoy'
+            decoy.mkdir(mode=0o700)
+            status_dir.symlink_to(decoy, target_is_directory=True)
+        elif name == 'file':
+            status_dir.write_text('not a directory')
+        else:
+            status_dir.mkdir(mode=0o755)
+            status_dir.chmod(0o755)
+        other = json.loads(json.dumps(body))
+        other['vertex']['function'] = 'unsupported_' + name
+        enqueue(uid_dir, other)
+        with (work / f'reject-{name}.log').open('w') as log:
+            service = subprocess.Popen([str(runner), '--serve'], stdout=log,
+                                       stderr=subprocess.STDOUT)
+            try:
+                try:
+                    exit_code = service.wait(timeout=12)
+                except subprocess.TimeoutExpired:
+                    raise AssertionError(f'untrusted {name} status directory accepted')
+                if exit_code == 0 or 'untrusted request status directory' not in (
+                        work / f'reject-{name}.log').read_text():
+                    raise AssertionError(f'untrusted {name} did not fail closed')
+            finally:
+                if service.poll() is None:
+                    stop(service)
 
 
 if __name__ == '__main__':

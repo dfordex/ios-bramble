@@ -22,7 +22,7 @@ compile_runtime(Path(sys.argv[2]).resolve(),Path(sys.argv[3]).resolve(),'host',P
 PYBUILD
 python3 "$src_dir/../a5xelte-air-translation/families/build_runtime_encoder.py" \
     --mesa-build "$mesa_build" --target host --family resource --output "$out_dir/runtime_resource.o"
-for test_name in test_native_render test_native_misc test_native_clear test_native_path test_phase_diagnostics test_native_generic600 test_native_indexed602 test_native_textured603; do
+for test_name in test_native_render test_native_misc test_native_clear test_native_path test_phase_diagnostics test_native_generic600 test_native_indexed602 test_native_textured603 test_native_buffer_texture603; do
 clang -fobjc-arc -fblocks -DA5_MALI_HOST_TEST -DA5_MALI_REQUIRE_COMPILED_REGISTRY=1 \
     -Wall -Wextra -Werror -I"$registry_dir" \
     "$src_dir/A5MaliBridge.c" "$src_dir/A5MaliNative.c" "$src_dir/A5MaliNativeUpload.c" "$src_dir/A5MaliCommandBuffer.m" \

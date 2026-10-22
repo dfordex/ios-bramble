@@ -206,6 +206,15 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 - (A5MaliResource)resource;
 @end
 
+static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,A5MaliMetalTexture *b)
+{
+    if(a==b)return YES;
+    if(a.buffer && a.buffer==b.buffer)return YES;
+    uint64_t at=a.privateSurface.resource.token,bt=b.privateSurface.resource.token;
+    return (at && at==bt) || (a.privateSurface.iosurface && b.privateSurface.iosurface &&
+        IOSurfaceGetID(a.privateSurface.iosurface)==IOSurfaceGetID(b.privateSurface.iosurface));
+}
+
 @interface A5MaliMetalQueue () {
     A5MaliRestrictedDevice *_device;
     NSLock *_configurationLock;
@@ -1136,10 +1145,9 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     for(uint32_t i=0;i<profile->passCount;++i){
         uint32_t target=profile->passes[i].logicalTarget;
         A5MaliMetalTexture *image=attachments[@(target)];
-        if(target>=8 || !image || !(image.usage&MTLTextureUsageRenderTarget))return NO;
+        if(target>=8 || !image || !image.privateSurface || !(image.usage&MTLTextureUsageRenderTarget))return NO;
         for(A5MaliMetalTexture *old in mappedImages)
-            if(image==old || image.privateSurface.resource.token==old.privateSurface.resource.token ||
-                (image.privateSurface.iosurface && old.privateSurface.iosurface && IOSurfaceGetID(image.privateSurface.iosurface)==IOSurfaceGetID(old.privateSurface.iosurface)))return NO;
+            if(textureBackingAliases(image,old))return NO;
         [mappedImages addObject:image];[imageSlots addObject:@(target)];
     }
     for(uint32_t i=0;i<profile->resourceCount;++i){
@@ -1175,9 +1183,12 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
         if(!image || image.pixelFormat!=MTLPixelFormatBGRA8Unorm || !(image.usage&MTLTextureUsageShaderRead))return NO;
         if(profile->profileID==603 && (r->metalIndex!=3 || image.mipmapLevelCount!=1 ||
             image.textureType!=MTLTextureType2D || image.sampleCount!=1))return NO;
+        if(image.buffer && (image.buffer.device!=_buffer.device ||
+            image.buffer.storageMode!=MTLStorageModeShared || !image.buffer.readyForRead ||
+            image.mipmapLevelCount!=1 || image.sampleCount!=1))return NO;
+        if(!image.buffer && !image.privateSurface)return NO;
         for(NSUInteger j=0;j<mappedImages.count;++j){A5MaliMetalTexture *old=mappedImages[j];
-            if(image==old || image.privateSurface.resource.token==old.privateSurface.resource.token ||
-                (image.privateSurface.iosurface && old.privateSurface.iosurface && IOSurfaceGetID(image.privateSurface.iosurface)==IOSurfaceGetID(old.privateSurface.iosurface)))return NO;
+            if(textureBackingAliases(image,old))return NO;
         }
         if(mappedImages.count==A5NativeSlots)return NO;
         readImages|=1u<<mappedImages.count;[mappedImages addObject:image];[imageSlots addObject:@(32+r->metalIndex)];
@@ -1257,6 +1268,31 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
             NSMutableArray<NSMutableDictionary<NSNumber *,NSNumber *> *> *handles=
                 [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
             unsigned bufferCount=0;
+            NSMutableDictionary<NSNumber *,NSNumber *> *imageBuffers=[NSMutableDictionary new];
+            uint32_t surfaceReads=readImages;
+            /* Buffer textures are true CPU aliases. Snapshot their current
+             * parent bytes only now, under the commit lock, into a real GPU
+             * BO. Preserve the logical offset/stride when mapping that BO;
+             * never substitute a blank IOSurface or an upfront copy. */
+            for(NSUInteger i=0;i<mappedImages.count;++i){
+                A5MaliMetalTexture *image=mappedImages[i];
+                A5MaliPrivateBuffer *backing=image.buffer;
+                if(!backing)continue;
+                if(!(readImages&(1u<<i)) || bufferCount==A5NativeSlots ||
+                    !backing.readyForRead || backing.length>A5NativeBufferMax)return kIOReturnBadArgument;
+                NSMutableData *bytes=[NSMutableData dataWithLength:backing.length];
+                kern_return_t kr=[backing readBytesForSubmission:bytes.mutableBytes offset:0
+                    length:bytes.length client:client];
+                if(kr)return kr;
+                uint64_t handle=0;
+                kr=A5MaliCreateNativeBuffer(client,(uint32_t)bytes.length,bytes.bytes,
+                    (uint32_t)bytes.length,&handle);
+                if(handle)[temporaryHandles addObject:@(handle)];
+                if(kr)return kr;
+                query.buffers[bufferCount]=handle;imageBuffers[@(i)]=@(bufferCount++);
+                surfaceReads&=~(1u<<i);
+                [snapshots addObject:bytes];
+            }
             for(NSUInteger stage=0;stage<2;++stage)
                 for(NSNumber *slot in windows[stage]){
                     A5MaliBufferBinding *binding=bindings[stage][slot];
@@ -1294,7 +1330,22 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
                 for(NSUInteger i=0;i<mappedImages.count;++i){
                     A5MaliMetalTexture *t=mappedImages[i];A5NativeSpan s=mapped.surfaces[i];
                     A5RuntimeImage image={0};
-                    if(!query.surfaces[i]||!A5MaliRuntimeImageForTexture(t,0,t.privateSurface,&s,
+                    NSNumber *bufferIndex=imageBuffers[@(i)];
+                    if(bufferIndex){
+                        s=mapped.buffers[bufferIndex.unsignedIntegerValue];
+                        A5MaliTextureLevelLayout l={0};
+                        if(![t getLevelLayout:&l level:0] || !l.width || !l.height || !l.byteLength ||
+                            !(s.usage&A5MaliRead) || !s.gpuVA ||
+                            l.byteOffset!=t.bufferOffset || l.rowBytes!=t.bufferBytesPerRow ||
+                            l.byteOffset>s.bytes || l.byteLength>s.bytes-l.byteOffset ||
+                            l.byteOffset>t.buffer.length || l.byteLength>t.buffer.length-l.byteOffset ||
+                            (uint64_t)l.rowBytes*l.height!=l.byteLength ||
+                            l.rowBytes<(uint64_t)l.width*A5MaliTexturePixelBytes(t.pixelFormat) ||
+                            (l.rowBytes&15) || s.gpuVA>UINT64_MAX-l.byteOffset ||
+                            s.gpuVA+l.byteOffset>UINT64_MAX-l.byteLength)return kIOReturnBadArgument;
+                        image=(A5RuntimeImage){s.gpuVA+l.byteOffset,l.byteLength,l.width,l.height,
+                            l.rowBytes,(uint32_t)t.pixelFormat};
+                    }else if(!query.surfaces[i]||!A5MaliRuntimeImageForTexture(t,0,t.privateSurface,&s,
                         (readImages&(1u<<i))?A5MaliRead:(A5MaliRead|A5MaliWrite),&image))return kIOReturnBadArgument;
                     unsigned slot=imageSlots[i].unsignedIntValue;
                     if(slot<8)command.colorAttachments[slot]=image;else command.fragmentTextures[slot-32]=image;
@@ -1320,7 +1371,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
                 if(encoded)return encoded==A5RuntimeUnsupported?kIOReturnUnsupported:kIOReturnBadArgument;
                 A5NativeSubmitRequest submit={.header={1,sizeof(submit),0,0},.jobBytes=A5RuntimeJobBytes,
                     .vertexOffset=A5RuntimeVertexOffset,.tilerOffset=A5RuntimeTilerOffset,
-                    .fragmentOffset=A5RuntimeFragmentOffset,.readSurfaces=readImages|(1u<<pass),
+                    .fragmentOffset=A5RuntimeFragmentOffset,.readSurfaces=surfaceReads|(1u<<pass),
                     .writeSurfaces=1u<<pass,.readBuffers=(1u<<bufferCount)-1u,
                     .profileID=profile->passes[pass].passID,.mappingEpoch=mapped.flags};
                 memcpy(submit.surfaces,query.surfaces,sizeof(submit.surfaces));

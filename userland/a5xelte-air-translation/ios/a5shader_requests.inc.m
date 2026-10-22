@@ -121,16 +121,62 @@ static NSData *a5ReadRequest(int directory, const char *name, uid_t uid)
 static void a5WriteStatus(NSString *key, NSString *status, NSString *reason)
 {
     NSString *folder = [cacheRoot stringByAppendingPathComponent:@"request-status"];
-    if (![NSFileManager.defaultManager createDirectoryAtPath:folder
-        withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions:@0700}
-        error:NULL]) fail(@"cannot create request status directory");
-    NSString *path = [folder stringByAppendingPathComponent:
-        [key stringByAppendingString:@".json"]];
-    if ([NSFileManager.defaultManager fileExistsAtPath:path]) return;
+    /* mkdir is idempotent here. Foundation's createDirectoryAtPath returns NO
+     * for an existing directory on the device, which used to terminate the
+     * worker after its first unsupported request. A pre-existing object must
+     * still be checked, including owner, type and exact private mode. */
+    if (mkdir(folder.fileSystemRepresentation,0700) && errno != EEXIST) {
+        fprintf(stderr,"A5XELTE shader compiler: cannot create status directory errno=%d\n",errno);
+        _exit(1); /* fail() itself attempts to record a request status */
+    }
+    int directory = open(folder.fileSystemRepresentation,
+                         O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    struct stat st;
+    if (directory < 0 || fstat(directory,&st) || !S_ISDIR(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 07777) != 0700) {
+        fprintf(stderr,"A5XELTE shader compiler: untrusted request status directory\n");
+        if (directory >= 0) close(directory);
+        _exit(1);
+    }
     NSData *data = a5Canonical(@{@"schema":@1,@"request_id":key,
         @"status":status,@"reason":reason});
-    if (!data) fail(@"cannot serialize request status");
-    writeData(data,path);
+    if (!data || !a5HexDigest(key)) {
+        fprintf(stderr,"A5XELTE shader compiler: invalid request status\n");
+        close(directory); _exit(1);
+    }
+    NSString *name = [key stringByAppendingString:@".json"];
+    int fd = openat(directory,name.fileSystemRepresentation,
+                    O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+    if (fd < 0 && errno == EEXIST) {
+        fd = openat(directory,name.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+        BOOL trusted = fd >= 0 && !fstat(fd,&st) && S_ISREG(st.st_mode) &&
+            st.st_uid == geteuid() && st.st_nlink == 1 &&
+            (st.st_mode & 07777) == 0600;
+        if (fd >= 0) close(fd);
+        close(directory);
+        if (trusted) return;
+        fprintf(stderr,"A5XELTE shader compiler: untrusted existing request status\n");
+        _exit(1);
+    }
+    if (fd < 0) {
+        fprintf(stderr,"A5XELTE shader compiler: cannot create request status errno=%d\n",errno);
+        close(directory); _exit(1);
+    }
+    const uint8_t *p = data.bytes;
+    NSUInteger left = data.length;
+    while (left) {
+        ssize_t n = write(fd,p,left);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            fprintf(stderr,"A5XELTE shader compiler: short request status write\n");
+            close(fd); close(directory); _exit(1);
+        }
+        p += n; left -= (NSUInteger)n;
+    }
+    if (fsync(fd) || close(fd) || fsync(directory) || close(directory)) {
+        fprintf(stderr,"A5XELTE shader compiler: request status sync failed\n");
+        _exit(1);
+    }
 }
 
 static NSArray<NSString *> *a5ConstantArguments(NSArray<NSDictionary *> *constants)

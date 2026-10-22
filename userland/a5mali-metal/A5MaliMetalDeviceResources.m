@@ -182,7 +182,12 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 - (void *)contents { return NULL; }
 - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
     offset:(NSUInteger)offset bytesPerRow:(NSUInteger)bytesPerRow
-{ (void)descriptor; (void)offset; (void)bytesPerRow; return nil; }
+{ return (id)[A5MaliMetalTexture newBufferTextureWithBuffer:self descriptor:descriptor
+    offset:offset bytesPerRow:bytesPerRow bytesPerImage:0]; }
+- (id<MTLTexture>)newLinearTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
+    offset:(NSUInteger)offset bytesPerRow:(NSUInteger)bytesPerRow bytesPerImage:(NSUInteger)bytesPerImage
+{ return (id)[A5MaliMetalTexture newBufferTextureWithBuffer:self descriptor:descriptor
+    offset:offset bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage]; }
 - (kern_return_t)transferBytes:(void *)bytes offset:(NSUInteger)offset
     length:(NSUInteger)length write:(BOOL)write
 {

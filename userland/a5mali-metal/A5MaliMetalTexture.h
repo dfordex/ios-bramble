@@ -28,6 +28,14 @@ BOOL A5MaliBuildTextureAllocationLayout(MTLTextureDescriptor *descriptor,
 - (void)invalidateAfterCompletion;
 @end
 @interface A5MaliMetalTexture (ResourceLayout)
+/* Buffer views retain this actual Shared allocation. Native submission must
+ * read it at commit, map the resulting buffer span, then add bufferOffset.
+ * They have no IOSurface; no independent texture allocation is substituted. */
+@property (nonatomic, readonly, nullable) A5MaliPrivateBuffer *buffer;
+@property (nonatomic, readonly) NSUInteger bufferOffset,bufferBytesPerRow,bufferBytesPerImage;
++ (nullable A5MaliMetalTexture *)newBufferTextureWithBuffer:(A5MaliPrivateBuffer *)buffer
+    descriptor:(MTLTextureDescriptor *)descriptor offset:(NSUInteger)offset
+    bytesPerRow:(NSUInteger)row bytesPerImage:(NSUInteger)image;
 /* Persistent backing is absent for memoryless textures. Map the whole actual
  * backing, then validate level.byteOffset/byteLength before GPUVA addition. */
 - (nullable A5MaliSurface *)privateSurface;

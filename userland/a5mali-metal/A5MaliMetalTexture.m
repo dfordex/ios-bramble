@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #import "A5MaliMetalTexture.h"
+#import "A5MaliMetalDeviceResources.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,6 +18,8 @@
     A5MaliMetalTexture *_parent;
     A5MaliTexturePassBacking *_passBacking;
     NSLock *_cpuLock;
+    A5MaliPrivateBuffer *_buffer;
+    NSUInteger _bufferOffset,_bufferRow,_bufferImage;
 }
 - (nullable instancetype)initWithSurface:(A5MaliSurface *)surface device:(A5MaliRestrictedDevice *)device
     descriptor:(MTLTextureDescriptor *)descriptor layout:(A5MaliTextureAllocationLayout)layout external:(BOOL)external;
@@ -195,6 +198,46 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
 #endif
 @end
 @implementation A5MaliMetalTexture
++ (A5MaliMetalTexture *)newBufferTextureWithBuffer:(A5MaliPrivateBuffer *)buffer
+    descriptor:(MTLTextureDescriptor *)descriptor offset:(NSUInteger)offset
+    bytesPerRow:(NSUInteger)row bytesPerImage:(NSUInteger)image
+{
+    MTLTextureDescriptor *d=[descriptor copy];A5MaliTextureAllocationLayout l={0};
+    NSString *reason=nil;A5MaliMetalTexture *result=nil;
+    if(![buffer isKindOfClass:A5MaliSharedReadBuffer.class]||!buffer.device||!buffer.readyForRead)
+        reason=@"requires-readable-shared-buffer";
+    else if(!A5MaliBuildTextureAllocationLayout(d,&l,&reason)){}
+    else if(d.storageMode!=MTLStorageModeShared||d.usage!=MTLTextureUsageShaderRead)
+        reason=@"requires-shared-shader-read";
+    else if(d.mipmapLevelCount!=1)reason=@"requires-single-mip";
+    else if((offset&63)||(row&63)||!row||row>32768||row<(uint64_t)d.width*l.bytesPerElement)
+        reason=@"linear-offset-or-row-alignment";
+    else if(d.height>NSUIntegerMax/row)reason=@"linear-row-span-overflow";
+    else {
+        NSUInteger span=row*d.height,effectiveImage=image?:span;
+        if(effectiveImage<span||(effectiveImage&63)||effectiveImage>UINT32_MAX)
+            reason=@"linear-image-stride";
+        else if(offset>buffer.length||span>buffer.length-offset)
+            reason=@"linear-buffer-span";
+        else {
+            l.levels[0]=(A5MaliTextureLevelLayout){(uint32_t)d.width,(uint32_t)d.height,
+                (uint32_t)row,(uint32_t)offset,(uint32_t)span};
+            l.totalBytes=(uint32_t)span;l.backingRowBytes=(uint32_t)row;
+            result=[[self alloc]initWithSurface:nil device:buffer.device descriptor:d layout:l external:NO];
+            if(result){result->_buffer=buffer;result->_bufferOffset=offset;result->_bufferRow=row;
+                result->_bufferImage=effectiveImage;}
+            else reason=@"linear-view-allocation";
+        }
+    }
+    static atomic_uint count;unsigned n=atomic_load_explicit(&count,memory_order_relaxed);
+    do {if(n>=64)return result;}while(!atomic_compare_exchange_weak_explicit(&count,&n,n+1,
+        memory_order_relaxed,memory_order_relaxed));
+    fprintf(stderr,"A5XELTE Metal linear texture: accepted=%u reason=%s type=%lu format=%lu width=%lu height=%lu mips=%lu usage=%lu storage=%lu offset=%lu row=%lu image=%lu buffer_bytes=%lu\n",
+        result!=nil,reason?reason.UTF8String:"none",(unsigned long)d.textureType,(unsigned long)d.pixelFormat,
+        (unsigned long)d.width,(unsigned long)d.height,(unsigned long)d.mipmapLevelCount,(unsigned long)d.usage,
+        (unsigned long)d.storageMode,(unsigned long)offset,(unsigned long)row,(unsigned long)image,(unsigned long)buffer.length);
+    return result;
+}
 - (instancetype)initWithSurface:(A5MaliSurface*)surface device:(A5MaliRestrictedDevice*)device
     descriptor:(MTLTextureDescriptor*)descriptor layout:(A5MaliTextureAllocationLayout)layout external:(BOOL)external
 {
@@ -226,7 +269,11 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
 - (MTLResourceOptions)resourceOptions{return _descriptor.resourceOptions;}
 - (MTLCPUCacheMode)cpuCacheMode{return _descriptor.cpuCacheMode;}
 - (MTLHazardTrackingMode)hazardTrackingMode{return _descriptor.hazardTrackingMode;}
-- (NSUInteger)allocatedSize{return _surface.iosurface?IOSurfaceGetAllocSize(_surface.iosurface):0;}
+- (NSUInteger)allocatedSize{return _buffer?_buffer.allocatedSize:_surface.iosurface?IOSurfaceGetAllocSize(_surface.iosurface):0;}
+- (A5MaliPrivateBuffer *)buffer{return _buffer;}
+- (NSUInteger)bufferOffset{return _bufferOffset;}
+- (NSUInteger)bufferBytesPerRow{return _bufferRow;}
+- (NSUInteger)bufferBytesPerImage{return _bufferImage;}
 - (IOSurfaceRef)iosurface{return _external&&self.storageMode==MTLStorageModeShared?_surface.iosurface:NULL;}
 - (A5MaliSurface*)privateSurface
 {return self.storageMode==MTLStorageModeMemoryless?(_passBacking.valid?_passBacking.surface:nil):_surface;}
@@ -272,7 +319,7 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
     level:(NSUInteger)level slice:(NSUInteger)slice write:(BOOL)write
 {
     A5MaliTextureLevelLayout l={0};BOOL one=self.textureType==MTLTextureType1D;
-    if(self.storageMode!=MTLStorageModeShared||!_surface.iosurface||slice||![self getLevelLayout:&l level:level]||
+    if(self.storageMode!=MTLStorageModeShared||(!_buffer&&!_surface.iosurface)||slice||![self getLevelLayout:&l level:level]||
        r.origin.z||r.size.depth!=1||r.origin.x>l.width||r.size.width>l.width-r.origin.x||
        r.origin.y>l.height||r.size.height>l.height-r.origin.y||(one&&(r.origin.y||r.size.height!=1)))
         [NSException raise:NSInvalidArgumentException format:@"%@ texture CPU transfer storage/subresource bounds unsupported",
@@ -283,6 +330,21 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
     if(!bytes||stride<line||(r.size.height>1&&stride>(NSUIntegerMax-line)/(r.size.height-1))||
        (image&&image<(r.size.height-1)*stride+line))
         [NSException raise:NSInvalidArgumentException format:@"texture CPU transfer source/destination row bounds invalid"];
+    if(_buffer){
+        uint64_t start=(uint64_t)l.byteOffset+r.origin.y*l.rowBytes+r.origin.x*_allocation.bytesPerElement;
+        uint64_t last=start+(r.size.height-1)*l.rowBytes+line;
+        if(last>_buffer.length)[NSException raise:NSInternalInconsistencyException format:@"linear buffer backing span invalid"];
+        [_cpuLock lock];kern_return_t status=KERN_SUCCESS;
+        for(NSUInteger y=0;y<r.size.height;++y){
+            void *cpu=(uint8_t *)bytes+y*stride;
+            status=write?[_buffer uploadBytes:cpu offset:(NSUInteger)start+y*l.rowBytes length:line]:
+                [_buffer readBytes:cpu offset:(NSUInteger)start+y*l.rowBytes length:line];
+            if(status)break;
+        }
+        [_cpuLock unlock];
+        if(status)[NSException raise:NSInternalInconsistencyException format:@"linear buffer CPU transfer failed: %x",status];
+        return;
+    }
     [_cpuLock lock];IOSurfaceRef surface=_surface.iosurface;
     IOSurfaceLockOptions options=write?0:kIOSurfaceLockReadOnly;
     kern_return_t status=IOSurfaceLock(surface,options,NULL);
