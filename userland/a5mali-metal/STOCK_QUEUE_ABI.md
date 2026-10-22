@@ -179,3 +179,49 @@ invoke signature.
 - (void)dealloc;
 - (id)device;
 ```
+
+## Live command-buffer protection and completion ABI (0184)
+
+0183 reaches a second, live command buffer after the corrected 2048-square
+texture limit. Its first backboardd exception is the missing protection setter.
+The recovered stack, minus shared-cache slide 0x33e40000, resolves to
+QuartzCore `MetalContext::start_command_buffer` at 0x18830acf8, immediately
+following `setProtectionOptions:` at 0x18830acf4. The setter argument comes
+from WindowServer surface protection options; its numeric value is not present
+in the abort record and must be observed on the next run.
+
+Exact iOS16 Metal metadata defines a void setter with a 64-bit unsigned argument
+and a 64-bit unsigned getter. `MTLIOAccelCommandBuffer protectionOptions` at
+0x181a77308 reads the stored value. The setter at 0x181a77318 checks the active
+encoder, commits its encoder state and writes a 16-byte kernel command including
+the requested value. Therefore arbitrary nonzero options cannot be treated as
+an ignored label on this unprotected driver.
+
+The port supports zero (ordinary unprotected work). A nonzero request records
+a sticky Unsupported encoding error, remains unprotected and prevents every
+Query17/Submit18 operation at commit. A later zero request cannot erase the
+error. A bounded receipt records the requested value and command ID. Mutation
+after commit raises a contract exception without altering terminal state.
+
+The always-installed QuartzCore completion block at 0x1882c83a0 reads
+`protectionOptions` at 0x1882c83e4, followed by `error`; both are implemented.
+The inspected live start sequence otherwise uses existing label, enqueue and
+completion-handler methods. Normal flush uses existing commit, wait and
+commitAndWaitUntilSubmitted methods. Render debug groups target the encoder,
+not the command buffer.
+
+Four other missing selectors have exact double-return ABI: GPUStartTime,
+GPUEndTime, kernelStartTime and kernelEndTime. Their inspected callers are
+conditional profiling handlers. They now return zero to indicate unavailable
+timestamps; the current kernel transport does not expose GPU timestamps, and
+CPU wall time is not substituted for GPU execution time. The additional
+computeCommandEncoderWithDispatchType: caller requires successful APL compute
+pipelines, which the current device does not create; that path is not claimed
+as implemented.
+
+Host tests exercise the real native emitter with injected transport: zero
+protection preserves a successful draw, nonzero protection prevents query and
+submission while delivering the error completion, and post-completion mutation
+preserves the result. These checks verify the adapter contract, not a device
+frame. Actual requested surface options and later live encoder operations
+remain phone observations for 0184.

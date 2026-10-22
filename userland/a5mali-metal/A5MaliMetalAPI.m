@@ -38,6 +38,7 @@ static BOOL diagnosticTake(atomic_uint *counter,unsigned limit)
 static atomic_uint encoderDiagnosticCount,commitDiagnosticCount,nativePhaseDiagnosticCount;
 static atomic_uint commandDiagnosticNext,queueCreationDiagnosticCount,bufferCreationDiagnosticCount,unretainedDiagnosticCount;
 static atomic_uint copyRejectionDiagnosticCount;
+static atomic_uint protectionDiagnosticCount;
 static void logQueuePhase(const char *phase,unsigned bufferID,BOOL created,atomic_uint *counter,unsigned limit)
 {
     if(diagnosticTake(counter,limit))fprintf(stderr,
@@ -433,6 +434,34 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     return error;
 }
 - (BOOL)retainedReferences { return YES; }
+/* Stock Metal's protection setter emits a kernel protection command. This
+ * driver has no protected allocations or protected submission mode: accepting
+ * a nonzero request would misrepresent the isolation of its resources. Keep
+ * that request as a sticky encoding error so commit never reaches the GPU.
+ * QuartzCore also reads the property from its unconditional completion block. */
+- (uint64_t)protectionOptions { return 0; }
+- (void)setProtectionOptions:(uint64_t)options
+{
+    [_condition lock];
+    BOOL committed = _status >= MTLCommandBufferStatusCommitted;
+    if (!committed && options && !_error)
+        _error = metalError(kIOReturnUnsupported);
+    [_condition unlock];
+    if (diagnosticTake(&protectionDiagnosticCount,64)) fprintf(stderr,
+        "A5XELTE Metal protection: cb=%u requested=%llx supported=0 committed=%u result=%x\n",
+        _diagnosticID,(unsigned long long)options,committed,
+        (unsigned)(committed ? kIOReturnNotPermitted : options ? kIOReturnUnsupported : KERN_SUCCESS));
+    /* Metal requires protection changes before commit. Preserve the terminal
+     * result and callback state when a caller violates that contract. */
+    if (committed) [NSException raise:NSInternalInconsistencyException
+        format:@"Command-buffer protection cannot change after commit"];
+}
+/* The public timing contract uses zero while timestamps are unavailable.
+ * CPU submission wall time would not be an honest GPU duration. */
+- (NSTimeInterval)GPUStartTime { return 0; }
+- (NSTimeInterval)GPUEndTime { return 0; }
+- (NSTimeInterval)kernelStartTime { return 0; }
+- (NSTimeInterval)kernelEndTime { return 0; }
 - (unsigned)diagnosticID { return _diagnosticID; }
 - (void)noteDrawCall { ++_drawCalls; }
 - (void)noteQueuedDraw { ++_queuedDraws; }

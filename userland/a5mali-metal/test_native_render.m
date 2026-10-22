@@ -177,8 +177,30 @@ int main(void)
         A5MaliMetalTexture *destination=[device hostTestTextureWithResource:
             (A5MaliResource){0x100000002,32,32,128,A5MaliWrite}];
         A5MaliMetalBuffer *b=encode(device,pipeline,source,destination,&t,NO,NO);
+        /* Actual QuartzCore start/completion SPI must preserve ordinary GPU
+         * work, reject protection without transport, and keep terminal state. */
+        b.protectionOptions=0;
+        assert(b.protectionOptions==0);
         assert(t.queries==0&&t.submits==0);assert([b commitAndWaitUntilSubmitted]);[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusCompleted&&!b.error&&t.queries==1&&t.submits==1);
+        assert(b.GPUStartTime==0&&b.GPUEndTime==0&&b.kernelStartTime==0&&b.kernelEndTime==0);
+        BOOL threw=NO;
+        @try { b.protectionOptions=0; }
+        @catch (NSException *exception) { threw=[exception.name isEqual:NSInternalInconsistencyException]; }
+        assert(threw&&b.status==MTLCommandBufferStatusCompleted&&!b.error);
+        A5MaliMetalBuffer *protectedBuffer=encode(device,pipeline,source,destination,&t,NO,NO);
+        protectedBuffer.protectionOptions=1;
+        protectedBuffer.protectionOptions=0; /* rejection cannot be erased */
+        assert(protectedBuffer.protectionOptions==0&&protectedBuffer.error.code==kIOReturnUnsupported);
+        dispatch_semaphore_t protectedDone=dispatch_semaphore_create(0);
+        [protectedBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed){
+            assert(completed.status==MTLCommandBufferStatusError&&completed.error.code==kIOReturnUnsupported);
+            assert([(A5MaliMetalBuffer *)completed protectionOptions]==0);
+            dispatch_semaphore_signal(protectedDone);
+        }];
+        assert(![protectedBuffer commitAndWaitUntilSubmitted]);[protectedBuffer waitUntilCompleted];
+        assert(dispatch_semaphore_wait(protectedDone,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC))==0);
+        assert(t.queries==1&&t.submits==1);
         b=encode(device,pipeline,source,destination,&t,YES,NO);[b commit];[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusError&&t.queries==1&&t.submits==1);
         b=encode(device,pipeline,source,destination,&t,NO,YES);[b commit];[b waitUntilCompleted];

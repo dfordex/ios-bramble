@@ -158,6 +158,13 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 @property (nonatomic, readonly) MTLCommandBufferStatus status;
 @property (nonatomic, readonly, nullable) NSError *error;
 @property (nonatomic, readonly) BOOL retainedReferences;
+/* iOS 16 QuartzCore SPI. Only unprotected command streams are supported. */
+@property (nonatomic) uint64_t protectionOptions;
+/* No hardware timestamp counter is exported by the current kernel ABI. */
+@property (nonatomic, readonly) NSTimeInterval GPUStartTime;
+@property (nonatomic, readonly) NSTimeInterval GPUEndTime;
+@property (nonatomic, readonly) NSTimeInterval kernelStartTime;
+@property (nonatomic, readonly) NSTimeInterval kernelEndTime;
 - (nullable A5MaliMetalBlitEncoder *)blitCommandEncoder;
 - (nullable A5MaliMetalRenderEncoder *)renderCommandEncoderWithDescriptor:
     (MTLRenderPassDescriptor *)descriptor;
