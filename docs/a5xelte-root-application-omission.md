@@ -43,9 +43,10 @@ first UI frame. PreBoard is not one of the ten cached jobs above.
 
 ## Correction
 
-Staging now preserves the entire Applications directory. Preflight and postcopy
-checks require PosterBoard,PaperBoard,InputUI,MediaRemoteUI andPreBoard executables
-as regression sentinels; preservation is not limited to those five. The script
+The first correction preserved all Applications. The user subsequently narrowed
+restoration to display-related components only. Staging now selects the complete
+PosterBoard,PaperBoard,PreBoard,InputUI,MediaRemoteUI andClockAngel bundles, with
+source/postcopy executable checks. Other stock applications remain excluded. The script
 still refuses to overlay an existing root and preserves numeric UID/GID and
 extended attributes. A shell syntax check passes; targeted rsync dry-run confirms
 PosterBoard and other system UI executable paths are selected. This changes
@@ -59,3 +60,14 @@ file dependency closure. Restore the system UI applications incrementally and
 trace the first non-warmup frame/flush transition. Do not retransmit or reformat
 allUSERDATA merely to restore these files. Apple payloads remain private and
 outsideGit.
+
+## Current scope and capacity
+
+Read-only device HFSX volume-header inventory:2271830016bytes free (~2.116GiB).
+All eight omitted trees total2545402390logicalbytes (~2.371GiB), so restoring
+every omitted file would exceed current free space by260.9MiB before overhead.
+The display-only six-bundle subset totals1494904bytes (~1.426MiB), with271subtree
+entries, no symlinks and no extended attributes. Numeric owners/modes and all
+resources/signatures must be preserved; bundles must not be re-signed. Remaining
+folder contents may matter to other features; absence is not proof of irrelevance.
+No full USERDATA transfer or format is needed for this subset.

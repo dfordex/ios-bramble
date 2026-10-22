@@ -29,6 +29,8 @@ def main():
                     help='run the locally embedded Mac shader GPU fixture suite')
     ap.add_argument('--native-rendering', action='store_true',
                     help='enable the privileged local Metal native queue; requires a compiled registry bundle')
+    ap.add_argument('--restore-display-apps', action='store_true',
+                    help='restore the exact six embedded display UI bundles through HFS VFS')
     args = ap.parse_args()
     if args.output_boot.exists():
         ap.error('output exists; choose a new private output path')
@@ -77,6 +79,14 @@ def main():
         required.update(a5metal_install='1', rootrw='1', emmcwrite='1',
                         emmcroot='USERDATA',
                         sweetnull='backboardd,a5mali-metal-probe')
+    if args.restore_display_apps:
+        if not args.install_bundle:
+            ap.error('--restore-display-apps requires --install-bundle')
+        if not all(marker in args.kernel.read_bytes() for marker in (
+                b'a5apps_install', b'A5XELTE Apps install: display bundles installed',
+                b'/Applications/PosterBoard.app/PosterBoard')):
+            ap.error('kernel lacks the gated display-app installer')
+        required['a5apps_install'] = '1'
     if args.compiler:
         if not args.install_bundle:
             ap.error('--compiler requires --install-bundle')

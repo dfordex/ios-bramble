@@ -10,7 +10,7 @@ fi
 os=$1 sysos=$2 appos=$3 root=$4
 # /Applications also contains launchd-managed system UI services, not just
 # optional home-screen apps. Require their source before starting any staging.
-ui_apps=(PosterBoard PaperBoard InputUI MediaRemoteUI PreBoard)
+ui_apps=(PosterBoard PaperBoard PreBoard InputUI MediaRemoteUI ClockAngel)
 for app in "${ui_apps[@]}"; do
     [[ -f "$os/Applications/$app.app/$app" ]] || {
         echo "missing required UI source: $app" >&2; exit 1;
@@ -38,9 +38,15 @@ mount | grep -F " on $root (hfs," >/dev/null || {
     exit 1
 }
 
-# Preserve all /Applications: it includes PosterBoard, InputUI and other
-# launchd/FrontBoard services. Only the separately listed large asset families
-# remain omitted; they are not established as safe for every system feature.
+# Keep the selected display/lock-screen/input service bundles. /Applications
+# also contains system services, so a blanket exclusion is not safe. The user
+# requested only display-related restoration, not every stock app.
+app_filters=('--include=/Applications/')
+for app in "${ui_apps[@]}"; do
+    app_filters+=("--include=/Applications/$app.app/***")
+done
+app_filters+=('--exclude=/Applications/***')
+# Other omitted asset families are not proven optional for every feature.
 omit=(
     '--exclude=/System/Library/LinguisticData/***'
     '--exclude=/System/Library/PreinstalledAssetsV2/***'
@@ -51,7 +57,7 @@ omit=(
     '--exclude=/System/Library/Audio/***'
 )
 echo "Copying selected OS files"
-/usr/bin/rsync -aH --numeric-ids --extended-attributes "${omit[@]}" "$os/" "$root/"
+/usr/bin/rsync -aH --numeric-ids --extended-attributes "${app_filters[@]}" "${omit[@]}" "$os/" "$root/"
 echo "Copying SystemOS and AppOS cryptexes"
 mkdir -p "$root/private/preboot/Cryptexes/OS" "$root/private/preboot/Cryptexes/App"
 /usr/bin/rsync -aH --numeric-ids --extended-attributes "$sysos/" "$root/private/preboot/Cryptexes/OS/"
