@@ -6,6 +6,8 @@
 #import "A5MaliCompiledRegistry.h"
 #include <assert.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
 
 @interface A5MaliMetalLibrary (CompiledRegistryTest)
 - (A5MaliMetalFunction *)newFunctionWithName:(NSString *)name
@@ -58,6 +60,39 @@ static void reject(MTLRenderPipelineDescriptor *d)
     NSError *error=nil; assert(!A5MaliSelectCompiledProfile(d,&error));
     assert(error.code==kIOReturnUnsupported);
 }
+static void specializationReceipt(A5MaliMetalLibrary *library)
+{
+    /* Real host Metal storage, including packed UChar3 (not a UInt). Capture
+     * typed values without allowing the unsupported function to become live. */
+    MTLFunctionConstantValues *values=[MTLFunctionConstantValues new];
+    uint8_t generic=1,layout=4,opcodes[3]={0x12,0x34,0x56};
+    float unsupported=0.5f;
+    [values setConstantValue:&generic type:MTLDataTypeBool withName:@"fc_generic"];
+    [values setConstantValue:&layout type:MTLDataTypeUChar withName:@"fc_vertex_layout"];
+    [values setConstantValue:opcodes type:MTLDataTypeUChar3 withName:@"fc_color_opcodes0"];
+    [values setConstantValue:&unsupported type:MTLDataTypeFloat atIndex:7];
+    MTLFunctionDescriptor *descriptor=[MTLFunctionDescriptor functionDescriptor];
+    descriptor.name=@"fixed_frag_lph_cph";descriptor.constantValues=values;
+    FILE *capture=tmpfile();assert(capture);
+    int original=dup(STDERR_FILENO);assert(original>=0);
+    fflush(stderr);assert(dup2(fileno(capture),STDERR_FILENO)>=0);
+    for(unsigned attempt=0;attempt<12;++attempt){
+        NSError *error=nil;
+        assert(![library newFunctionWithDescriptor:descriptor error:&error]);
+        assert(error.code==kIOReturnUnsupported);
+    }
+    fflush(stderr);assert(dup2(original,STDERR_FILENO)>=0);close(original);
+    assert(!fseek(capture,0,SEEK_END));long size=ftell(capture);assert(size>0&&size<8000);
+    rewind(capture);NSMutableData *data=[NSMutableData dataWithLength:(NSUInteger)size];
+    assert(fread(data.mutableBytes,1,data.length,capture)==data.length);fclose(capture);
+    NSString *receipt=[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding];assert(receipt);
+    assert([receipt containsString:@"function=fixed_frag_lph_cph constants=1 result=unsupported"]);
+    assert([receipt containsString:@"key=fc_generic type=53 bytes=1 raw=01"]);
+    assert([receipt containsString:@"key=fc_vertex_layout type=49 bytes=1 raw=04"]);
+    assert([receipt containsString:@"key=fc_color_opcodes0 type=51 bytes=3 raw=123456"]);
+    assert([receipt containsString:@"key=index_7 type=3 bytes=0 raw=unavailable"]);
+    assert(![receipt containsString:@"request=4"]);
+}
 int main(void)
 {
     @autoreleasepool {
@@ -71,6 +106,7 @@ int main(void)
         const char *path=getenv("A5_MALI_STOCK_QUARTZCORE_METALLIB");assert(path);
         NSURL *url=[NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
         A5MaliMetalLibrary *library=[device newLibraryWithURL:url error:NULL];assert(library);
+        specializationReceipt(library);
         A5MaliRestrictedDevice *nativeDevice=[[A5MaliRestrictedDevice alloc]
             initWithTransport:noGPU context:&context commandCapabilities:63
             operationCapabilities:((1u<<16)|(1u<<17)|127)];

@@ -6,6 +6,8 @@
 #import "A5MaliCompiledRegistry.h"
 #import <CommonCrypto/CommonDigest.h>
 #include <string.h>
+#include <stdatomic.h>
+#include <stdio.h>
 
 /* SHA-256 of iOS 16.7.16 QuartzCore.framework/default.metallib from the
  * locally staged IPSW. This identifies the whole source library; a function
@@ -92,6 +94,88 @@ static NSError *libraryError(NSString *reason)
 - (nullable NSDictionary *)pluginData;
 - (nullable NSArray *)privateFunctions;
 @end
+
+/* Exact iOS16 MTLFunctionConstantSPI. The returned arrays own copied values;
+ * no object layout or private storage offset is assumed. */
+@interface MTLFunctionConstantValues (A5MaliConstantCapture)
+- (NSArray *)newNamedConstantArray;
+- (NSArray *)newIndexedConstantArray;
+@end
+@protocol A5MaliConstantRecord
+- (NSString *)name;
+- (NSUInteger)index;
+- (MTLDataType)dataType;
+- (const void *)data;
+@end
+
+static NSString *boundedFunctionIdentifier(NSString *name)
+{
+    if (![name isKindOfClass:[NSString class]] || !name.length || name.length>128)
+        return @"<invalid>";
+    static NSCharacterSet *invalid;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        invalid=[[NSCharacterSet characterSetWithCharactersInString:
+            @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"] invertedSet];
+    });
+    return [name rangeOfCharacterFromSet:invalid].location==NSNotFound ? name : @"<invalid>";
+}
+
+static void logConstantArray(NSArray *array,BOOL indexed,unsigned request)
+{
+    if (![array isKindOfClass:[NSArray class]]) {
+        fprintf(stderr,"A5XELTE Metal specialize: request=%u kind=%s unavailable=1\n",
+            request,indexed?"indexed":"named");
+        return;
+    }
+    fprintf(stderr,"A5XELTE Metal specialize: request=%u kind=%s count=%lu truncated=%u\n",
+        request,indexed?"indexed":"named",(unsigned long)array.count,array.count>64);
+    Class expected=NSClassFromString(indexed?@"MTLIndexedConstantValue":@"MTLNamedConstantValue");
+    for (NSUInteger i=0;i<MIN(array.count,(NSUInteger)64);++i) {
+        id<A5MaliConstantRecord> entry=array[i];
+        if (!expected || ![(id)entry isMemberOfClass:expected] ||
+            ![(id)entry respondsToSelector:@selector(dataType)] ||
+            ![(id)entry respondsToSelector:@selector(data)] ||
+            ![(id)entry respondsToSelector:indexed?@selector(index):@selector(name)]) {
+            fprintf(stderr,"A5XELTE Metal specialize: request=%u entry=%lu invalid=1\n",
+                request,(unsigned long)i);continue;
+        }
+        MTLDataType type=entry.dataType;
+        /* QuartzCore uses UChar, UChar3 and Bool. In particular, type51 is
+         * THREE UChar bytes, not UInt (type33). Never read an unknown width. */
+        NSUInteger bytes=type==MTLDataTypeUChar3?3:
+            (type==MTLDataTypeUChar || type==MTLDataTypeBool)?1:0;
+        char raw[7]="";
+        if (bytes && entry.data) {
+            uint8_t value[3];memcpy(value,entry.data,bytes);
+            for (NSUInteger j=0;j<bytes;++j)snprintf(raw+j*2,3,"%02x",value[j]);
+        }
+        NSString *key=indexed?[NSString stringWithFormat:@"index_%lu",(unsigned long)entry.index]:
+            boundedFunctionIdentifier(entry.name);
+        fprintf(stderr,"A5XELTE Metal specialize: request=%u key=%s type=%lu bytes=%lu raw=%s\n",
+            request,key.UTF8String,(unsigned long)type,(unsigned long)bytes,
+            bytes&&entry.data?raw:"unavailable");
+    }
+}
+
+static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *values)
+{
+    static atomic_uint requests;
+    unsigned request=atomic_fetch_add_explicit(&requests,1,memory_order_relaxed);
+    if(request>=4)return;
+    fprintf(stderr,"A5XELTE Metal specialize: request=%u function=%s constants=%u result=unsupported\n",
+        request,boundedFunctionIdentifier(name).UTF8String,values!=nil);
+    if (!values)return;
+    if (![values isKindOfClass:[MTLFunctionConstantValues class]] ||
+        ![values respondsToSelector:@selector(newNamedConstantArray)] ||
+        ![values respondsToSelector:@selector(newIndexedConstantArray)]) {
+        fprintf(stderr,"A5XELTE Metal specialize: request=%u accessor_unavailable=1\n",request);return;
+    }
+    NSArray *named=[values newNamedConstantArray];
+    NSArray *indexed=[values newIndexedConstantArray];
+    logConstantArray(named,NO,request);
+    logConstantArray(indexed,YES,request);
+}
 
 @interface A5MaliMetalLibrary () {
     A5MaliRestrictedDevice *_device;
@@ -238,6 +322,7 @@ static NSError *libraryError(NSString *reason)
          snapshot.pluginData) ||
         ([snapshot respondsToSelector:@selector(privateFunctions)] &&
          snapshot.privateFunctions.count)) {
+        logFunctionSpecialization(snapshot.name,snapshot.constantValues);
         if (error) *error = libraryError(@"function specialization and archives are unsupported");
         return nil;
     }
@@ -252,6 +337,7 @@ static NSError *libraryError(NSString *reason)
                                     error:(NSError **)error
 {
     if (constants) {
+        logFunctionSpecialization(name,constants);
         if (error) *error = libraryError(@"no compiled AIR function-constant variant matches");
         return nil;
     }

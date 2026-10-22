@@ -183,3 +183,31 @@ function, coordinate function, plane count, texture-coordinate count, filter and
 color opcode fields. These values affect shader behavior; they cannot be ignored
 or accepted merely because their names are known. No generic constant-value
 combination has been established as the exact 0164 failing request.
+
+
+## 0184: the first live draw needs a generic fragment specialization
+
+The recovered first backboardd stack, minus slide 0x22b54000, resolves through
+create_fragment_shader (return 0x1884862ac), create_pipeline_state
+(0x188380d88) and MetalContext::draw (0x1882cbf64). Code 7 is the generic
+function-constant failure branch. The three possible generic names are
+fixed_frag_lph_cph, fixed_frag_lph_cpf and fixed_frag_lpf_cpf; the actual dynamic
+choice and values were not logged and must not be invented from warmup names.
+
+0185 records rejected function requests through actual iOS16 constant SPI:
+newNamedConstantArray and newIndexedConstantArray return retained arrays of
+MTLNamedConstantValue / MTLIndexedConstantValue, exposing typed dataType/data
+and name/index getters. No private ivar offsets are read. The audited generic
+fragment factory writes at most 58 named values. Capture permits 64 entries
+per array and four requests per process, bounds names to identifier characters,
+and logs explicit truncation/unavailability. No shader bytes, data addresses or
+resource contents are printed.
+
+Types are critical: UChar is 49 (1 byte), UChar3 is 51 (3 bytes), and Bool is
+53 (1 byte). fc_color_opcodes0/1 uses UChar3, not UInt (33). These sizes agree
+with the actual iOS16 _MTLConstantDataSize table. Unknown data types are logged
+without dereferencing their data. Host tests use real Metal constant storage,
+verify the complete 3-byte packed opcode receipt, exercise an unsupported Float
+index without reading its payload, verify the request budget, and keep function
+creation rejected. This adds missing request evidence; it does not implement
+generic shader execution or fix the known specialization abort by itself.
