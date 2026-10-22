@@ -1,6 +1,6 @@
 # Native texture resource operations — 0180
 
-## Verdict: CONCERNS — integrated, hardware verification pending
+## Verdict: CONCERNS — 21 hardware cases pass; stock rendering pending
 
 The0179 log exposed resource creation failures before a captured stock command
 commit. These are resource/encoder contracts, not missing shader source that
@@ -60,3 +60,12 @@ explicitly rejected. Ordered original-path multi-attachment rendering, general
 indexed/instanced geometry, arbitrary Metal shaders and complete compositor
 coverage remain outside the current implementation. These limits must not be
 hidden by successful allocation or fabricated completion.
+
+## 0180 device result
+
+Read-only recovered flush30 confirms all21GPU cases evaluated/pass/immutable1
+and all48logged fences header1/MMU0. Previously rejected typed1D/mip/Memoryless
+resource creation advances. Backboardd commandbuffer1 now first rejects a texture
+copy withBadArgument; no stock commit/native submission is recorded. The existing
+full-panel GPU transfer completes, but the visible UI remains black. Exact error
+branch is not captured. See [0180 review](a5xelte-0180-log-review.md).
