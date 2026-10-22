@@ -69,3 +69,11 @@ in the new bounded SwapWait log;0197 did not prove that ordering.
 The next phone capture must establish transformed UVs, nonblack603 target
 pixels, actual SwapWait calls and a completed source-to-panel presentation.
 Visible iOS output is still required before claiming the black screen fixed.
+
+## Installation
+
+Source `6a89260` was pushed before installation. Mac ADB rechecked the exact
+lab phone in TWRP, the BOOTp10 mapping and32MiB capacity, streamed exactly
+30,308,368bytes, received the matching write byte receipt, synced and rebooted.
+No BOOT backup, post-write hash/readback, partition formatting or full root
+image transfer was performed. Runtime installation and pixels remain pending.
