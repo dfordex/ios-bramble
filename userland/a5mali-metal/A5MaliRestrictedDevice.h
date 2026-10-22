@@ -55,6 +55,22 @@ NS_ASSUME_NONNULL_BEGIN
 @interface A5MaliReadSurfCandidate : NSObject
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
 @property (nullable, copy, atomic) NSString *label;
+/* No tile shader, indirect commands, or imageblock memory is compiled. */
+@property (nonatomic, readonly) NSUInteger maxTotalThreadsPerThreadgroup;
+@property (nonatomic, readonly) BOOL threadgroupSizeMatchesTileSize;
+@property (nonatomic, readonly) NSUInteger imageblockSampleLength;
+@property (nonatomic, readonly) BOOL supportIndirectCommandBuffers;
+- (NSUInteger)imageblockMemoryLengthForDimensions:(MTLSize)dimensions;
+@property (nonatomic, readonly) NSUInteger maxTotalThreadsPerObjectThreadgroup;
+@property (nonatomic, readonly) NSUInteger maxTotalThreadsPerMeshThreadgroup;
+@property (nonatomic, readonly) NSUInteger objectThreadExecutionWidth;
+@property (nonatomic, readonly) NSUInteger meshThreadExecutionWidth;
+@property (nonatomic, readonly) NSUInteger maxTotalThreadgroupsPerMeshGrid;
+@property (nonatomic, readonly) MTLResourceID gpuResourceID;
+- (nullable id<MTLFunctionHandle>)functionHandleWithFunction:(id<MTLFunction>)function stage:(MTLRenderStages)stage;
+- (nullable id<MTLVisibleFunctionTable>)newVisibleFunctionTableWithDescriptor:(MTLVisibleFunctionTableDescriptor *)descriptor stage:(MTLRenderStages)stage;
+- (nullable id<MTLIntersectionFunctionTable>)newIntersectionFunctionTableWithDescriptor:(MTLIntersectionFunctionTableDescriptor *)descriptor stage:(MTLRenderStages)stage;
+- (nullable id<MTLRenderPipelineState>)newRenderPipelineStateWithAdditionalBinaryFunctions:(MTLRenderPipelineFunctionsDescriptor *)functions error:(NSError * _Nullable * _Nullable)error;
 @end
 
 /* A deliberately narrow public-selector slice. No Metal protocol is claimed. */
@@ -97,6 +113,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable A5MaliMetalFunction *)newFunctionWithDescriptor:
     (nullable MTLFunctionDescriptor *)descriptor
     error:(NSError * _Nullable * _Nullable)error;
+- (void)newFunctionWithName:(NSString *)name
+    constantValues:(nullable MTLFunctionConstantValues *)constants
+    completionHandler:(nullable void (^)(id<MTLFunction> _Nullable,NSError * _Nullable))handler;
+- (void)newFunctionWithDescriptor:(nullable MTLFunctionDescriptor *)descriptor
+    completionHandler:(nullable void (^)(id<MTLFunction> _Nullable,NSError * _Nullable))handler;
+@property (nonatomic, readonly) MTLLibraryType type;
+@property (nonatomic, readonly, nullable) NSString *installName;
 @end
 
 @interface A5MaliMetalFunction : NSObject
@@ -105,6 +128,15 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
 @property (nonatomic, readonly) A5MaliMetalLibrary *library;
 @property (nonatomic, readonly) uint32_t specializationProfileID;
+@property (nonatomic, readonly) MTLPatchType patchType;
+@property (nonatomic, readonly) NSInteger patchControlPointCount;
+@property (nonatomic, readonly) MTLFunctionOptions options;
+@property (nonatomic, readonly, nullable) NSArray<MTLVertexAttribute *> *vertexAttributes;
+@property (nonatomic, readonly, nullable) NSArray<MTLAttribute *> *stageInputAttributes;
+@property (nonatomic, readonly) NSDictionary<NSString *,MTLFunctionConstant *> *functionConstantsDictionary;
+- (nullable id<MTLArgumentEncoder>)newArgumentEncoderWithBufferIndex:(NSUInteger)index;
+- (nullable id<MTLArgumentEncoder>)newArgumentEncoderWithBufferIndex:(NSUInteger)index
+    reflection:(id _Nullable * _Nullable)reflection;
 /* Immutable source/typed-constant request, never an executable cache entry. */
 @property (nullable, nonatomic, readonly) NSDictionary *compileRequestPayload;
 @property (nullable, copy, atomic) NSString *label;
@@ -147,6 +179,7 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 @property (nullable, copy, atomic) NSString *label;
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
 - (A5MaliMetalBuffer *)commandBuffer;
+- (nullable A5MaliMetalBuffer *)commandBufferWithDescriptor:(MTLCommandBufferDescriptor *)descriptor;
 /* iOS16 QuartzCore configures and then releases both supplied queues. */
 - (void)setSubmissionQueue:(nullable dispatch_queue_t)queue;
 - (void)setCompletionQueue:(nullable dispatch_queue_t)queue;
@@ -155,6 +188,7 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 - (BOOL)setGPUPriority:(NSUInteger)priority;
 - (BOOL)setBackgroundGPUPriority:(NSUInteger)priority;
 - (A5MaliMetalBuffer *)commandBufferWithUnretainedReferences;
+- (void)insertDebugCaptureBoundary;
 @end
 
 @interface A5MaliMetalBuffer : NSObject
@@ -164,6 +198,9 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 @property (nonatomic, readonly) MTLCommandBufferStatus status;
 @property (nonatomic, readonly, nullable) NSError *error;
 @property (nonatomic, readonly) BOOL retainedReferences;
+@property (nonatomic, readonly) MTLCommandBufferErrorOption errorOptions;
+@property (nonatomic, readonly, nullable) id<MTLLogContainer> logs;
+@property (nonatomic, readonly) NSArray<NSString *> *debugSignposts;
 /* iOS 16 QuartzCore SPI. Only unprotected command streams are supported. */
 @property (nonatomic) uint64_t protectionOptions;
 /* No hardware timestamp counter is exported by the current kernel ABI. */
@@ -172,8 +209,24 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
 @property (nonatomic, readonly) NSTimeInterval kernelStartTime;
 @property (nonatomic, readonly) NSTimeInterval kernelEndTime;
 - (nullable A5MaliMetalBlitEncoder *)blitCommandEncoder;
+- (nullable A5MaliMetalBlitEncoder *)blitCommandEncoderWithDescriptor:(MTLBlitPassDescriptor *)descriptor;
 - (nullable A5MaliMetalRenderEncoder *)renderCommandEncoderWithDescriptor:
     (MTLRenderPassDescriptor *)descriptor;
+- (nullable id<MTLComputeCommandEncoder>)computeCommandEncoder;
+- (nullable id<MTLComputeCommandEncoder>)computeCommandEncoderWithDescriptor:(MTLComputePassDescriptor *)descriptor;
+- (nullable id<MTLComputeCommandEncoder>)computeCommandEncoderWithDispatchType:(MTLDispatchType)dispatchType;
+- (nullable id<MTLParallelRenderCommandEncoder>)parallelRenderCommandEncoderWithDescriptor:(MTLRenderPassDescriptor *)descriptor;
+- (nullable id<MTLResourceStateCommandEncoder>)resourceStateCommandEncoder;
+- (nullable id<MTLResourceStateCommandEncoder>)resourceStateCommandEncoderWithDescriptor:(MTLResourceStatePassDescriptor *)descriptor;
+- (nullable id<MTLAccelerationStructureCommandEncoder>)accelerationStructureCommandEncoder;
+- (nullable id<MTLAccelerationStructureCommandEncoder>)accelerationStructureCommandEncoderWithDescriptor:(MTLAccelerationStructurePassDescriptor *)descriptor;
+- (void)presentDrawable:(id<MTLDrawable>)drawable;
+- (void)presentDrawable:(id<MTLDrawable>)drawable atTime:(CFTimeInterval)time;
+- (void)presentDrawable:(id<MTLDrawable>)drawable afterMinimumDuration:(CFTimeInterval)duration;
+- (void)encodeWaitForEvent:(id<MTLEvent>)event value:(uint64_t)value;
+- (void)encodeSignalEvent:(id<MTLEvent>)event value:(uint64_t)value;
+- (void)pushDebugGroup:(NSString *)string;
+- (void)popDebugGroup;
 - (void)enqueue;
 - (void)commit;
 - (void)waitUntilScheduled;
@@ -229,6 +282,7 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
     indexBufferOffset:(NSUInteger)indexBufferOffset instanceCount:(NSUInteger)instanceCount
     baseVertex:(NSInteger)baseVertex baseInstance:(NSUInteger)baseInstance;
 - (void)endEncoding;
+- (nullable id)endEncodingAndRetrieveProgramAddressTable;
 @end
 
 /* GPU work is limited to validated BGRA texture copies. Mipmap generation
@@ -267,6 +321,7 @@ A5MaliPipelineShape A5MaliInspectReadSurfPipelineDescriptor(
        destinationLevel:(NSUInteger)destinationLevel
       destinationOrigin:(MTLOrigin)destinationOrigin;
 - (void)endEncoding;
+- (nullable id)endEncodingAndRetrieveProgramAddressTable;
 @end
 
 NS_ASSUME_NONNULL_END

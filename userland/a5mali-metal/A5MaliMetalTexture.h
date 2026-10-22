@@ -28,6 +28,41 @@ BOOL A5MaliBuildTextureAllocationLayout(MTLTextureDescriptor *descriptor,
 - (void)invalidateAfterCompletion;
 @end
 @interface A5MaliMetalTexture (ResourceLayout)
+- (MTLPurgeableState)setPurgeableState:(MTLPurgeableState)state;
+@property (nullable,nonatomic,readonly) id<MTLHeap> heap;
+@property (nonatomic,readonly) NSUInteger heapOffset;
+- (BOOL)isAliasable;
+- (void)makeAliasable;
+@property (nullable,nonatomic,readonly) id<MTLResource> rootResource;
+@property (nullable,nonatomic,readonly) A5MaliMetalTexture *parentTexture;
+@property (nonatomic,readonly) NSUInteger parentRelativeLevel,parentRelativeSlice,iosurfacePlane;
+- (BOOL)isShareable;
+- (BOOL)isFramebufferOnly;
+- (BOOL)isSparse;
+@property (nonatomic,readonly) NSUInteger firstMipmapInTail,tailSizeInBytes;
+@property (nonatomic,readonly) BOOL allowGPUOptimizedContents;
+@property (nonatomic,readonly) MTLTextureCompressionType compressionType;
+@property (nonatomic,readonly) MTLResourceID gpuResourceID;
+@property (nonatomic,readonly) uint64_t allocationID,protectionOptions,unfilteredResourceOptions,gpuHandle,rotation,numFaces,compressionFootprint;
+@property (nonatomic,readonly) int64_t compressionFeedback;
+@property (nonatomic,readonly) uint32_t swizzleKey;
+@property (nonatomic) int responsibleProcess;
+- (BOOL)isCompressed;
+- (BOOL)isDrawable;
+- (BOOL)isPurgeable;
+- (BOOL)isComplete;
+- (void)waitUntilComplete;
+- (BOOL)doesAliasResource:(id)resource;
+- (BOOL)doesAliasAnyResources:(id _Nonnull __unsafe_unretained const * _Nullable)resources count:(NSUInteger)count;
+- (BOOL)doesAliasAllResources:(id _Nonnull __unsafe_unretained const * _Nullable)resources count:(NSUInteger)count;
+- (kern_return_t)setOwnerWithIdentity:(uint32_t)identity;
+- (nullable id<MTLTexture>)newTextureViewWithPixelFormat:(MTLPixelFormat)format;
+- (nullable id<MTLTexture>)newTextureViewWithPixelFormat:(MTLPixelFormat)format
+    textureType:(MTLTextureType)type levels:(NSRange)levels slices:(NSRange)slices;
+- (nullable id<MTLTexture>)newTextureViewWithPixelFormat:(MTLPixelFormat)format
+    textureType:(MTLTextureType)type levels:(NSRange)levels slices:(NSRange)slices
+    swizzle:(MTLTextureSwizzleChannels)swizzle;
+- (nullable MTLSharedTextureHandle *)newSharedTextureHandle;
 /* Buffer views retain this actual Shared allocation. Native submission must
  * read it at commit, map the resulting buffer span, then add bufferOffset.
  * They have no IOSurface; no independent texture allocation is substituted. */

@@ -20,6 +20,28 @@ enum { A5MaliMaxPrivateBufferLength = 0x800000,
 /* A failed, partially completed private upload must not be read by a draw. */
 @property (nonatomic, readonly) BOOL readyForRead;
 @property (nullable, copy, atomic) NSString *label;
+- (MTLPurgeableState)setPurgeableState:(MTLPurgeableState)state;
+@property (nullable, nonatomic, readonly) id<MTLHeap> heap;
+@property (nonatomic, readonly) NSUInteger heapOffset;
+- (BOOL)isAliasable;
+- (void)makeAliasable;
+/* No stable GPU virtual address/argument-buffer ABI is exported. */
+@property (nonatomic, readonly) MTLGPUAddress gpuAddress;
+/* Audited iOS16 ResourceSPI. Completion/opaque IDs have no exported backend
+ * contract: isComplete reports NO, waiting raises, allocationID is invalid0. */
+@property (nonatomic, readonly) uint64_t allocationID,protectionOptions,unfilteredResourceOptions;
+@property (nonatomic) int responsibleProcess;
+- (BOOL)isPurgeable;
+- (BOOL)isComplete;
+- (void)waitUntilComplete;
+- (BOOL)doesAliasResource:(id)resource;
+- (BOOL)doesAliasAnyResources:(id _Nonnull __unsafe_unretained const * _Nullable)resources count:(NSUInteger)count;
+- (BOOL)doesAliasAllResources:(id _Nonnull __unsafe_unretained const * _Nullable)resources count:(NSUInteger)count;
+- (kern_return_t)setOwnerWithIdentity:(uint32_t)identity;
+- (void)addDebugMarker:(NSString *)marker range:(NSRange)range;
+- (void)removeAllDebugMarkers;
+@property (nonatomic, readonly, copy) NSArray<NSDictionary *> *debugMarkers;
+- (void)didModifyRange:(NSRange)range;
 - (nullable void *)contents;
 /* Explicit driver transfers; no public shared contents pointer is fabricated.
  * A failure may follow earlier successful chunks; callers must discard failed
@@ -79,12 +101,19 @@ enum { A5MaliMaxPrivateBufferLength = 0x800000,
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
 @property (nullable, readonly, copy) NSString *label;
 @property (nonatomic, readonly) MTLSamplerDescriptor *descriptor;
+/* Zero: no permanent argument-buffer identity is exported by this backend. */
+@property (nonatomic, readonly) MTLResourceID gpuResourceID;
+@property (nonatomic, readonly) MTLPixelFormat pixelFormat;
 @end
 @interface A5MaliDepthStencilState : NSObject
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
 @property (nullable, readonly, copy) NSString *label;
 @property (nonatomic, readonly) MTLDepthStencilDescriptor *descriptor;
+@property (nonatomic, readonly) BOOL readsDepth,writesDepth,readsStencil,writesStencil;
 @end
+
+/* Physical identity/range comparison shared by buffer and texture SPI. */
+BOOL A5MaliResourcesAlias(id a,id b);
 
 /* Valid sizes describe driver allocations, not heap allocation support. */
 MTLSizeAndAlign A5MaliPrivateBufferSizeAndAlign(NSUInteger length,

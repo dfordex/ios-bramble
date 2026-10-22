@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+extern BOOL A5MaliAuditRuntimeMetalSurface(void);
+
 static NSError *unsupported(NSString *operation)
 {
     return [NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
@@ -55,6 +57,10 @@ static unsigned missingRequiredMethods(Class cls, Protocol *protocol)
     if (!publicProtocol || !privateProtocol || !A5MaliStockLayoutMatches() ||
         missingRequiredMethods(self, privateProtocol)) {
         fprintf(stderr, "A5XELTE Metal: incompatible iOS provider ABI\n");
+        return;
+    }
+    if (!A5MaliAuditRuntimeMetalSurface()) {
+        fprintf(stderr,"A5XELTE Metal: vended-object selector/ABI audit failed\n");
         return;
     }
     /* Use the OS's actual protocol objects. No private protocol is invented

@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 #import "A5MaliMetalTexture.h"
 #import "A5MaliMetalDeviceResources.h"
+#import <objc/runtime.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <limits.h>
+#include <unistd.h>
 
 @interface A5MaliRestrictedDevice (TextureDevice)
 - (A5MaliDevice *)privateDevice;
@@ -20,6 +22,7 @@
     NSLock *_cpuLock;
     A5MaliPrivateBuffer *_buffer;
     NSUInteger _bufferOffset,_bufferRow,_bufferImage;
+    NSUInteger _parentLevel;
 }
 - (nullable instancetype)initWithSurface:(A5MaliSurface *)surface device:(A5MaliRestrictedDevice *)device
     descriptor:(MTLTextureDescriptor *)descriptor layout:(A5MaliTextureAllocationLayout)layout external:(BOOL)external;
@@ -85,6 +88,7 @@ BOOL A5MaliBuildTextureAllocationLayout(MTLTextureDescriptor *d,
     if(!one&&d.textureType!=MTLTextureType2D)return fail(reason,@"texture-type");
     NSUInteger pixel=A5MaliTexturePixelBytes(d.pixelFormat);
     if(!pixel)return fail(reason,@"pixel-format");
+    if(d.compressionType!=MTLTextureCompressionTypeLossless)return fail(reason,@"compression-type");
     if(!d.width||d.width>(one?4096u:2048u)||!d.height||d.height>(one?1u:2048u))return fail(reason,@"dimensions");
     if(d.depth!=1)return fail(reason,@"depth");
     if(d.arrayLength!=1)return fail(reason,@"array-length");
@@ -278,6 +282,108 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
 - (NSUInteger)bufferOffset{return _bufferOffset;}
 - (NSUInteger)bufferBytesPerRow{return _bufferRow;}
 - (NSUInteger)bufferBytesPerImage{return _bufferImage;}
+- (id<MTLHeap>)heap{return nil;}
+- (NSUInteger)heapOffset{return 0;}
+- (BOOL)isAliasable{return NO;}
+- (void)makeAliasable
+{[NSException raise:NSInvalidArgumentException format:@"makeAliasable requires a heap-backed texture"];}
+- (id<MTLResource>)rootResource
+{return _buffer?(id)_buffer:_parent?(_parent.rootResource?:(id)_parent):nil;}
+- (A5MaliMetalTexture *)parentTexture{return _parent;}
+- (NSUInteger)parentRelativeLevel{return _parentLevel;}
+- (NSUInteger)parentRelativeSlice{return 0;}
+- (NSUInteger)iosurfacePlane{return 0;}
+- (BOOL)isShareable{return NO;}
+- (BOOL)isFramebufferOnly{return self.storageMode==MTLStorageModeMemoryless;}
+- (BOOL)isSparse{return NO;}
+- (NSUInteger)firstMipmapInTail{return 0;}
+- (NSUInteger)tailSizeInBytes{return 0;}
+- (BOOL)allowGPUOptimizedContents{return _descriptor.allowGPUOptimizedContents;}
+- (MTLTextureCompressionType)compressionType{return _descriptor.compressionType;}
+- (MTLResourceID)gpuResourceID{return (MTLResourceID){0};}
+- (uint64_t)allocationID{return 0;}
+- (uint64_t)gpuHandle{return 0;}
+- (uint64_t)protectionOptions{return 0;}
+- (uint64_t)unfilteredResourceOptions{return self.resourceOptions;}
+- (BOOL)isCompressed{return NO;}
+- (int64_t)compressionFeedback{return 0;}
+- (uint64_t)compressionFootprint{return 0;}
+- (BOOL)isDrawable{return NO;}
+- (uint64_t)numFaces{return 1;}
+- (uint64_t)rotation{return 0;}
+- (uint32_t)swizzleKey
+{
+    /* ActualiOS16 MTLTextureSwizzleChannelsToKey/KeyToChannels are identity
+     * functions (Metal181a3787c/181a36d68), preserving the four ABI bytes. */
+    MTLTextureSwizzleChannels channels=self.swizzle;uint32_t key;
+    _Static_assert(sizeof(channels)==sizeof(key),"iOS16 swizzle ABI");memcpy(&key,&channels,sizeof(key));return key;
+}
+- (int)responsibleProcess
+{ @synchronized(self){NSNumber *hint=objc_getAssociatedObject(self,@selector(responsibleProcess));return hint?hint.intValue:getpid();} }
+- (void)setResponsibleProcess:(int)process
+{
+    if(process<0)[NSException raise:NSInvalidArgumentException format:@"negative responsible process hint"];
+    @synchronized(self){objc_setAssociatedObject(self,@selector(responsibleProcess),@(process),OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+}
+- (kern_return_t)setOwnerWithIdentity:(uint32_t)identity
+{(void)identity;return kIOReturnUnsupported;}
+- (BOOL)isPurgeable{return [self setPurgeableState:MTLPurgeableStateKeepCurrent]!=MTLPurgeableStateNonVolatile;}
+- (BOOL)isComplete{return NO;}
+- (void)waitUntilComplete
+{[NSException raise:NSInternalInconsistencyException format:@"resource-specific GPU completion tracking is unsupported; wait on the command buffer"];}
+- (BOOL)doesAliasResource:(id)resource{return A5MaliResourcesAlias(self,resource);}
+- (BOOL)doesAliasAnyResources:(id const __unsafe_unretained *)resources count:(NSUInteger)count
+{
+    if((count&&!resources)||count>4096)[NSException raise:NSInvalidArgumentException format:@"invalid resource alias array"];
+    for(NSUInteger i=0;i<count;++i)if(A5MaliResourcesAlias(self,resources[i]))return YES;return NO;
+}
+- (BOOL)doesAliasAllResources:(id const __unsafe_unretained *)resources count:(NSUInteger)count
+{
+    if((count&&!resources)||count>4096)[NSException raise:NSInvalidArgumentException format:@"invalid resource alias array"];
+    for(NSUInteger i=0;i<count;++i)if(!A5MaliResourcesAlias(self,resources[i]))return NO;return YES;
+}
+- (MTLSharedTextureHandle *)newSharedTextureHandle{return nil;}
+- (MTLPurgeableState)setPurgeableState:(MTLPurgeableState)state
+{
+    if(state<MTLPurgeableStateKeepCurrent||state>MTLPurgeableStateEmpty)
+        [NSException raise:NSInvalidArgumentException format:@"invalid texture purgeable state"];
+    if(_buffer)return [_buffer setPurgeableState:state];
+    if(_parent)return [_parent setPurgeableState:state];
+    /* Kernel imports and memoryless leases currently retain their actual
+     * backing until terminal DMA. No verified IOSurface purge selector is
+     * exposed, so refuse discard rather than promise that bytes were freed. */
+    if(state!=MTLPurgeableStateKeepCurrent&&state!=MTLPurgeableStateNonVolatile){
+        static atomic_uint count;unsigned n=atomic_load_explicit(&count,memory_order_relaxed);
+        do{if(n>=32)return MTLPurgeableStateNonVolatile;}
+        while(!atomic_compare_exchange_weak_explicit(&count,&n,n+1,memory_order_relaxed,memory_order_relaxed));
+        fprintf(stderr,"A5XELTE Metal texture purge: requested=%lu actual=%u reason=retained-surface-purge-unsupported\n",
+            (unsigned long)state,(unsigned)MTLPurgeableStateNonVolatile);
+    }
+    return MTLPurgeableStateNonVolatile;
+}
+- (id<MTLTexture>)newTextureViewWithPixelFormat:(MTLPixelFormat)format
+{return [self newTextureViewWithPixelFormat:format textureType:self.textureType
+    levels:NSMakeRange(0,self.mipmapLevelCount) slices:NSMakeRange(0,1) swizzle:self.swizzle];}
+- (id<MTLTexture>)newTextureViewWithPixelFormat:(MTLPixelFormat)format textureType:(MTLTextureType)type
+    levels:(NSRange)levels slices:(NSRange)slices
+{return [self newTextureViewWithPixelFormat:format textureType:type levels:levels slices:slices swizzle:self.swizzle];}
+- (id<MTLTexture>)newTextureViewWithPixelFormat:(MTLPixelFormat)format textureType:(MTLTextureType)type
+    levels:(NSRange)levels slices:(NSRange)slices swizzle:(MTLTextureSwizzleChannels)swizzle
+{
+    if(format!=self.pixelFormat||type!=self.textureType||!levels.length||levels.location>=self.mipmapLevelCount||
+        levels.length>self.mipmapLevelCount-levels.location||slices.location||slices.length!=1||
+        self.storageMode==MTLStorageModeMemoryless||swizzle.red!=MTLTextureSwizzleRed||
+        swizzle.green!=MTLTextureSwizzleGreen||swizzle.blue!=MTLTextureSwizzleBlue||swizzle.alpha!=MTLTextureSwizzleAlpha)return nil;
+    A5MaliTextureAllocationLayout l=_allocation;A5MaliTextureLevelLayout base=l.levels[levels.location];
+    l.width=base.width;l.height=base.height;l.levelCount=(uint32_t)levels.length;
+    for(NSUInteger i=0;i<levels.length;++i)l.levels[i]=_allocation.levels[levels.location+i];
+    MTLTextureDescriptor *d=[_descriptor copy];d.width=l.width;d.height=l.height;d.mipmapLevelCount=levels.length;
+    A5MaliMetalTexture *view=[[A5MaliMetalTexture alloc]initWithSurface:_surface device:_device descriptor:d layout:l external:_external];
+    if(!view)return nil;
+    view->_parent=self;view->_parentLevel=levels.location;view->_buffer=_buffer;
+    view->_bufferOffset=_bufferOffset;view->_bufferRow=_bufferRow;view->_bufferImage=_bufferImage;
+    return (id)view;
+}
 - (IOSurfaceRef)iosurface{return _external&&self.storageMode==MTLStorageModeShared?_surface.iosurface:NULL;}
 - (A5MaliSurface*)privateSurface
 {return self.storageMode==MTLStorageModeMemoryless?(_passBacking.valid?_passBacking.surface:nil):_surface;}
@@ -292,7 +398,7 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
     A5MaliTextureAllocationLayout l=_allocation;l.width=sub.width;l.height=sub.height;l.levelCount=1;l.levels[0]=sub;
     A5MaliMetalTexture*view=[[A5MaliMetalTexture alloc]initWithSurface:backing device:_device descriptor:d layout:l external:NO];
     if(!view){if(error)*error=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali" code:kIOReturnNoMemory userInfo:nil];return nil;}
-    view->_parent=self;view->_passBacking=lease;if(lease)view->_surface=nil;return view;
+    view->_parent=self;view->_parentLevel=level;view->_passBacking=lease;if(lease)view->_surface=nil;return view;
 }
 - (BOOL)getLevelLayout:(A5MaliTextureLevelLayout*)layout level:(NSUInteger)level
 {

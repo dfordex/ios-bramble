@@ -322,6 +322,7 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
 - (A5MaliMetalLibrary *)newLibraryWithURL:(NSURL *)url
                                      error:(NSError * _Nullable * _Nullable)error
 {
+    if (error) *error=nil;
     if (!url.isFileURL) {
         if (error) *error = libraryError(@"only a local metallib is supported");
         return nil;
@@ -344,6 +345,7 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
 - (A5MaliMetalLibrary *)newLibraryWithData:(dispatch_data_t)data
                                       error:(NSError * _Nullable * _Nullable)error
 {
+    if (error) *error=nil;
     if (!data || dispatch_data_get_size(data) != 1014944) {
         if (error) *error = libraryError(@"QuartzCore metallib size differs");
         return nil;
@@ -378,6 +380,30 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
 }
 
 - (A5MaliRestrictedDevice *)device { return _device; }
+- (MTLLibraryType)type { return MTLLibraryTypeExecutable; }
+- (NSString *)installName { return nil; }
+- (NSString *)overrideTriple { return nil; }
+- (void)setOverrideTriple:(NSString *)triple
+{
+    if (triple.length) [NSException raise:NSInvalidArgumentException
+        format:@"target triple override is unsupported by authenticated native profiles"];
+}
+- (BOOL)shaderValidationEnabled { return NO; }
+- (void)setShaderValidationEnabled:(BOOL)enabled
+{
+    if (enabled) [NSException raise:NSInvalidArgumentException
+        format:@"shader instrumentation is unsupported by authenticated native profiles"];
+}
+- (NSArray *)externFunctionNames { return @[]; }
+- (NSData *)bitcodeData { return nil; } // no AIR blob is exposed as native machine code
+- (NSUUID *)libraryIdentifier { return [[NSUUID alloc] initWithUUIDBytes:kQuartzCoreMetallibSHA256]; }
+- (BOOL)serializeToURL:(NSURL *)url error:(NSError **)error
+{
+    (void)url;
+    if (error) *error=libraryError(@"library serialization is unsupported");
+    return NO;
+}
+- (id)newExternFunctionWithName:(NSString *)name { (void)name; return nil; }
 - (NSArray<NSString *> *)functionNames
 {
     NSMutableArray<NSString *> *names = [NSMutableArray arrayWithArray:
@@ -422,6 +448,64 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
     return [[A5MaliMetalFunction alloc] initWithLibrary:self name:name type:type];
 }
 
+- (void)newFunctionWithName:(NSString *)name constantValues:(MTLFunctionConstantValues *)constants
+    completionHandler:(void (^)(id<MTLFunction>,NSError *))handler
+{
+    if (!handler) return;
+    NSString *functionName=[name copy];
+    MTLFunctionConstantValues *snapshot=[constants copy];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSError *error=nil;
+        id function=[self newFunctionWithName:functionName constantValues:snapshot error:&error];
+        handler(function,error);
+    });
+}
+- (void)newFunctionWithDescriptor:(MTLFunctionDescriptor *)descriptor
+    completionHandler:(void (^)(id<MTLFunction>,NSError *))handler
+{
+    if (!handler) return;
+    MTLFunctionDescriptor *snapshot=[descriptor isMemberOfClass:MTLFunctionDescriptor.class]?[descriptor copy]:nil;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSError *error=nil;
+        id function=[self newFunctionWithDescriptor:snapshot error:&error];
+        handler(function,error);
+    });
+}
+- (id)newIntersectionFunctionWithDescriptor:(MTLIntersectionFunctionDescriptor *)descriptor error:(NSError **)error
+{
+    (void)descriptor;
+    if (error) *error=libraryError(@"intersection functions are unsupported");
+    return nil;
+}
+- (void)newIntersectionFunctionWithDescriptor:(MTLIntersectionFunctionDescriptor *)descriptor
+    completionHandler:(void (^)(id<MTLFunction>,NSError *))handler
+{
+    (void)descriptor;
+    if (handler) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        handler(nil,libraryError(@"intersection functions are unsupported"));
+    });
+}
+- (id)newFunctionWithDescriptor:(MTLFunctionDescriptor *)descriptor destinationArchive:(id)archive error:(NSError **)error
+{
+    if (!archive) return [self newFunctionWithDescriptor:descriptor error:error];
+    if (error) *error=libraryError(@"destination archives are unsupported");
+    return nil;
+}
+- (id)newFunctionWithName:(NSString *)name constantValues:(MTLFunctionConstantValues *)values
+    pipelineLibrary:(id)library error:(NSError **)error
+{
+    if (!library) return [self newFunctionWithName:name constantValues:values error:error];
+    if (error) *error=libraryError(@"external pipeline libraries are unsupported");
+    return nil;
+}
+- (void)newFunctionWithName:(NSString *)name constantValues:(MTLFunctionConstantValues *)values
+    pipelineLibrary:(id)library completionHandler:(void (^)(id<MTLFunction>,NSError *))handler
+{
+    if (!library) { [self newFunctionWithName:name constantValues:values completionHandler:handler]; return; }
+    if (handler) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        handler(nil,libraryError(@"external pipeline libraries are unsupported"));
+    });
+}
 - (A5MaliMetalFunction *)newFunctionWithDescriptor:(MTLFunctionDescriptor *)descriptor
                                             error:(NSError * _Nullable * _Nullable)error
 {
@@ -523,6 +607,57 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
 - (A5MaliRestrictedDevice *)device { return _library.device; }
 - (uint32_t)specializationProfileID { return _specializationProfileID; }
 - (NSDictionary *)compileRequestPayload { return _compileRequestPayload; }
+- (MTLPatchType)patchType { return MTLPatchTypeNone; }
+- (NSInteger)patchControlPointCount { return -1; }
+- (MTLFunctionOptions)options { return MTLFunctionOptionNone; }
+/* Reflection metadata is unavailable, rather than a fabricated attribute list.
+ * Constants in vended executable variants have already been specialized. */
+- (NSArray<MTLVertexAttribute *> *)vertexAttributes { return nil; }
+- (NSArray<MTLAttribute *> *)stageInputAttributes { return nil; }
+- (NSDictionary<NSString *,MTLFunctionConstant *> *)functionConstantsDictionary { return @{}; }
+- (id<MTLArgumentEncoder>)newArgumentEncoderWithBufferIndex:(NSUInteger)index
+{ (void)index; return nil; }
+- (id<MTLArgumentEncoder>)newArgumentEncoderWithBufferIndex:(NSUInteger)index reflection:(id *)reflection
+{ (void)index; if(reflection)*reflection=nil; return nil; }
+- (NSString *)filePath { return nil; }
+- (NSString *)unpackedFilePath { return nil; }
+- (NSInteger)lineNumber { return 0; }
+- (NSUInteger)renderTargetArrayIndexType { return MTLDataTypeNone; }
+- (id)returnType { return nil; }
+- (NSArray *)arguments { return nil; }
+- (NSArray *)bindings { return nil; }
+- (NSArray *)importedSymbols { return @[]; }
+- (NSArray *)importedLibraries { return @[]; }
+- (id)debugInstrumentationData { return nil; }
+- (id)functionHandle { return nil; } // visible/intersection function tables unavailable
+- (NSArray *)relocations { return @[]; }
+- (void)setRelocations:(NSArray *)relocations
+{
+    if(relocations.count)[NSException raise:NSInvalidArgumentException
+        format:@"function relocation is unsupported by authenticated native profiles"];
+}
+- (NSData *)bitcodeData { return nil; }
+- (const void *)bitCodeHash { return NULL; }
+- (id)newFunctionWithPluginData:(id)data bitcodeType:(unsigned char)type
+{ (void)data;(void)type;return nil; }
+- (id)reflectionWithOptions:(NSUInteger)options { (void)options;return nil; }
+- (id)reflectionWithOptions:(NSUInteger)options binaryArchives:(id)archives
+{ (void)options;(void)archives;return nil; }
+- (id)reflectionWithOptions:(NSUInteger)options pipelineLibrary:(id)library
+{ (void)options;(void)library;return nil; }
+- (void)reflectionWithOptions:(NSUInteger)options completionHandler:(void (^)(id))handler
+{
+    (void)options;
+    if(handler)dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        handler(nil);
+    });
+}
+- (id)newArgumentEncoderWithBufferIndex:(NSUInteger)index reflection:(id *)reflection binaryArchives:(id)archives
+{ (void)index;(void)archives;if(reflection)*reflection=nil;return nil; }
+- (id)newArgumentEncoderWithBufferIndex:(NSUInteger)index reflection:(id *)reflection pipelineLibrary:(id)library
+{ (void)index;(void)library;if(reflection)*reflection=nil;return nil; }
+- (id)newArgumentEncoderWithBufferIndex:(NSUInteger)index pipelineLibrary:(id)library
+{ (void)index;(void)library;return nil; }
 @end
 
 static NSString *compiledDescriptorMismatch(const A5MaliCompiledProfile *p,

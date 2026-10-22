@@ -7,6 +7,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <math.h>
+#include <unistd.h>
 
 enum { CreateBuffer = 8, ReleaseBuffer = 9, WriteBuffer = 14,
        ReadBuffer = 15, TransferMax = 256 };
@@ -31,6 +32,9 @@ _Static_assert(sizeof(TransferRequest) == 288 && sizeof(ReadReply) == 280,
 @interface A5MaliDevice (ResourcePrivateClient)
 - (A5MaliClient *)client;
 - (NSLock *)lock;
+@end
+@interface A5MaliSurface (ResourceAliasIdentity)
+- (A5MaliResource)resource;
 @end
 
 @interface A5MaliResourceAccounting : NSObject
@@ -68,9 +72,46 @@ static A5MaliHeader wireHeader(NSUInteger size)
 static BOOL validHeader(A5MaliHeader h, NSUInteger expected, NSUInteger actual)
 { return expected == actual && h.version == A5MaliProtocolVersion &&
     h.size == expected && !h.reserved0 && !h.reserved1; }
+typedef struct { unsigned kind;id __unsafe_unretained owner;uint64_t identity,offset,bytes; } AliasSpan;
+static AliasSpan resourceSpan(id value)
+{
+    if([value isKindOfClass:A5MaliPrivateBuffer.class]){
+        A5MaliPrivateBuffer *b=value;void *p=b.contents;
+        if(p)return (AliasSpan){1,nil,0,(uint64_t)(uintptr_t)p,b.length};
+        if(b.privateKernelHandle)return (AliasSpan){2,b.device,b.privateKernelHandle,0,b.length};
+    }else if([value isKindOfClass:A5MaliMetalTexture.class]){
+        A5MaliMetalTexture *t=value;A5MaliTextureLevelLayout first={0},last={0};
+        if(!t.mipmapLevelCount||![t getLevelLayout:&first level:0]||
+            ![t getLevelLayout:&last level:t.mipmapLevelCount-1]||last.byteOffset<first.byteOffset)return (AliasSpan){0};
+        uint64_t bytes=(uint64_t)last.byteOffset+last.byteLength-first.byteOffset;
+        if(t.buffer){AliasSpan span=resourceSpan(t.buffer);span.offset+=first.byteOffset;span.bytes=bytes;return span;}
+        A5MaliSurface *surface=t.privateSurface;
+        if(surface.iosurface)return (AliasSpan){3,nil,IOSurfaceGetID(surface.iosurface),first.byteOffset,bytes};
+        if(surface.resource.token)return (AliasSpan){4,t.device,surface.resource.token,first.byteOffset,bytes};
+    }
+    return (AliasSpan){0};
+}
+BOOL A5MaliResourcesAlias(id a,id b)
+{
+    BOOL left=[a isKindOfClass:A5MaliPrivateBuffer.class]||[a isKindOfClass:A5MaliMetalTexture.class];
+    BOOL right=[b isKindOfClass:A5MaliPrivateBuffer.class]||[b isKindOfClass:A5MaliMetalTexture.class];
+    if(!left||!right)return NO;if(a==b)return YES;
+    AliasSpan x=resourceSpan(a),y=resourceSpan(b);
+    if(!x.kind||x.kind!=y.kind||x.owner!=y.owner||x.identity!=y.identity||!x.bytes||!y.bytes||
+        x.offset>UINT64_MAX-x.bytes||y.offset>UINT64_MAX-y.bytes)return NO;
+    return x.offset<y.offset+y.bytes&&y.offset<x.offset+x.bytes;
+}
 static BOOL hasSelector(A5MaliClient *client, uint32_t selector)
 { return client && client->call &&
     (client->supportedOperations & (1U << (selector - 1))) != 0; }
+static void logBufferPurge(MTLStorageMode storage,BOOL external,MTLPurgeableState requested,
+    MTLPurgeableState prior,MTLPurgeableState actual,kern_return_t status)
+{
+    static atomic_uint count;unsigned n=atomic_load_explicit(&count,memory_order_relaxed);
+    do{if(n>=64)return;}while(!atomic_compare_exchange_weak_explicit(&count,&n,n+1,memory_order_relaxed,memory_order_relaxed));
+    fprintf(stderr,"A5XELTE Metal buffer purge: storage=%lu external=%u requested=%lu prior=%lu actual=%lu result=%x\n",
+        (unsigned long)storage,external,(unsigned long)requested,(unsigned long)prior,(unsigned long)actual,status);
+}
 static kern_return_t call(A5MaliDevice *device, uint32_t selector,
     const void *input, size_t inputSize, void *output, size_t *outputSize)
 {
@@ -107,9 +148,10 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     A5MaliDevice *_privateDevice;
     A5MaliResourceAccounting *_accounting;
     NSUInteger _length, _allocatedSize;
-    uint64_t _handle;
+    atomic_uint_fast64_t _handle;
     NSLock *_transferLock;
     atomic_bool _readyForRead;
+    atomic_uint _purgeState;
 }
 - (nullable instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
     length:(NSUInteger)length options:(MTLResourceOptions)options;
@@ -150,6 +192,7 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     _allocatedSize = size.size;
     _transferLock = [NSLock new];
     _readyForRead = YES;
+    _purgeState=MTLPurgeableStateNonVolatile;
     _accounting = accounting(device);
     @synchronized (_accounting) { _accounting.bytes += size.size; }
     return self;
@@ -167,7 +210,7 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 }
 - (A5MaliRestrictedDevice *)device { return _device; }
 - (NSUInteger)length { return _length; }
-- (NSUInteger)allocatedSize { return _allocatedSize; }
+- (NSUInteger)allocatedSize { return _handle?_allocatedSize:0; }
 - (MTLStorageMode)storageMode { return MTLStorageModePrivate; }
 - (MTLCPUCacheMode)cpuCacheMode { return MTLCPUCacheModeDefaultCache; }
 - (MTLHazardTrackingMode)hazardTrackingMode { return MTLHazardTrackingModeDefault; }
@@ -177,7 +220,90 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 {
     /* A command owns the device lock while checking this flag. Taking the
      * transfer lock here would invert upload's transfer -> device lock order. */
-    return _handle && atomic_load_explicit(&_readyForRead,memory_order_acquire);
+    return _handle && atomic_load_explicit(&_readyForRead,memory_order_acquire) &&
+        atomic_load_explicit(&_purgeState,memory_order_acquire)==MTLPurgeableStateNonVolatile;
+}
+- (id<MTLHeap>)heap{return nil;}
+- (NSUInteger)heapOffset{return 0;}
+- (BOOL)isAliasable{return NO;}
+- (void)makeAliasable
+{[NSException raise:NSInvalidArgumentException format:@"makeAliasable requires a heap-backed resource"];}
+- (MTLGPUAddress)gpuAddress{return 0;}
+- (uint64_t)allocationID{return 0;}
+- (uint64_t)protectionOptions{return 0;}
+- (uint64_t)unfilteredResourceOptions{return self.resourceOptions;}
+- (int)responsibleProcess
+{ @synchronized(self){NSNumber *hint=objc_getAssociatedObject(self,@selector(responsibleProcess));return hint?hint.intValue:getpid();} }
+- (void)setResponsibleProcess:(int)process
+{
+    if(process<0)[NSException raise:NSInvalidArgumentException format:@"negative responsible process hint"];
+    @synchronized(self){objc_setAssociatedObject(self,@selector(responsibleProcess),@(process),OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+}
+- (kern_return_t)setOwnerWithIdentity:(uint32_t)identity
+{(void)identity;return kIOReturnUnsupported;}
+- (BOOL)isPurgeable{return [self setPurgeableState:MTLPurgeableStateKeepCurrent]!=MTLPurgeableStateNonVolatile;}
+- (BOOL)isComplete{return NO;}
+- (void)waitUntilComplete
+{[NSException raise:NSInternalInconsistencyException format:@"resource-specific GPU completion tracking is unsupported; wait on the command buffer"] ;}
+- (BOOL)doesAliasResource:(id)resource{return A5MaliResourcesAlias(self,resource);}
+- (BOOL)doesAliasAnyResources:(id const __unsafe_unretained *)resources count:(NSUInteger)count
+{
+    if((count&&!resources)||count>4096)[NSException raise:NSInvalidArgumentException format:@"invalid resource alias array"];
+    for(NSUInteger i=0;i<count;++i)if(A5MaliResourcesAlias(self,resources[i]))return YES;return NO;
+}
+- (BOOL)doesAliasAllResources:(id const __unsafe_unretained *)resources count:(NSUInteger)count
+{
+    if((count&&!resources)||count>4096)[NSException raise:NSInvalidArgumentException format:@"invalid resource alias array"];
+    for(NSUInteger i=0;i<count;++i)if(!A5MaliResourcesAlias(self,resources[i]))return NO;return YES;
+}
+- (void)didModifyRange:(NSRange)range
+{(void)range;[NSException raise:NSInvalidArgumentException format:@"didModifyRange requires unsupported Managed storage"];}
+- (NSArray<NSDictionary *> *)debugMarkers
+{ @synchronized(self){return [objc_getAssociatedObject(self,@selector(debugMarkers)) copy]?:@[];} }
+- (void)addDebugMarker:(NSString *)marker range:(NSRange)range
+{
+    if(![marker isKindOfClass:NSString.class]||range.location>self.length||range.length>self.length-range.location)
+        [NSException raise:NSInvalidArgumentException format:@"buffer debug marker range invalid"];
+    @synchronized(self){
+        NSMutableArray *markers=[self.debugMarkers mutableCopy];
+        [markers addObject:@{@"marker":[marker copy],@"range":[NSValue valueWithRange:range]}];
+        objc_setAssociatedObject(self,@selector(debugMarkers),markers,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+- (void)removeAllDebugMarkers
+{ @synchronized(self){objc_setAssociatedObject(self,@selector(debugMarkers),nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);} }
+- (MTLPurgeableState)setPurgeableState:(MTLPurgeableState)state
+{
+    if(state<MTLPurgeableStateKeepCurrent||state>MTLPurgeableStateEmpty)
+        [NSException raise:NSInvalidArgumentException format:@"invalid buffer purgeable state"];
+    [_transferLock lock];
+    MTLPurgeableState prior=atomic_load_explicit(&_purgeState,memory_order_acquire);
+    kern_return_t status=KERN_SUCCESS;
+    if(state==MTLPurgeableStateEmpty&&_handle){
+        ReleaseRequest q={wireHeader(sizeof(q)),_handle};
+        status=call(_privateDevice,ReleaseBuffer,&q,sizeof(q),NULL,NULL);
+        if(!status){_handle=0;atomic_store_explicit(&_readyForRead,NO,memory_order_release);
+            @synchronized(_accounting){_accounting.bytes-=_allocatedSize;}}
+    }else if(state==MTLPurgeableStateNonVolatile&&prior==MTLPurgeableStateEmpty){
+        CreateRequest q={wireHeader(sizeof(q)),(uint32_t)_allocatedSize,A5MaliRead|A5MaliWrite};
+        CreateReply r={0};size_t size=sizeof(r);
+        status=call(_privateDevice,CreateBuffer,&q,sizeof(q),&r,&size);
+        uint32_t low=(uint32_t)r.handle;
+        if(!status&&(!validHeader(r.h,sizeof(r),size)||!(r.handle>>32)||low<0x101||low>=0x105||r.bytes!=q.bytes||r.usage!=q.usage)){
+            if(r.handle){ReleaseRequest release={wireHeader(sizeof(release)),r.handle};
+                call(_privateDevice,ReleaseBuffer,&release,sizeof(release),NULL,NULL);}
+            status=kIOReturnBadArgument;
+        }
+        if(!status){_handle=r.handle;atomic_store_explicit(&_readyForRead,YES,memory_order_release);
+            @synchronized(_accounting){_accounting.bytes+=_allocatedSize;}}
+    }
+    if(!status&&state!=MTLPurgeableStateKeepCurrent)
+        atomic_store_explicit(&_purgeState,(unsigned)(prior==MTLPurgeableStateEmpty&&state==MTLPurgeableStateVolatile?
+            MTLPurgeableStateEmpty:state),memory_order_release);
+    [_transferLock unlock];
+    logBufferPurge(MTLStorageModePrivate,NO,state,prior,atomic_load_explicit(&_purgeState,memory_order_acquire),status);
+    if(status)[NSException raise:NSInternalInconsistencyException format:@"kernel buffer purge transition failed: %x",status];
+    return prior;
 }
 - (void *)contents { return NULL; }
 - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
@@ -194,6 +320,8 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     if (!bytes || !length || offset > _length || length > _length - offset)
         return kIOReturnBadArgument;
     [_transferLock lock];
+    if(atomic_load_explicit(&_purgeState,memory_order_acquire)!=MTLPurgeableStateNonVolatile){
+        [_transferLock unlock];return kIOReturnNotReady;}
     BOOL wasReady=atomic_load_explicit(&_readyForRead,memory_order_acquire);
     if(write)atomic_store_explicit(&_readyForRead,NO,memory_order_release);
     kern_return_t result = KERN_SUCCESS;
@@ -271,6 +399,7 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     NSUInteger _sharedLength, _sharedAllocation;
     BOOL _sharedExternal;
     void (^_sharedDeallocator)(void *,NSUInteger);
+    atomic_uint _sharedPurgeState;
 }
 - (instancetype)initSharedWithDevice:(A5MaliRestrictedDevice *)device length:(NSUInteger)length
 {
@@ -290,6 +419,7 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     _sharedDevice = device; _sharedAccounting = state;
     _sharedLength = length; _sharedAllocation = allocation;
     _sharedLock = [NSLock new];
+    _sharedPurgeState=MTLPurgeableStateNonVolatile;
     return self;
 }
 - (instancetype)initNoCopyWithDevice:(A5MaliRestrictedDevice *)device
@@ -312,6 +442,7 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     _sharedDevice=device;_sharedAccounting=state;_sharedLock=lock;
     _sharedLength=length;_sharedAllocation=length;_sharedExternal=YES;
     _sharedDeallocator=releaseBytes;_sharedContents=bytes;
+    _sharedPurgeState=MTLPurgeableStateNonVolatile;
     return self;
 }
 - (void)dealloc
@@ -329,18 +460,50 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 }
 - (A5MaliRestrictedDevice *)device { return _sharedDevice; }
 - (NSUInteger)length { return _sharedLength; }
-- (NSUInteger)allocatedSize { return _sharedAllocation; }
+- (NSUInteger)allocatedSize { [_sharedLock lock];NSUInteger bytes=_sharedAllocation;[_sharedLock unlock];return bytes; }
 - (MTLStorageMode)storageMode { return MTLStorageModeShared; }
 - (MTLResourceOptions)resourceOptions { return MTLResourceStorageModeShared; }
 - (uint64_t)privateKernelHandle { return 0; }
-- (BOOL)readyForRead { return _sharedContents != NULL; }
-- (void *)contents { return _sharedContents; }
+- (BOOL)readyForRead { return atomic_load_explicit(&_sharedPurgeState,memory_order_acquire)==MTLPurgeableStateNonVolatile; }
+- (void *)contents { [_sharedLock lock];void *p=_sharedContents;[_sharedLock unlock];return p; }
+- (MTLPurgeableState)setPurgeableState:(MTLPurgeableState)state
+{
+    if(state<MTLPurgeableStateKeepCurrent||state>MTLPurgeableStateEmpty)
+        [NSException raise:NSInvalidArgumentException format:@"invalid Shared buffer purgeable state"];
+    [_sharedLock lock];MTLPurgeableState prior=atomic_load_explicit(&_sharedPurgeState,memory_order_acquire);
+    BOOL failed=NO;
+    if(state==MTLPurgeableStateEmpty&&prior!=MTLPurgeableStateEmpty&&!_sharedExternal){
+        free(_sharedContents);_sharedContents=NULL;
+        @synchronized(_sharedAccounting){_sharedAccounting.sharedBytes-=_sharedAllocation;}
+        _sharedAllocation=0;
+    }else if(state==MTLPurgeableStateNonVolatile&&prior==MTLPurgeableStateEmpty&&!_sharedExternal){
+        NSUInteger allocation=(_sharedLength+4095)&~(NSUInteger)4095;void *p=NULL;
+        @synchronized(_sharedAccounting){
+            if(_sharedAccounting.sharedBytes>64*1024*1024-allocation||posix_memalign(&p,4096,allocation))failed=YES;
+            else {_sharedAccounting.sharedBytes+=allocation;memset(p,0,allocation);}
+        }
+        if(!failed){_sharedContents=p;_sharedAllocation=allocation;}
+    }
+    /* No-copy pages remain owned by their caller. Empty invalidates their
+     * resource contents/readability, but never releases pages or invokes the
+     * ownership callback ahead of the last buffer/view/command reference. */
+    if(!failed&&state!=MTLPurgeableStateKeepCurrent)
+        atomic_store_explicit(&_sharedPurgeState,(unsigned)(prior==MTLPurgeableStateEmpty&&state==MTLPurgeableStateVolatile?
+            MTLPurgeableStateEmpty:state),memory_order_release);
+    [_sharedLock unlock];
+    logBufferPurge(MTLStorageModeShared,_sharedExternal,state,prior,
+        atomic_load_explicit(&_sharedPurgeState,memory_order_acquire),failed?kIOReturnNoMemory:KERN_SUCCESS);
+    if(failed)[NSException raise:NSMallocException format:@"Shared buffer restoration after purge failed"];
+    return prior;
+}
 - (kern_return_t)sharedTransfer:(void *)bytes offset:(NSUInteger)offset
     length:(NSUInteger)length write:(BOOL)write
 {
     if (!bytes || !length || offset > _sharedLength || length > _sharedLength - offset)
         return kIOReturnBadArgument;
     [_sharedLock lock];
+    if(atomic_load_explicit(&_sharedPurgeState,memory_order_acquire)!=MTLPurgeableStateNonVolatile){
+        [_sharedLock unlock];return kIOReturnNotReady;}
     if (write) memcpy((uint8_t *)_sharedContents + offset, bytes, length);
     else memcpy(bytes, (uint8_t *)_sharedContents + offset, length);
     [_sharedLock unlock];
@@ -437,6 +600,8 @@ static NSError *bindingError(kern_return_t status, NSString *message)
 - (A5MaliRestrictedDevice *)device { return _device; }
 - (NSString *)label { return _descriptor.label; }
 - (MTLSamplerDescriptor *)descriptor { return [_descriptor copy]; }
+- (MTLResourceID)gpuResourceID { return (MTLResourceID){0}; }
+- (MTLPixelFormat)pixelFormat { return MTLPixelFormatInvalid; }
 @end
 @interface A5MaliDepthStencilState ()
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device descriptor:(MTLDepthStencilDescriptor *)descriptor;
@@ -450,6 +615,27 @@ static NSError *bindingError(kern_return_t status, NSString *message)
 - (A5MaliRestrictedDevice *)device { return _device; }
 - (NSString *)label { return _descriptor.label; }
 - (MTLDepthStencilDescriptor *)descriptor { return [_descriptor copy]; }
+- (BOOL)readsDepth {return _descriptor.depthCompareFunction!=MTLCompareFunctionAlways&&_descriptor.depthCompareFunction!=MTLCompareFunctionNever;}
+- (BOOL)writesDepth {return _descriptor.depthWriteEnabled;}
+- (BOOL)writesStencil
+{
+    MTLStencilDescriptor *faces[]={_descriptor.frontFaceStencil,_descriptor.backFaceStencil};
+    for(unsigned i=0;i<2;++i){MTLStencilDescriptor *s=faces[i];
+        if(s&&s.writeMask&&(s.stencilFailureOperation!=MTLStencilOperationKeep||
+            s.depthFailureOperation!=MTLStencilOperationKeep||s.depthStencilPassOperation!=MTLStencilOperationKeep))return YES;
+    }return NO;
+}
+- (BOOL)readsStencil
+{
+    MTLStencilDescriptor *faces[]={_descriptor.frontFaceStencil,_descriptor.backFaceStencil};
+    for(unsigned f=0;f<2;++f){MTLStencilDescriptor *s=faces[f];if(!s)continue;
+        if(s.readMask&&s.stencilCompareFunction!=MTLCompareFunctionAlways&&s.stencilCompareFunction!=MTLCompareFunctionNever)return YES;
+        MTLStencilOperation ops[]={s.stencilFailureOperation,s.depthFailureOperation,s.depthStencilPassOperation};
+        for(unsigned i=0;i<3;++i)if(s.writeMask&&ops[i]!=MTLStencilOperationKeep&&
+            (s.writeMask!=UINT32_MAX||(ops[i]!=MTLStencilOperationZero&&ops[i]!=MTLStencilOperationReplace)))return YES;
+    }
+    return NO;
+}
 @end
 
 static const char *samplerRejectionReason(MTLSamplerDescriptor *d)

@@ -240,11 +240,13 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     NSMutableArray<MTLCommandBufferHandler> *_scheduled;
     NSMutableArray<MTLCommandBufferHandler> *_completed;
     NSMutableArray<A5MaliTexturePassBacking *> *_memorylessPassBackings;
+    NSMutableArray<NSString *> *_debugGroups;
 }
 - (instancetype)initWithQueue:(A5MaliMetalQueue *)queue
                 privateBuffer:(A5MaliCommandBuffer *)buffer;
 - (A5MaliCommandBuffer *)privateBuffer;
 - (void)markEncodingError:(kern_return_t)code selector:(SEL)selector;
+- (void)rejectUnsupportedCommand:(SEL)selector;
 - (unsigned)diagnosticID;
 - (void)noteDrawCall;
 - (void)noteQueuedDraw;
@@ -286,6 +288,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     indexBinding:(nullable A5MaliBufferBinding *)indexBinding indexCount:(NSUInteger)indexCount
     indexSize:(NSUInteger)indexSize;
 - (BOOL)validateActiveForSelector:(SEL)selector;
+- (void)rejectUnsupportedSelector:(SEL)selector;
 - (void)setBoundBuffer:(nullable A5MaliPrivateBuffer *)buffer offset:(NSUInteger)offset
     index:(NSUInteger)index vertex:(BOOL)vertex selector:(SEL)selector;
 - (void)setBoundBytes:(const void * _Nullable)bytes length:(NSUInteger)length
@@ -376,6 +379,30 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     return self;
 }
 - (A5MaliRestrictedDevice *)device { return _device; }
+- (NSUInteger)maxTotalThreadsPerThreadgroup { return 0; }
+- (BOOL)threadgroupSizeMatchesTileSize { return NO; }
+- (NSUInteger)imageblockSampleLength { return 0; }
+- (NSUInteger)imageblockMemoryLengthForDimensions:(MTLSize)dimensions
+{ (void)dimensions; return 0; }
+- (BOOL)supportIndirectCommandBuffers { return NO; }
+- (NSUInteger)maxTotalThreadsPerObjectThreadgroup { return 0; }
+- (NSUInteger)maxTotalThreadsPerMeshThreadgroup { return 0; }
+- (NSUInteger)objectThreadExecutionWidth { return 0; }
+- (NSUInteger)meshThreadExecutionWidth { return 0; }
+- (NSUInteger)maxTotalThreadgroupsPerMeshGrid { return 0; }
+- (MTLResourceID)gpuResourceID { return (MTLResourceID){0}; }
+- (id<MTLFunctionHandle>)functionHandleWithFunction:(id<MTLFunction>)function stage:(MTLRenderStages)stage
+{ (void)function; (void)stage; return nil; }
+- (id<MTLVisibleFunctionTable>)newVisibleFunctionTableWithDescriptor:(MTLVisibleFunctionTableDescriptor *)descriptor stage:(MTLRenderStages)stage
+{ (void)descriptor; (void)stage; return nil; }
+- (id<MTLIntersectionFunctionTable>)newIntersectionFunctionTableWithDescriptor:(MTLIntersectionFunctionTableDescriptor *)descriptor stage:(MTLRenderStages)stage
+{ (void)descriptor; (void)stage; return nil; }
+- (id<MTLRenderPipelineState>)newRenderPipelineStateWithAdditionalBinaryFunctions:(MTLRenderPipelineFunctionsDescriptor *)functions error:(NSError **)error
+{
+    (void)functions;
+    if(error)*error=metalError(kIOReturnUnsupported);
+    return nil;
+}
 @end
 
 @implementation A5MaliMetalQueue
@@ -452,11 +479,30 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     logQueuePhase("commandBuffer",buffer.diagnosticID,buffer!=nil,&bufferCreationDiagnosticCount,64);
     return buffer;
 }
+- (A5MaliMetalBuffer *)commandBufferWithDescriptor:(MTLCommandBufferDescriptor *)descriptor
+{
+    /* The native queue retains mapped resources to its terminal fence and
+     * has neither encoder-execution-status reports nor shader-log storage. */
+    if (![descriptor isKindOfClass:[MTLCommandBufferDescriptor class]] ||
+        !descriptor.retainedReferences || descriptor.errorOptions)
+        return nil;
+    if (@available(iOS 18.0, *)) {
+        if (descriptor.logState) return nil;
+    }
+    return [self commandBuffer];
+}
 - (A5MaliMetalBuffer *)commandBufferWithUnretainedReferences
 {
     /* This adapter always retains imported IOSurfaces through completion. */
     logQueuePhase("commandBufferWithUnretainedReferences-unsupported",0,NO,&unretainedDiagnosticCount,32);
     return nil;
+}
+
+- (void)insertDebugCaptureBoundary
+{
+    /* A capture boundary is an advisory debug marker. There is no capture
+     * stream to split in this provider, so report that fact once per budget. */
+    logQueuePhase("capture-boundary-unavailable",0,NO,&unretainedDiagnosticCount,32);
 }
 
 @end
@@ -473,6 +519,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         _scheduled = [NSMutableArray new];
         _completed = [NSMutableArray new];
         _memorylessPassBackings = [NSMutableArray new];
+        _debugGroups = [NSMutableArray new];
         _condition = [NSCondition new];
         _status = MTLCommandBufferStatusNotEnqueued;
     }
@@ -497,6 +544,9 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     return error;
 }
 - (BOOL)retainedReferences { return YES; }
+- (MTLCommandBufferErrorOption)errorOptions { return MTLCommandBufferErrorOptionNone; }
+- (id<MTLLogContainer>)logs { return nil; }
+- (NSArray<NSString *> *)debugSignposts { return @[]; }
 /* Stock Metal's protection setter emits a kernel protection command. This
  * driver has no protected allocations or protected submission mode: accepting
  * a nonzero request would misrepresent the isolation of its resources. Keep
@@ -532,7 +582,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 - (void)markEncodingError:(kern_return_t)code selector:(SEL)selector
 {
     [_condition lock];
-    BOOL first=!_error;
+    BOOL first=!_error && _status<MTLCommandBufferStatusCommitted;
     if (first) _error = metalError(code);
     [_condition unlock];
     if(first&&diagnosticTake(&encoderDiagnosticCount,64))fprintf(stderr,
@@ -540,6 +590,14 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         _diagnosticID,(unsigned)code,sel_getName(selector));
 }
 - (void)finishEncoding { _encoderOpen = NO; }
+
+- (void)rejectUnsupportedCommand:(SEL)selector
+{
+    [_condition lock];
+    BOOL committed = _status >= MTLCommandBufferStatusCommitted;
+    [_condition unlock];
+    if (!committed) [self markEncodingError:kIOReturnUnsupported selector:selector];
+}
 
 - (A5MaliMetalBlitEncoder *)blitCommandEncoder
 {
@@ -550,6 +608,68 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     _encoderOpen = YES;
     ++_blitEncoders;
     return [[A5MaliMetalBlitEncoder alloc] initWithBuffer:self];
+}
+
+- (A5MaliMetalBlitEncoder *)blitCommandEncoderWithDescriptor:(MTLBlitPassDescriptor *)descriptor
+{
+    if (![descriptor isKindOfClass:[MTLBlitPassDescriptor class]]) {
+        [self markEncodingError:kIOReturnBadArgument selector:_cmd];
+        return nil;
+    }
+    /* There is no GPU counter sampling path.  The four Metal blit-pass
+     * attachment slots must all be empty before creating a normal blit. */
+    for (NSUInteger i=0; i<4; ++i) {
+        if (descriptor.sampleBufferAttachments[i].sampleBuffer) {
+            [self rejectUnsupportedCommand:_cmd];
+            return nil;
+        }
+    }
+    return [self blitCommandEncoder];
+}
+
+- (id<MTLComputeCommandEncoder>)computeCommandEncoder
+{ [self rejectUnsupportedCommand:_cmd]; return nil; }
+- (id<MTLComputeCommandEncoder>)computeCommandEncoderWithDescriptor:(MTLComputePassDescriptor *)descriptor
+{ (void)descriptor; [self rejectUnsupportedCommand:_cmd]; return nil; }
+- (id<MTLComputeCommandEncoder>)computeCommandEncoderWithDispatchType:(MTLDispatchType)dispatchType
+{ (void)dispatchType; [self rejectUnsupportedCommand:_cmd]; return nil; }
+- (id<MTLParallelRenderCommandEncoder>)parallelRenderCommandEncoderWithDescriptor:(MTLRenderPassDescriptor *)descriptor
+{ (void)descriptor; [self rejectUnsupportedCommand:_cmd]; return nil; }
+- (id<MTLResourceStateCommandEncoder>)resourceStateCommandEncoder
+{ [self rejectUnsupportedCommand:_cmd]; return nil; }
+- (id<MTLResourceStateCommandEncoder>)resourceStateCommandEncoderWithDescriptor:(MTLResourceStatePassDescriptor *)descriptor
+{ (void)descriptor; [self rejectUnsupportedCommand:_cmd]; return nil; }
+- (id<MTLAccelerationStructureCommandEncoder>)accelerationStructureCommandEncoder
+{ [self rejectUnsupportedCommand:_cmd]; return nil; }
+- (id<MTLAccelerationStructureCommandEncoder>)accelerationStructureCommandEncoderWithDescriptor:(MTLAccelerationStructurePassDescriptor *)descriptor
+{ (void)descriptor; [self rejectUnsupportedCommand:_cmd]; return nil; }
+- (void)presentDrawable:(id<MTLDrawable>)drawable
+{ (void)drawable; [self rejectUnsupportedCommand:_cmd]; }
+- (void)presentDrawable:(id<MTLDrawable>)drawable atTime:(CFTimeInterval)time
+{ (void)drawable; (void)time; [self rejectUnsupportedCommand:_cmd]; }
+- (void)presentDrawable:(id<MTLDrawable>)drawable afterMinimumDuration:(CFTimeInterval)duration
+{ (void)drawable; (void)duration; [self rejectUnsupportedCommand:_cmd]; }
+- (void)encodeWaitForEvent:(id<MTLEvent>)event value:(uint64_t)value
+{ (void)event; (void)value; [self rejectUnsupportedCommand:_cmd]; }
+- (void)encodeSignalEvent:(id<MTLEvent>)event value:(uint64_t)value
+{ (void)event; (void)value; [self rejectUnsupportedCommand:_cmd]; }
+- (void)pushDebugGroup:(NSString *)string
+{
+    if (self.status >= MTLCommandBufferStatusCommitted) return;
+    if (![string isKindOfClass:[NSString class]]) {
+        [self markEncodingError:kIOReturnBadArgument selector:_cmd];
+        return;
+    }
+    [_debugGroups addObject:[string copy]];
+}
+- (void)popDebugGroup
+{
+    if (self.status >= MTLCommandBufferStatusCommitted) return;
+    if (!_debugGroups.count) {
+        [self markEncodingError:kIOReturnBadArgument selector:_cmd];
+        return;
+    }
+    [_debugGroups removeLastObject];
 }
 
 - (A5MaliMetalRenderEncoder *)renderCommandEncoderWithDescriptor:
@@ -800,6 +920,11 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         [_buffer markEncodingError:kIOReturnNotReady selector:selector];return NO;
     }
     return YES;
+}
+- (void)rejectUnsupportedSelector:(SEL)selector
+{
+    if ([self validateActiveForSelector:selector])
+        [_buffer markEncodingError:kIOReturnUnsupported selector:selector];
 }
 - (void)insertDebugSignpost:(NSString *)string
 { if([self validateActiveForSelector:_cmd] && ![string isKindOfClass:[NSString class]])[_buffer markEncodingError:kIOReturnBadArgument selector:_cmd]; }
@@ -1460,6 +1585,215 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         indexBuffer:indexBuffer indexBufferOffset:offset];
 }
 
+/* iOS 16 Metal render selectors absent from the narrow Midgard path.
+ * Each entry has the SDK argument ABI and fails the command buffer before
+ * submission, so callers never mistake an ignored request for GPU work. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+- (void)dispatchThreadsPerTile:(MTLSize)threadsPerTile
+{ [self rejectUnsupportedSelector:_cmd]; }
+-(void)drawIndexedPatches:(NSUInteger)numberOfPatchControlPoints patchIndexBuffer:(nullable id <MTLBuffer>)patchIndexBuffer patchIndexBufferOffset:(NSUInteger)patchIndexBufferOffset controlPointIndexBuffer:(id <MTLBuffer>)controlPointIndexBuffer controlPointIndexBufferOffset:(NSUInteger)controlPointIndexBufferOffset indirectBuffer:(id <MTLBuffer>)indirectBuffer indirectBufferOffset:(NSUInteger)indirectBufferOffset
+{ [self rejectUnsupportedSelector:_cmd]; }
+-(void)drawIndexedPatches:(NSUInteger)numberOfPatchControlPoints patchStart:(NSUInteger)patchStart patchCount:(NSUInteger)patchCount patchIndexBuffer:(nullable id <MTLBuffer>)patchIndexBuffer patchIndexBufferOffset:(NSUInteger)patchIndexBufferOffset controlPointIndexBuffer:(id <MTLBuffer>)controlPointIndexBuffer controlPointIndexBufferOffset:(NSUInteger)controlPointIndexBufferOffset instanceCount:(NSUInteger)instanceCount baseInstance:(NSUInteger)baseInstance
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)drawIndexedPrimitives:(MTLPrimitiveType)primitiveType indexType:(MTLIndexType)indexType indexBuffer:(id <MTLBuffer>)indexBuffer indexBufferOffset:(NSUInteger)indexBufferOffset indirectBuffer:(id <MTLBuffer>)indirectBuffer indirectBufferOffset:(NSUInteger)indirectBufferOffset
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)drawMeshThreadgroups:(MTLSize)threadgroupsPerGrid threadsPerObjectThreadgroup:(MTLSize)threadsPerObjectThreadgroup threadsPerMeshThreadgroup:(MTLSize)threadsPerMeshThreadgroup
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)drawMeshThreadgroupsWithIndirectBuffer:(id<MTLBuffer>)indirectBuffer indirectBufferOffset:(NSUInteger)indirectBufferOffset threadsPerObjectThreadgroup:(MTLSize)threadsPerObjectThreadgroup threadsPerMeshThreadgroup:(MTLSize)threadsPerMeshThreadgroup
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void) drawMeshThreads:(MTLSize)threadsPerGrid threadsPerObjectThreadgroup:(MTLSize)threadsPerObjectThreadgroup threadsPerMeshThreadgroup:(MTLSize)threadsPerMeshThreadgroup
+{ [self rejectUnsupportedSelector:_cmd]; }
+-(void)drawPatches:(NSUInteger)numberOfPatchControlPoints patchIndexBuffer:(nullable id <MTLBuffer>)patchIndexBuffer patchIndexBufferOffset:(NSUInteger)patchIndexBufferOffset indirectBuffer:(id <MTLBuffer>)indirectBuffer indirectBufferOffset:(NSUInteger)indirectBufferOffset
+{ [self rejectUnsupportedSelector:_cmd]; }
+-(void)drawPatches:(NSUInteger)numberOfPatchControlPoints patchStart:(NSUInteger)patchStart patchCount:(NSUInteger)patchCount patchIndexBuffer:(nullable id <MTLBuffer>)patchIndexBuffer patchIndexBufferOffset:(NSUInteger)patchIndexBufferOffset instanceCount:(NSUInteger)instanceCount baseInstance:(NSUInteger)baseInstance
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)drawPrimitives:(MTLPrimitiveType)primitiveType indirectBuffer:(id <MTLBuffer>)indirectBuffer indirectBufferOffset:(NSUInteger)indirectBufferOffset
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)drawPrimitives:(MTLPrimitiveType)primitiveType vertexStart:(NSUInteger)vertexStart vertexCount:(NSUInteger)vertexCount instanceCount:(NSUInteger)instanceCount baseInstance:(NSUInteger)baseInstance
+{
+    if (baseInstance) { [self rejectUnsupportedSelector:_cmd]; return; }
+    [self drawPrimitives:primitiveType vertexStart:vertexStart
+        vertexCount:vertexCount instanceCount:instanceCount];
+}
+- (void)executeCommandsInBuffer:(id<MTLIndirectCommandBuffer>)indirectCommandbuffer indirectBuffer:(id<MTLBuffer>)indirectRangeBuffer indirectBufferOffset:(NSUInteger)indirectBufferOffset
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)executeCommandsInBuffer:(id<MTLIndirectCommandBuffer>)indirectCommandBuffer withRange:(NSRange)executionRange
+{ [self rejectUnsupportedSelector:_cmd]; }
+-(void)memoryBarrierWithResources:(const id<MTLResource> __nonnull[__nonnull])resources count:(NSUInteger)count afterStages:(MTLRenderStages)after beforeStages:(MTLRenderStages)before
+{ [self rejectUnsupportedSelector:_cmd]; }
+-(void)memoryBarrierWithScope:(MTLBarrierScope)scope afterStages:(MTLRenderStages)after beforeStages:(MTLRenderStages)before
+{ [self rejectUnsupportedSelector:_cmd]; }
+-(void)sampleCountersInBuffer:(id<MTLCounterSampleBuffer>)sampleBuffer atSampleIndex:(NSUInteger)sampleIndex withBarrier:(BOOL)barrier
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setColorStoreAction:(MTLStoreAction)storeAction atIndex:(NSUInteger)colorAttachmentIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setColorStoreActionOptions:(MTLStoreActionOptions)storeActionOptions atIndex:(NSUInteger)colorAttachmentIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setDepthStoreAction:(MTLStoreAction)storeAction
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setDepthStoreActionOptions:(MTLStoreActionOptions)storeActionOptions
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setFragmentAccelerationStructure:(nullable id <MTLAccelerationStructure>)accelerationStructure atBufferIndex:(NSUInteger)bufferIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setFragmentIntersectionFunctionTable:(nullable id <MTLIntersectionFunctionTable>)intersectionFunctionTable atBufferIndex:(NSUInteger)bufferIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setFragmentIntersectionFunctionTables:(const id <MTLIntersectionFunctionTable> __nullable [__nonnull])intersectionFunctionTables withBufferRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setFragmentSamplerState:(nullable id <MTLSamplerState>)sampler lodMinClamp:(float)lodMinClamp lodMaxClamp:(float)lodMaxClamp atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setFragmentSamplerStates:(const id <MTLSamplerState> __nullable [__nonnull])samplers lodMinClamps:(const float [__nonnull])lodMinClamps lodMaxClamps:(const float [__nonnull])lodMaxClamps withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setFragmentVisibleFunctionTable:(nullable id <MTLVisibleFunctionTable>)functionTable atBufferIndex:(NSUInteger)bufferIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setFragmentVisibleFunctionTables:(const id <MTLVisibleFunctionTable> __nullable [__nonnull])functionTables withBufferRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setMeshBuffer:(nullable id <MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setMeshBufferOffset:(NSUInteger)offset atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setMeshBuffers:(const id <MTLBuffer> __nullable [__nonnull])buffers offsets:(const NSUInteger [__nonnull])offsets withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setMeshBytes:(const void *)bytes length:(NSUInteger)length atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setMeshSamplerState:(nullable id <MTLSamplerState>)sampler atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setMeshSamplerState:(nullable id <MTLSamplerState>)sampler lodMinClamp:(float)lodMinClamp lodMaxClamp:(float)lodMaxClamp atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setMeshSamplerStates:(const id <MTLSamplerState> __nullable [__nonnull])samplers lodMinClamps:(const float [__nonnull])lodMinClamps lodMaxClamps:(const float [__nonnull])lodMaxClamps withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setMeshSamplerStates:(const id <MTLSamplerState> __nullable [__nonnull])samplers withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setMeshTexture:(nullable id <MTLTexture>)texture atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setMeshTextures:(const id <MTLTexture> __nullable [__nonnull])textures withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectBuffer:(nullable id <MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectBufferOffset:(NSUInteger)offset atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectBuffers:(const id <MTLBuffer> __nullable [__nonnull])buffers offsets:(const NSUInteger [__nonnull])offsets withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectBytes:(const void *)bytes length:(NSUInteger)length atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectSamplerState:(nullable id <MTLSamplerState>)sampler atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectSamplerState:(nullable id <MTLSamplerState>)sampler lodMinClamp:(float)lodMinClamp lodMaxClamp:(float)lodMaxClamp atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectSamplerStates:(const id <MTLSamplerState> __nullable [__nonnull])samplers lodMinClamps:(const float [__nonnull])lodMinClamps lodMaxClamps:(const float [__nonnull])lodMaxClamps withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectSamplerStates:(const id <MTLSamplerState> __nullable [__nonnull])samplers withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectTexture:(nullable id <MTLTexture>)texture atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectTextures:(const id <MTLTexture> __nullable [__nonnull])textures withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setObjectThreadgroupMemoryLength:(NSUInteger)length atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setScissorRects:(const MTLScissorRect [__nonnull])scissorRects count:(NSUInteger)count
+{
+    if (!scissorRects || count!=1) { [self rejectUnsupportedSelector:_cmd]; return; }
+    [self setScissorRect:scissorRects[0]];
+}
+- (void)setStencilStoreAction:(MTLStoreAction)storeAction
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setStencilStoreActionOptions:(MTLStoreActionOptions)storeActionOptions
+{ [self rejectUnsupportedSelector:_cmd]; }
+-(void)setTessellationFactorBuffer:(nullable id <MTLBuffer>)buffer offset:(NSUInteger)offset instanceStride:(NSUInteger)instanceStride
+{ [self rejectUnsupportedSelector:_cmd]; }
+-(void)setTessellationFactorScale:(float)scale
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setThreadgroupMemoryLength:(NSUInteger)length offset:(NSUInteger)offset atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileAccelerationStructure:(nullable id <MTLAccelerationStructure>)accelerationStructure atBufferIndex:(NSUInteger)bufferIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileBuffer:(nullable id <MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileBufferOffset:(NSUInteger)offset atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileBuffers:(const id <MTLBuffer> __nullable [__nonnull])buffers offsets:(const NSUInteger [__nonnull])offsets withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileBytes:(const void *)bytes length:(NSUInteger)length atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileIntersectionFunctionTable:(nullable id <MTLIntersectionFunctionTable>)intersectionFunctionTable atBufferIndex:(NSUInteger)bufferIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileIntersectionFunctionTables:(const id <MTLIntersectionFunctionTable> __nullable [__nonnull])intersectionFunctionTables withBufferRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileSamplerState:(nullable id <MTLSamplerState>)sampler atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileSamplerState:(nullable id <MTLSamplerState>)sampler lodMinClamp:(float)lodMinClamp lodMaxClamp:(float)lodMaxClamp atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileSamplerStates:(const id <MTLSamplerState> __nullable [__nonnull])samplers lodMinClamps:(const float [__nonnull])lodMinClamps lodMaxClamps:(const float [__nonnull])lodMaxClamps withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileSamplerStates:(const id <MTLSamplerState> __nullable [__nonnull])samplers withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileTexture:(nullable id <MTLTexture>)texture atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileTextures:(const id <MTLTexture> __nullable [__nonnull])textures withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileVisibleFunctionTable:(nullable id <MTLVisibleFunctionTable>)functionTable atBufferIndex:(NSUInteger)bufferIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setTileVisibleFunctionTables:(const id <MTLVisibleFunctionTable> __nullable [__nonnull])functionTables withBufferRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexAccelerationStructure:(nullable id <MTLAccelerationStructure>)accelerationStructure atBufferIndex:(NSUInteger)bufferIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexAmplificationCount:(NSUInteger)count viewMappings:(nullable const MTLVertexAmplificationViewMapping *)viewMappings
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexIntersectionFunctionTable:(nullable id <MTLIntersectionFunctionTable>)intersectionFunctionTable atBufferIndex:(NSUInteger)bufferIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexIntersectionFunctionTables:(const id <MTLIntersectionFunctionTable> __nullable [__nonnull])intersectionFunctionTables withBufferRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexSamplerState:(nullable id <MTLSamplerState>)sampler atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexSamplerState:(nullable id <MTLSamplerState>)sampler lodMinClamp:(float)lodMinClamp lodMaxClamp:(float)lodMaxClamp atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexSamplerStates:(const id <MTLSamplerState> __nullable [__nonnull])samplers lodMinClamps:(const float [__nonnull])lodMinClamps lodMaxClamps:(const float [__nonnull])lodMaxClamps withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexSamplerStates:(const id <MTLSamplerState> __nullable [__nonnull])samplers withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexTexture:(nullable id <MTLTexture>)texture atIndex:(NSUInteger)index
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexTextures:(const id <MTLTexture> __nullable [__nonnull])textures withRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexVisibleFunctionTable:(nullable id <MTLVisibleFunctionTable>)functionTable atBufferIndex:(NSUInteger)bufferIndex
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setVertexVisibleFunctionTables:(const id <MTLVisibleFunctionTable> __nullable [__nonnull])functionTables withBufferRange:(NSRange)range
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)setViewports:(const MTLViewport [__nonnull])viewports count:(NSUInteger)count
+{
+    if (!viewports || count!=1) { [self rejectUnsupportedSelector:_cmd]; return; }
+    [self setViewport:viewports[0]];
+}
+- (void)updateFence:(id <MTLFence>)fence afterStages:(MTLRenderStages)stages
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)useHeap:(id <MTLHeap>)heap
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)useHeap:(id <MTLHeap>)heap stages:(MTLRenderStages)stages
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)useHeaps:(const id <MTLHeap> __nonnull[__nonnull])heaps count:(NSUInteger)count
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)useHeaps:(const id <MTLHeap> __nonnull[__nonnull])heaps count:(NSUInteger)count stages:(MTLRenderStages)stages
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)useResource:(id <MTLResource>)resource usage:(MTLResourceUsage)usage
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)useResource:(id <MTLResource>)resource usage:(MTLResourceUsage)usage stages:(MTLRenderStages) stages
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)useResources:(const id <MTLResource> __nonnull[__nonnull])resources count:(NSUInteger)count usage:(MTLResourceUsage)usage
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)useResources:(const id <MTLResource> __nonnull[__nonnull])resources count:(NSUInteger)count usage:(MTLResourceUsage)usage stages:(MTLRenderStages)stages
+{ [self rejectUnsupportedSelector:_cmd]; }
+- (void)waitForFence:(id <MTLFence>)fence beforeStages:(MTLRenderStages)stages
+{ [self rejectUnsupportedSelector:_cmd]; }
+#pragma clang diagnostic pop
+
+- (id)endEncodingAndRetrieveProgramAddressTable
+{
+    if (!_ended) [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];
+    [self endEncoding];
+    return nil;
+}
+
 - (void)endEncoding
 {
     if (_ended) return;
@@ -1740,6 +2074,13 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 - (void)resolveCounters:(id<MTLCounterSampleBuffer>)buffer inRange:(NSRange)range
     destinationBuffer:(id<MTLBuffer>)destination destinationOffset:(NSUInteger)offset
 { (void)buffer; (void)range; (void)destination; (void)offset; [self rejectUnsupportedOperationForSelector:_cmd]; }
+
+- (id)endEncodingAndRetrieveProgramAddressTable
+{
+    if (!_ended) [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];
+    [self endEncoding];
+    return nil;
+}
 
 - (void)endEncoding
 {
