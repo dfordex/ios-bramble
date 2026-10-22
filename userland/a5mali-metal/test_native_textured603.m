@@ -70,7 +70,7 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
  assert(bytes==sizeof(*q)+A5NativeJobBytes&&q->profileID==603&&q->mappingEpoch==107);
  assert(q->readSurfaces==3&&q->writeSurfaces==1&&!q->readBuffers);
  const uint8_t*j=(const uint8_t*)input+sizeof(*q);const A5MaliCompiledPass*p=s->profile->passes;
- assert(p->vertex.byteCount==2192&&p->fragment.byteCount==976);
+ assert(p->vertex.byteCount==2192&&p->fragment.byteCount==880);
  assert(!memcmp(j+0x6000,p->vertex.bytes,p->vertex.byteCount)&&!memcmp(j+0x8000,p->fragment.bytes,p->fragment.byteCount));
  assert(contains(j+0x20000,0x10000,s->vertices,sizeof(s->vertices)));
  assert(contains(j+0x20000,0x10000,s->matrix,sizeof(s->matrix)));
@@ -80,7 +80,7 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
   * includes actual logical level offset; row/surface strides remain physical. */
  assert(u32(j+0x600)==((16u-1)<<16|31u));
  assert(u64(j+0x620)==0x12000080&&u32(j+0x628)==256&&u32(j+0x62c)==4096);
- assert(u32(j+0x1400+352)==1&&u32(j+0x1400+356)==32&&u32(j+0x1400+360)==16);
+ assert(u32(j+0x1400+352)==0&&u32(j+0x1400+356)==0&&u32(j+0x1400+360)==0);
  assert(u64(j+0x680)==A5NativeJobVA+0x600);
  /* SAMPLER: normalized and minify/magnify fields checked independently. */
  uint32_t sampler=u32(j+0x6a0);assert((sampler&3)==(s->linear?0u:3u));assert(sampler&(1u<<5));assert(u32(j+0x6a4)==0);

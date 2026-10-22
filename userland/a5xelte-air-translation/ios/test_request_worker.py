@@ -64,6 +64,8 @@ def main():
         p.add_argument('--' + name, type=Path, required=True)
     p.add_argument('--vertex-capture', type=Path)
     p.add_argument('--other-known', type=Path, required=True)
+    p.add_argument('--stale-fragment', type=Path,
+                   help='old 976-byte pixel-coordinate profile 603 shader')
     a = p.parse_args()
     work = a.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -167,6 +169,57 @@ def main():
     finally:
         stop(service)
         output.close()
+    if a.stale_fragment is not None:
+        if known['profile_id'] != 603:
+            p.error('--stale-fragment requires profile 603')
+        old = a.stale_fragment.read_bytes()
+        if (len(old) != 976 or sha(old) !=
+                'b7ab26bc9a0da3ff4a5f87e73fe6aaab07680ae383a3fbdd9d8abc000387cd96'):
+            raise AssertionError('stale fragment is not the pinned old 603 program')
+        old_receipt = json.loads(result.joinpath('receipt.json').read_text())
+        old_receipt['fragment'].update(bytes=len(old), sha256=sha(old),
+                                       work_registers=6)
+        for name in ('receipt.json', 'fragment.midgard'):
+            result.joinpath(name).chmod(0o644)
+        result.joinpath('fragment.midgard').write_bytes(old)
+        result.joinpath('receipt.json').write_bytes(canonical(old_receipt))
+        for name in ('receipt.json', 'fragment.midgard'):
+            result.joinpath(name).chmod(0o444)
+        # A kill immediately after the atomic rename must leave the request
+        # name free. The subsequent worker must compile the new recipe while
+        # the quarantined old publication remains outside that name.
+        with (work / 'stale-interrupt.log').open('w') as log:
+            interrupted = subprocess.Popen([str(runner), '--serve'], stdout=log,
+                stderr=subprocess.STDOUT,
+                env=dict(os.environ, A5_TEST_STOP_AFTER_RENAME603='1'))
+            if interrupted.wait(timeout=20) != 57:
+                raise AssertionError('stale retirement interruption was not reached')
+        if result.exists():
+            raise AssertionError('atomic retirement left the request name occupied')
+        retired = list(published.glob('.retired603-*'))
+        if len(retired) != 1 or sha(retired[0].joinpath('fragment.midgard').read_bytes()) != sha(old):
+            raise AssertionError('interrupted retirement lost the old publication')
+        with (work / 'stale-upgrade.log').open('w') as log:
+            service = subprocess.Popen([str(runner), '--serve'], stdout=log,
+                                       stderr=subprocess.STDOUT)
+            try:
+                for _ in range(120):
+                    if service.poll() is not None:
+                        raise AssertionError('worker died while upgrading old 603 result')
+                    receipt_path = result / 'receipt.json'
+                    if receipt_path.exists():
+                        now = json.loads(receipt_path.read_text())
+                        if now['fragment']['sha256'] == known['midgard']['frag']['sha256']:
+                            break
+                    time.sleep(1)
+                else:
+                    raise AssertionError('old 603 publication was not recompiled')
+                if ('retired old pixel-UV 603 request=' not in
+                        (work / 'stale-interrupt.log').read_text()):
+                    raise AssertionError('worker did not explicitly retire old 603 shader')
+            finally:
+                stop(service)
+        assert sha(result.joinpath('fragment.midgard').read_bytes()) == known['midgard']['frag']['sha256']
     # Restart must reuse the existing trusted status directory and keep both
     # unsupported statuses terminal without re-running the compiled request.
     with (work / 'restart.log').open('w') as log:

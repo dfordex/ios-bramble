@@ -26,10 +26,11 @@ static const struct a5_resource_binding kfrag_bindings_603[] = {
    {4, nir_descriptor_type_storage_buffer}
 };
 static const struct a5_spec_value kvert_spec_603[] = {{1, 64}, {2, 16}};
-/* The runtime profile accepts only ClampToEdge S/T/R. Address S's shader
- * specialization is 1; the sampled image's dimensions remain a live UBO0
- * input at +356/+360 and cannot be guessed or omitted. */
-static const struct a5_spec_value kfrag_spec_603[] = {{0, 1}, {3, 168}, {4, 8}};
+/* SamplerState SpecId 0 reads bit 0 for pixel coordinates and bits 1/2 for
+ * min/mag linear filtering. The runtime profile accepts normalized UVs and
+ * nearest/linear filters; all four normalized words 0/2/4/6 compile to the
+ * same pinned Midgard program. Address modes are runtime sampler state. */
+static const struct a5_spec_value kfrag_spec_603[] = {{0, 0}, {3, 168}, {4, 8}};
 static const struct a5_texture_binding kfrag_textures_603[] = {{5, 0}};
 static const struct a5_stage_profile kStages[] = {
    {UINT64_C(0x8ba6ee280356bfe2), kvert_bindings, 1,

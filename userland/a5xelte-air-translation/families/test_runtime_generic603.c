@@ -25,10 +25,10 @@ static uint8_t*program(const char*path,size_t expected){
 }
 int main(int argc,char**argv){
  assert(argc==3);
- uint8_t*vs=program(argv[1],2192),*fs=program(argv[2],976);
+ uint8_t*vs=program(argv[1],2192),*fs=program(argv[2],880);
  A5MaliCompiledPass pass={603,0,
   {vs,2192,5,8,0,0,"e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96"},
-  {fs,976,5,6,0,0,"b7ab26bc9a0da3ff4a5f87e73fe6aaab07680ae383a3fbdd9d8abc000387cd96"}};
+  {fs,880,5,5,0,0,"e4cf4d31a87bde096cc7cc57a12818f79296e3998d22d9c6c5139a9887f30047"}};
  A5MaliCompiledResource resources[]={
   {1,1,2,0,1,1,0,64,0,0},{1,1,3,1,2,1,0,16,0,4},
   {2,1,2,3,4,1,0,8,0,68},{2,2,3,5,0,1,0,0,0,0},
@@ -82,14 +82,14 @@ int main(int argc,char**argv){
  assert(!memcmp(baseline,descriptor,sizeof(descriptor)));
  m.draw.profile=&p;
 #endif
- assert(!memcmp(descriptor+0x6000,vs,2192));assert(!memcmp(descriptor+0x8000,fs,976));
+ assert(!memcmp(descriptor+0x6000,vs,2192));assert(!memcmp(descriptor+0x8000,fs,880));
  pan_unpack((struct mali_renderer_state_packed*)(descriptor+0x500),RENDERER_STATE,vrs);
  pan_unpack((struct mali_renderer_state_packed*)(descriptor+0x540),RENDERER_STATE,frs);
  assert(vrs.shader.attribute_count==3&&vrs.shader.varying_count==4&&
         vrs.properties.uniform_buffer_count==3&&vrs.properties.work_register_count==8);
  assert(frs.shader.texture_count==1&&frs.shader.sampler_count==1&&
         frs.shader.varying_count==1&&frs.properties.uniform_buffer_count==5&&
-        frs.properties.work_register_count==6&&
+        frs.properties.work_register_count==5&&
         !frs.multisample_misc.load_destination);
  pan_unpack((struct mali_attribute_packed*)(descriptor+0x808),ATTRIBUTE,uv);
  pan_unpack((struct mali_attribute_packed*)(descriptor+0x810),ATTRIBUTE,color);
@@ -111,7 +111,7 @@ int main(int argc,char**argv){
  uint32_t w,h,rule;memcpy(&w,descriptor+0x1400+356,4);
  memcpy(&h,descriptor+0x1400+360,4);
  memcpy(&rule,descriptor+0x1400+72,4);
- assert(w==16&&h==16&&rule==0x2222);
+ assert(w==0&&h==0&&rule==0x2222);
  /* Both pipeline states use the identical genuine native programs. The
   * source-over variant preloads the framebuffer and uses the fixed RSD
   * equation for premultiplied source alpha, retaining the copy path. */
@@ -135,7 +135,7 @@ int main(int argc,char**argv){
         preload.dependency_1==1&&preload.next==m.draw.descriptorGPUVA+0x100&&
         tiler.index==3&&tiler.dependency_1==1&&tiler.dependency_2==2);
  assert(!memcmp(descriptor+0x6000,baseline+0x6000,2192)&&
-        !memcmp(descriptor+0x8000,baseline+0x8000,976));
+        !memcmp(descriptor+0x8000,baseline+0x8000,880));
  m.draw.blend=A5RuntimeBlendCopy;
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
  assert(!memcmp(descriptor,baseline,sizeof(descriptor)));

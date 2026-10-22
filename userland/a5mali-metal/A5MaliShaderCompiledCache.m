@@ -36,13 +36,13 @@ static const CacheContract contracts[]={
         "e66041333f6452510cda4d0ee1f1c1edf443a12007a989871a1546791deb0834",
         "d8b11a43b5075c7c8f179f6da7849edc5c5534f161590552da6b177007c8595f",
         "5e1fae69edcd5f51efdf3a4adbca80e9c7901844f942404208c0b2dc89bb7c7f"},
-    /* Fragment constants are0189-captured. The texcoord1 vertex is an exact
-     * host-compiled candidate, not yet a phone-observed vertex contract. The
-     * caller still must independently match both actual stage specializations
-     * and all pipeline state before these bytes can replace its known profile. */
-    {603,2192,976,8,6,"quartzcore-generic-603",
+    /* Both stage specializations were accepted on the phone. This corrected
+     * normalized-UV fragment is host-compiled; its device pixels still need
+     * verification. The caller independently matches the exact stage
+     * constants and full pipeline state before replacing profile 603. */
+    {603,2192,880,8,5,"quartzcore-generic-603",
         "e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96",
-        "b7ab26bc9a0da3ff4a5f87e73fe6aaab07680ae383a3fbdd9d8abc000387cd96",
+        "e4cf4d31a87bde096cc7cc57a12818f79296e3998d22d9c6c5139a9887f30047",
         "57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112",
         "1314cb292bea03fb85537fdebb3919e65b76db1e99f72b12f7fb1abcd7c8d50d"},
 };

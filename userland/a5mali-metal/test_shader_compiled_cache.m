@@ -23,9 +23,9 @@ static NSString *const vertexConstants=@"d8b11a43b5075c7c8f179f6da7849edc5c5534f
 static NSString *const fragmentConstants=@"5e1fae69edcd5f51efdf3a4adbca80e9c7901844f942404208c0b2dc89bb7c7f";
 static NSString *const otherConstants=@"57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112";
 #elif A5_CACHE_TEST_PROFILE == 603
-enum {testProfile=603,vertexLength=2192,fragmentLength=976,fragmentRegisters=6};
+enum {testProfile=603,vertexLength=2192,fragmentLength=880,fragmentRegisters=5};
 static NSString *const vs=@"e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96";
-static NSString *const fs=@"b7ab26bc9a0da3ff4a5f87e73fe6aaab07680ae383a3fbdd9d8abc000387cd96";
+static NSString *const fs=@"e4cf4d31a87bde096cc7cc57a12818f79296e3998d22d9c6c5139a9887f30047";
 static NSString *const vertexConstants=@"57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112";
 static NSString *const fragmentConstants=@"1314cb292bea03fb85537fdebb3919e65b76db1e99f72b12f7fb1abcd7c8d50d";
 static NSString *const otherConstants=@"d8b11a43b5075c7c8f179f6da7849edc5c5534f161590552da6b177007c8595f";

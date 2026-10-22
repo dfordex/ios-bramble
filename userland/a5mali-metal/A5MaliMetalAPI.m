@@ -46,7 +46,7 @@ static atomic_uint callbackDiagnosticCount,waitDiagnosticCount;
 static atomic_uint queueConfigDiagnosticCount;
 #if A5_MALI_NATIVE_RENDER
 static atomic_uint indexedDrawDiagnosticCount;
-static atomic_uint inputImageDiagnosticCount,inputVertexDiagnosticCount;
+static atomic_uint inputImageDiagnosticCount,inputVertexDiagnosticCount,inputUVDiagnosticCount;
 #endif
 static void logQueuePhase(const char *phase,unsigned bufferID,BOOL created,atomic_uint *counter,unsigned limit)
 {
@@ -1303,10 +1303,10 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
             if(profile->profileID!=603 || r->stage!=A5MaliStageFragment || r->metalIndex ||
                 ![sampler isKindOfClass:[A5MaliSamplerState class]] || sampler.device!=_buffer.device)return NO;
             MTLSamplerDescriptor *sd=sampler.descriptor;
-            /* The compiled FS specializes address_s=ClampToEdge. Other
-             * coordinates/address states cannot borrow that native variant.
-             * Single-level images retain their actual min/mag filtering;
-             * the native sampler clamps its effective LOD to base level. */
+            /* The compiled FS uses normalized coordinates, matching this
+             * sampler contract. Translator sampler specialization bit zero
+             * means pixel coordinates, not an S address mode. Single-level
+             * images clamp their effective LOD to the base level. */
             if(sd.minFilter>MTLSamplerMinMagFilterLinear || sd.magFilter>MTLSamplerMinMagFilterLinear ||
                 sd.mipFilter>MTLSamplerMipFilterLinear || !sd.normalizedCoordinates ||
                 sd.sAddressMode!=MTLSamplerAddressModeClampToEdge ||
@@ -1505,6 +1505,28 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                     else command.draw.vertexBuffers[slot.unsignedIntegerValue]=native;
                 }
             __attribute__((objc_precise_lifetime)) NSArray *retainSnapshots=snapshots;(void)retainSnapshots;
+            if(profile->profileID==603 && diagnosticTake(&inputUVDiagnosticCount,8)){
+                const A5RuntimeBuffer *v=&command.draw.vertexBuffers[1],*t=&command.draw.vertexBuffers[3];
+                if(v->cpuBytes && t->cpuBytes && v->offset<=v->bytes && t->offset<=t->bytes &&
+                   (uint64_t)submittedVertexCount*48<=v->bytes-v->offset && 16<=t->bytes-t->offset){
+                    float transform[4],lo[2]={INFINITY,INFINITY},hi[2]={-INFINITY,-INFINITY};
+                    memcpy(transform,t->cpuBytes+t->offset,sizeof(transform));
+                    unsigned finite=0;
+                    for(NSUInteger i=0;i<submittedVertexCount;i++){
+                        float uv[2];memcpy(uv,v->cpuBytes+v->offset+i*48+16,sizeof(uv));
+                        for(unsigned j=0;j<2;j++){
+                            float value=transform[j]*uv[j]+transform[j+2];
+                            if(isfinite(value)){lo[j]=fminf(lo[j],value);hi[j]=fmaxf(hi[j],value);finite++;}
+                        }
+                    }
+                    fprintf(stderr,"A5XELTE Metal input UV: cb=%u transform=%g,%g,%g,%g bounds=%g,%g..%g,%g finite=%u normalized=%u min=%u mag=%u mip=%u\n",
+                        diagnosticID,transform[0],transform[1],transform[2],transform[3],
+                        lo[0],lo[1],hi[0],hi[1],finite,samplerSnapshot.normalizedCoordinates,
+                        samplerSnapshot.minFilter,samplerSnapshot.magFilter,samplerSnapshot.mipFilter);
+                }else fprintf(stderr,"A5XELTE Metal input UV: cb=%u snapshot_unavailable=1 normalized=%u min=%u mag=%u mip=%u\n",
+                    diagnosticID,samplerSnapshot.normalizedCoordinates,samplerSnapshot.minFilter,
+                    samplerSnapshot.magFilter,samplerSnapshot.mipFilter);
+            }
             for(uint32_t pass=0;pass<profile->passCount;++pass){
                 A5NativeQueryResult mapped={0};kern_return_t kr=A5MaliQueryNative(client,&query,&mapped);
                 logNativePhase(diagnosticID,path?"path-query17":"misc-query17",profile->profileID,kr);if(kr)return kr;

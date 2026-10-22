@@ -64,13 +64,17 @@ generated outputs private and out of Git.
 candidate** until a live vertex request confirms it. The recipe requires the
 stock QuartzCore library SHA, exact capture hash, reflected ABI, validated
 SPIR-V, final native metadata and both native hashes. SamplerState spec ID 0
-is fixed at 1 for ClampToEdge; the runtime must admit only that sampler state.
+reads bit 0 as `PIXEL_COORDINATES`, not address mode S. The runtime admits
+normalized coordinates. The recipe compiles with word 0 and verifies that
+words 2, 4 and 6, covering nearest/linear min and mag filters, produce the
+same native bytes. ClampToEdge S/T/R is enforced by the runtime sampler.
 
 The candidate vertex reads Float4 position, Float2 UV and Half4 color from
 the original 48-byte Metal vertex layout. It also reads Metal Vertex Buffers
 2 and 3. The fragment samples Metal Texture 3 with runtime Sampler 0, reads
-Metal Fragment Buffer 2 for LOD bias, and reads texture dimensions from UBO 0
-at bytes `0x164` and `0x168`. The BGRA8Unorm ColorWriteRule push is at byte
+Metal Fragment Buffer 2 for LOD bias. The normalized UV reaches the sampler
+directly; texture dimensions at UBO 0 bytes `0x164` and `0x168` are dead.
+The BGRA8Unorm ColorWriteRule push is at byte
 `0x48`. Fragment Buffer 1 and SyntheticConstantBlob are declared but dead in
-the optimized native shader. The host result is 2192 vertex bytes and 976
+the optimized native shader. The host result is 2192 vertex bytes and 880
 fragment bytes; it does not establish phone execution or visual correctness.

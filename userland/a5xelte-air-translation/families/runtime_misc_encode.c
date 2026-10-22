@@ -99,9 +99,10 @@ static int valid_image(const A5RuntimeImage*i){unsigned n=bpp(i->metalPixelForma
  return n&&span(i->gpuVA,i->bytes)&&!(i->gpuVA&63)&&i->width&&i->width<=2048&&i->height&&i->height<=2048&&
  i->rowBytes>=i->width*n&&!(i->rowBytes&15)&&(uint64_t)i->rowBytes*i->height<=i->bytes;
 }
-/* The 603 native fragment was compiled with SamplerState specID0=1, the
- * translator's ClampToEdge-S variant. The runtime sampler table supplies
- * filtering and LOD. One source mip means every valid LOD resolves to level0. */
+/* The 603 native fragment was compiled with SamplerState specID0=0:
+ * normalized UVs. Words 0/2/4/6 (nearest/linear min/mag) yield identical
+ * native code. The runtime sampler supplies filtering and clamp-to-edge
+ * addressing. One source mip means every valid LOD resolves to level0. */
 static int textured_sampler(const A5RuntimeSampler*s){
  return s->valid==1&&s->normalizedCoordinates==1&&s->maxAnisotropy==1&&
   !s->compareEnabled&&s->minFilter<=A5RuntimeSamplerLinear&&
@@ -141,10 +142,8 @@ static int textured_image(uint8_t*d,const A5RuntimeMiscDraw*m){
   c.wrap_mode_r=MALI_WRAP_MODE_CLAMP_TO_EDGE;
   c.minimum_lod=0;c.maximum_lod=0;
  }
- /* Clamp-edge AIR specialization converts pixel UVs using this synthetic
-  * texture0 size record before TEX.2d.bias. A normalized Mali sampler then
-  * consumes the converted coordinates. */
- u32(d,FS_SYS+352,1);u32(d,FS_SYS+356,im->width);u32(d,FS_SYS+360,im->height);
+ /* The normalized-coordinate native shader samples interpolated UV directly.
+  * It does not read synthetic texture dimensions from FS_SYS. */
  return A5RuntimeOK;
 }
 /* Admit only the captured, host-compiled native VS/FS pairs below. This is
@@ -247,9 +246,9 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
  const A5MaliCompiledPass*pass=p->passes;
  return pass->vertex.sha256&&pass->fragment.sha256&&
   !strcmp(pass->vertex.sha256,"e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96")&&
-  !strcmp(pass->fragment.sha256,"b7ab26bc9a0da3ff4a5f87e73fe6aaab07680ae383a3fbdd9d8abc000387cd96")&&
-  pass->vertex.byteCount==2192&&pass->fragment.byteCount==976&&
-  pass->vertex.workRegisters==8&&pass->fragment.workRegisters==6;
+  !strcmp(pass->fragment.sha256,"e4cf4d31a87bde096cc7cc57a12818f79296e3998d22d9c6c5139a9887f30047")&&
+  pass->vertex.byteCount==2192&&pass->fragment.byteCount==880&&
+  pass->vertex.workRegisters==8&&pass->fragment.workRegisters==5;
 }
 static int bind_buffer(const A5RuntimeMiscDraw*m,uint8_t*d,unsigned*arena,
  const A5RuntimeBuffer*b,unsigned need,uint64_t*addr,unsigned*push,unsigned*available){

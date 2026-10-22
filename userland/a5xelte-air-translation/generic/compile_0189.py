@@ -27,9 +27,9 @@ PIN = {
                              'tls': 0, 'wls': 0, 'attributes': 3, 'ubos': 3, 'samplers': 0}},
     'frag': {'spirv_bytes': 808432,
              'spirv_sha256': 'f5e9e9b98a6758205f6235cc972a5338b41c60ded9197b5e517724607ed16341',
-             'midgard_bytes': 976,
-             'midgard_sha256': 'b7ab26bc9a0da3ff4a5f87e73fe6aaab07680ae383a3fbdd9d8abc000387cd96',
-             'native_info': {'first_tag': 5, 'textures': 1, 'work_regs': 6,
+             'midgard_bytes': 880,
+             'midgard_sha256': 'e4cf4d31a87bde096cc7cc57a12818f79296e3998d22d9c6c5139a9887f30047',
+             'native_info': {'first_tag': 5, 'textures': 1, 'work_regs': 5,
                              'tls': 0, 'wls': 0, 'attributes': 0, 'ubos': 5, 'samplers': 1}},
 }
 PACKING0 = {
@@ -56,9 +56,7 @@ NATIVE_CONTRACT = {
          'push_offset': 68, 'live_offset': 0, 'purpose': 'LOD bias'}],
     'fragment_texture': {'metal_index': 3, 'binding': 5,
                          'native_texture': 0, 'type': '2D float sample',
-                         'width_ubo0_offset': 356,
-                         'height_ubo0_offset': 360,
-                         'uv_transform': 'floor(pixel UV)+0.5 divided by dimensions'},
+                         'uv_transform': 'normalized UV passed directly to sampler'},
     'fragment_sampler': {'metal_index': 0, 'binding': 5,
                          'native_sampler': 0, 'source': 'runtime Slot0'},
     'push_color_write_rule': {'offset': 72, 'bytes': 4, 'value': 0x2222},
@@ -70,9 +68,11 @@ NATIVE_CONTRACT = {
     'fragment_declared_but_dead': ['Metal Fragment Buffer1 168 bytes',
                                    'SyntheticConstantBlob'],
     'sampler_state_live_capture': False,
-    'sampler_address_s_spec_id': 0,
-    'sampler_address_s_spec_value': 1,
-    'sampler_required_state': 'ClampToEdge S/T/R',
+    'sampler_state_spec_id': 0,
+    'sampler_state_read_mask': 7,
+    'sampler_state_word': 0,
+    'equivalent_normalized_sampler_words': [0, 2, 4, 6],
+    'sampler_required_state': 'normalized coordinates; nearest/linear min and mag; ClampToEdge S/T/R at runtime',
 }
 
 
@@ -173,16 +173,20 @@ def native_log(log):
     for token in ('(float32)txb', 'VARYING_SLOT_VAR0', 'FRAG_RESULT_DATA0',
                   '@load_ubo (%6 (0x4), %1 (0x0))',
                   '@load_ubo (%1 (0x0), %0 (0x48))',
-                  '@load_ubo (%1 (0x0), %8 (0x164))',
                   'TEX.2d.kill AL0.f32, texture0, fsampler0'):
         if token not in fragment:
             raise ValueError(f'0189 fragment interface lost: {token}')
     if re.search(r'@(?:load|store)_(?:global|ssbo|image)', fragment):
         raise ValueError('0189 synthetic blob/storage unexpectedly live')
+    if '0x164' in fragment or 'FFLOOR' in fragment or \
+            '(float32)txb %5 (coord)' not in fragment:
+        raise ValueError('0189 normalized sampler UV path changed')
     return result
 
 
-def write_profile(path, vertex, fragment):
+def write_profile(path, vertex, fragment, sampler_word=0):
+    if sampler_word not in (0, 2, 4, 6):
+        raise ValueError('only normalized nearest/linear sampler words are supported')
     spec = importlib.util.spec_from_file_location('old_generic',
                                                   ROOT / 'generic' / 'compile_0185.py')
     old = importlib.util.module_from_spec(spec)
@@ -191,14 +195,14 @@ def write_profile(path, vertex, fragment):
 static const struct a5_resource_binding kvert_bindings[]={{0,nir_descriptor_type_uniform_buffer},{1,nir_descriptor_type_uniform_buffer}};
 static const struct a5_resource_binding kfrag_bindings[]={{2,nir_descriptor_type_uniform_buffer},{3,nir_descriptor_type_uniform_buffer},{4,nir_descriptor_type_storage_buffer}};
 static const struct a5_spec_value kvert_spec[]={{1,64},{2,16}};
-static const struct a5_spec_value kfrag_spec[]={{0,1},{3,168},{4,8}};
+static const struct a5_spec_value kfrag_spec[]={{0,%d},{3,168},{4,8}};
 static const struct a5_texture_binding kvert_textures[]={{0,0}};
 static const struct a5_texture_binding kfrag_textures[]={{5,0}};
 static const struct a5_stage_profile kStages[]={
  {UINT64_C(0x%016x),kvert_bindings,2,kvert_spec,2,kvert_textures,0,8},
  {UINT64_C(0x%016x),kfrag_bindings,3,kfrag_spec,3,kfrag_textures,1,76}
 };
-''' % (old.fnv(vertex.read_bytes()), old.fnv(fragment.read_bytes())))
+''' % (sampler_word, old.fnv(vertex.read_bytes()), old.fnv(fragment.read_bytes())))
     return old
 
 
@@ -229,6 +233,22 @@ def validate_receipt(receipt_path, capture_path, metallib_path,
             receipt['reflected_vertex_input'] != meta['vertex_input']:
         raise ValueError('0189 reflected ABI differs from receipt')
     native_log(receipt_path.parent / 'midgard.log')
+    normalized_words = (0, 2, 4, 6)
+    if receipt.get('sampler_variant_hashes') != {
+            str(word): PIN['frag']['midgard_sha256'] for word in normalized_words}:
+        raise ValueError('0189 normalized nearest/linear variants not proven equivalent')
+    for word in normalized_words:
+        suffix = '' if word == 0 else f'-normalized{word}'
+        profile = receipt_path.parent / f'profile{suffix}.h'
+        if f'kfrag_spec[]={{{{0,{word}}},{{3,168}},{{4,8}}}};' not in profile.read_text():
+            raise ValueError(f'0189 sampler specialization word {word} differs')
+        if word:
+            native_log(receipt_path.parent / f'midgard{suffix}.log')
+            for stage in ('vert', 'frag'):
+                variant = receipt_path.parent / f'{stage}{suffix}.midgard'
+                if variant.stat().st_size != PIN[stage]['midgard_bytes'] or \
+                        sha(variant) != PIN[stage]['midgard_sha256']:
+                    raise ValueError(f'0189 sampler word {word} changes native {stage}')
     candidate_constants = [
         {'name': name, 'type': capture['constants'][name]['type'],
          'bytes': capture['constants'][name]['bytes'],
@@ -300,6 +320,29 @@ def main():
                         str(out / 'frag.midgard')], env=env, stdout=log,
                        stderr=subprocess.STDOUT, check=True)
     info = native_log(out / 'midgard.log')
+    # The reflected SamplerState field mask is 0x80000007. Bit 0 means
+    # pixel coordinates, not address mode S; bit 1/2 select min/mag linear.
+    # The Metal provider accepts normalized coordinates with nearest/linear
+    # min/mag, so verify that every admitted word has identical native code.
+    for word in (2, 4, 6):
+        suffix = f'-normalized{word}'
+        profile = out / f'profile{suffix}.h'
+        write_profile(profile, stages['vert'], stages['frag'], word)
+        compiler = out / f'midgard-compiler{suffix}'
+        if backend.compile_backend(a.mesa_build, profile, compiler,
+                                   out / f'backend-build{suffix}.log'):
+            raise RuntimeError(f'Mesa Midgard sampler word {word} build failed')
+        with (out / f'midgard{suffix}.log').open('w') as log:
+            subprocess.run([str(compiler), str(stages['vert']),
+                            str(stages['frag']), str(out / f'vert{suffix}.midgard'),
+                            str(out / f'frag{suffix}.midgard')], env=env, stdout=log,
+                           stderr=subprocess.STDOUT, check=True)
+        native_log(out / f'midgard{suffix}.log')
+        for stage in ('vert', 'frag'):
+            variant = out / f'{stage}{suffix}.midgard'
+            if variant.stat().st_size != PIN[stage]['midgard_bytes'] or \
+                    sha(variant) != PIN[stage]['midgard_sha256']:
+                raise ValueError(f'normalized sampler word {word} changes {stage} native code')
     vertex_constants = [{'name': name, 'type': capture['constants'][name]['type'],
                          'bytes': capture['constants'][name]['bytes'],
                          'raw': capture['constants'][name]['raw']}
@@ -317,6 +360,8 @@ def main():
         'reflected_layout': meta['layout'],
         'reflected_vertex_input': meta['vertex_input'],
         'native_contract': NATIVE_CONTRACT,
+        'sampler_variant_hashes': {str(word): PIN['frag']['midgard_sha256']
+                                   for word in (0, 2, 4, 6)},
         'stages': {stage: {'spirv_bytes': stages[stage].stat().st_size,
                            'spirv_sha256': sha(stages[stage]),
                            'midgard_bytes': (out / f'{stage}.midgard').stat().st_size,

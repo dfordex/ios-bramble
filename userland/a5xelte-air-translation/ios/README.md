@@ -31,11 +31,12 @@ The launch job runs `--serve` and scans the bounded request spool immediately;
 the baseline pairs remain available through the separate `--selftest` action.
 The exact captured QuartzCore `fixed_vert_lph_spc` +
 `fixed_frag_lph_cph` profile 602 and the 0189 textured fragment with a
-UV-capable vertex candidate (profile 603) have source-pinned translation and
+UV-capable vertex function (profile 603) have source-pinned translation and
 Midgard recipes. Profile 603 is restricted to the captured 58 typed fragment
 constants, four candidate vertex constants, and a ClampToEdge S/T/R sampler.
-The live textured vertex request and full pipeline state have not yet been
-observed on the phone. Unknown functions and pipeline contracts receive
+The phone accepted the textured vertex function and pipeline in 0197, but the
+new normalized-coordinate fragment's output pixels await device verification.
+Unknown functions and pipeline contracts receive
 explicit unsupported results. A compiled stage does not prove an arbitrary
 Metal pipeline can draw.
 
@@ -76,11 +77,14 @@ formats a partition nor copies a whole root image. Patch0173 restricts the
 extra platform authorization to the signed identities/paths with compiler
 entitlements and the explicit `a5compiler=1` boot option.
 
-**Current evidence:** the 0190 package passed signed iOS Mach-O checks and
-host request-to-publication tests for both 602 and 603. Profile 603 host
-output is an actual 2192-byte vertex shader and 976-byte textured fragment;
-its private receipt pins both SHA-256 hashes. The textured vertex pairing and
-sampler state still need a live device request and render result. The earlier
+**Current evidence:** the 0198 package passed signed iOS Mach-O checks and
+host request-to-publication tests for both 602 and 603, including retirement
+and recompilation of the previous 976-byte profile 603 cache entry. The 0197 phone run
+accepted the textured vertex and fragment pair but produced black output.
+The corrected profile 603 host output is a 2192-byte vertex shader and
+880-byte normalized-coordinate textured fragment; its private receipt pins
+both SHA-256 hashes. Corrected output pixels still need a live device check.
+The earlier
 0188b translator lacked `--no-timeout` and failed before spool scanning.
 See `A5XELTE_PROGRESS.md` for the latest installation and device measurements.
 
