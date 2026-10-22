@@ -199,13 +199,13 @@ static int generic_color_contract(const A5MaliCompiledProfile*p){
  * VAR1. The fragment samples Texture3/Sampler0 with bias from FB2; FB1 and
  * the translator's synthetic blob are dead in this pinned native pair. */
 static int generic_textured_contract(const A5MaliCompiledProfile*p){
- if(p->profileID!=603||p->flags||p->passCount!=1||!p->passes||
+ if(p->profileID!=603||p->flags!=A5MaliProfileSourceOverBlend||p->passCount!=1||!p->passes||
     p->passes[0].passID!=603||p->passes[0].logicalTarget||
     !p->vertexName||strcmp(p->vertexName,"fixed_vert_lph_spc")||
     !p->fragmentName||strcmp(p->fragmentName,"fixed_frag_lph_cph")||
     p->colorFormats[0]!=80||p->attributeCount!=4||!p->attributes||
     p->layoutCount!=1||!p->layouts||p->resourceCount!=5||!p->resources||
-    p->pushFieldCount!=4||!p->pushFields||p->attachmentContractCount!=1||
+    p->pushFieldCount!=4||!p->pushFields||p->attachmentContractCount!=2||
     !p->attachmentContracts)return 0;
  for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return 0;
  static const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
@@ -235,9 +235,14 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
   if(a->stage!=b->stage||a->kind!=b->kind||a->metalIndex!=b->metalIndex||
      a->offset!=b->offset||a->bytes!=b->bytes||a->value!=b->value)return 0;
  }
- for(unsigned i=0;i<8;++i){const A5MaliCompiledAttachmentState*a=&p->attachmentContracts[0].attachments[i];
-  if(a->writeMask!=15||a->blendEnabled||a->rgbOperation||a->alphaOperation||
-     a->sourceRGB!=1||a->destinationRGB||a->sourceAlpha!=1||a->destinationAlpha)return 0;
+ for(unsigned contract=0;contract<2;++contract){
+  for(unsigned i=0;i<8;++i){
+   const A5MaliCompiledAttachmentState*a=&p->attachmentContracts[contract].attachments[i];
+   const int source_over=contract==1&&i==0;
+   if(a->writeMask!=15||a->blendEnabled!=source_over||a->rgbOperation||a->alphaOperation||
+      a->sourceRGB!=1||a->destinationRGB!=(source_over?5:0)||
+      a->sourceAlpha!=1||a->destinationAlpha!=(source_over?5:0))return 0;
+  }
  }
  const A5MaliCompiledPass*pass=p->passes;
  return pass->vertex.sha256&&pass->fragment.sha256&&
@@ -428,7 +433,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
    (r->blend&&(!(p->flags&A5MaliProfileSourceOverBlend)||
      (out->metalPixelFormat==115&&!(p->flags&A5MaliProfileInlineSourceOver))))||
    ((p->flags&A5MaliProfileInlineSourceOver)&&r->blend!=A5RuntimeBlendPremultipliedSourceOver))return A5RuntimeUnsupported;
- if((generic_color||generic_textured)&&r->blend!=A5RuntimeBlendCopy)return A5RuntimeUnsupported;
+ if(generic_color&&r->blend!=A5RuntimeBlendCopy)return A5RuntimeUnsupported;
  if(!isfinite(r->viewportX)||!isfinite(r->viewportY)||!isfinite(r->viewportWidth)||!isfinite(r->viewportHeight)||
    !isfinite(r->viewportNear)||!isfinite(r->viewportFar)||r->viewportWidth<=0||r->viewportHeight<=0||
    r->viewportX<0||r->viewportY<0||r->viewportWidth>4096-r->viewportX||r->viewportHeight>4096-r->viewportY||

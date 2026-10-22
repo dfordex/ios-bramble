@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import copy
 import ctypes
 import os
 import stat
@@ -116,6 +117,29 @@ def display_app_entries(source: Path):
 
 
 COMPILER_PLIST_DEST = '/System/Library/LaunchDaemons/com.orhunnx.a5shader-compile.plist'
+BACKBOARD_PLIST_DEST = '/System/Library/LaunchDaemons/com.apple.backboardd.plist'
+
+
+def backboard_ignore_mach_send_errors(cache: dict) -> dict:
+    """Exact QuartzCore option, scoped to the existing backboardd launch job.
+
+    This does not turn a failed Metal pipeline into an executable pipeline.
+    Keep every other cache object and job property intact.
+    """
+    result = copy.deepcopy(cache)
+    jobs = result.get('LaunchDaemons') if isinstance(result, dict) else None
+    job = jobs.get(BACKBOARD_PLIST_DEST) if isinstance(jobs, dict) else None
+    if (not isinstance(job, dict) or job.get('Label') != 'com.apple.backboardd' or
+            job.get('ProgramArguments') != ['/usr/libexec/backboardd']):
+        raise ValueError('exact existing backboardd launch job required')
+    env = job.get('EnvironmentVariables', {})
+    if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str)
+                                           for k, v in env.items()):
+        raise ValueError('backboardd environment must be a string dictionary')
+    env = dict(env)
+    env['CA_IGNORE_MACH_SEND_ERRORS'] = '1'
+    job['EnvironmentVariables'] = env
+    return result
 
 
 def regular_bytes(path: Path, maximum: int = MAX_FILE) -> bytes:
@@ -145,9 +169,13 @@ def main() -> None:
                         help='actual staged kernel installer; required for automatic compiler payload preflight')
     parser.add_argument('--display-apps', type=Path,
                         help='mounted source Applications; embeds only six fixed display bundles, requires installer support')
+    parser.add_argument('--backboard-ignore-mach-send-errors', action='store_true',
+                        help='set verified QuartzCore Mach-send option only in the existing backboardd cached job')
     args = parser.parse_args()
     if bool(args.probe) != bool(args.launch_plist):
         parser.error("--probe and --launch-plist must be provided together")
+    if args.backboard_ignore_mach_send_errors and not (args.probe and args.launchd_cache):
+        parser.error('--backboard-ignore-mach-send-errors requires probe and launchd cache')
     if args.launchd_cache and not args.launch_plist:
         parser.error("--launchd-cache requires --probe and --launch-plist")
     if args.compiler_dir and not args.launchd_cache:
@@ -178,6 +206,8 @@ def main() -> None:
         entries.extend(((PROBE_DEST, probe, 0o755), (PLIST_DEST, launch, 0o644)))
         if args.launchd_cache:
             cache = plistlib.loads(regular_bytes(args.launchd_cache))
+            if args.backboard_ignore_mach_send_errors:
+                cache = backboard_ignore_mach_send_errors(cache)
             jobs = cache.get("LaunchDaemons") if isinstance(cache, dict) else None
             if not isinstance(jobs, dict):
                 parser.error("launchd cache must contain a LaunchDaemons dictionary")

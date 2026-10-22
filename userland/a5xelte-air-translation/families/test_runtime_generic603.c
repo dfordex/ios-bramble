@@ -41,15 +41,22 @@ int main(int argc,char**argv){
  A5MaliCompiledVertexAttribute attrs[]={
   {0,31,0,1},{1,29,16,1},{2,29,24,1},{3,27,32,1}};
  A5MaliCompiledVertexLayout layout={1,48,1,1};
- A5MaliCompiledAttachmentContract attachment={0};
- for(unsigned i=0;i<8;++i){attachment.attachments[i].writeMask=15;
-  attachment.attachments[i].sourceRGB=1;attachment.attachments[i].sourceAlpha=1;}
+ A5MaliCompiledAttachmentContract attachment[2]={0};
+ for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i){
+  attachment[c].attachments[i].writeMask=15;
+  attachment[c].attachments[i].sourceRGB=1;
+  attachment[c].attachments[i].sourceAlpha=1;
+ }
+ attachment[1].attachments[0].blendEnabled=1;
+ attachment[1].attachments[0].destinationRGB=5;
+ attachment[1].attachments[0].destinationAlpha=5;
  A5MaliCompiledProfile p={0};p.profileID=603;p.vertexName="fixed_vert_lph_spc";
  p.fragmentName="fixed_frag_lph_cph";p.colorFormats[0]=80;
+ p.flags=A5MaliProfileSourceOverBlend;
  p.passes=&pass;p.passCount=1;p.resources=resources;p.resourceCount=5;
  p.pushFields=push;p.pushFieldCount=4;p.attributes=attrs;p.attributeCount=4;
  p.layouts=&layout;p.layoutCount=1;
- p.attachmentContracts=&attachment;p.attachmentContractCount=1;
+ p.attachmentContracts=attachment;p.attachmentContractCount=2;
  A5RuntimeMiscDraw m={0};m.draw.profile=&p;m.draw.descriptorGPUVA=0x12000000;
  m.draw.vertexCount=4;m.draw.primitive=A5RuntimeTriangleStrip;
  m.draw.viewportWidth=m.draw.viewportHeight=32;m.draw.viewportFar=1;
@@ -82,7 +89,8 @@ int main(int argc,char**argv){
         vrs.properties.uniform_buffer_count==3&&vrs.properties.work_register_count==8);
  assert(frs.shader.texture_count==1&&frs.shader.sampler_count==1&&
         frs.shader.varying_count==1&&frs.properties.uniform_buffer_count==5&&
-        frs.properties.work_register_count==6);
+        frs.properties.work_register_count==6&&
+        !frs.multisample_misc.load_destination);
  pan_unpack((struct mali_attribute_packed*)(descriptor+0x808),ATTRIBUTE,uv);
  pan_unpack((struct mali_attribute_packed*)(descriptor+0x810),ATTRIBUTE,color);
  assert((uv.format>>12)==MALI_RG32F&&uv.offset==16);
@@ -104,6 +112,33 @@ int main(int argc,char**argv){
  memcpy(&h,descriptor+0x1400+360,4);
  memcpy(&rule,descriptor+0x1400+72,4);
  assert(w==16&&h==16&&rule==0x2222);
+ /* Both pipeline states use the identical genuine native programs. The
+  * source-over variant preloads the framebuffer and uses the fixed RSD
+  * equation for premultiplied source alpha, retaining the copy path. */
+ m.draw.blend=A5RuntimeBlendPremultipliedSourceOver;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ pan_unpack((struct mali_renderer_state_packed*)(descriptor+0x540),RENDERER_STATE,blend);
+ assert(blend.multisample_misc.load_destination&&blend.blend_equation.color_mask==15);
+ assert(blend.blend_equation.rgb.a==MALI_BLEND_OPERAND_A_SRC&&
+        blend.blend_equation.rgb.b==MALI_BLEND_OPERAND_B_DEST&&
+        blend.blend_equation.rgb.c==MALI_BLEND_OPERAND_C_SRC_ALPHA&&
+        blend.blend_equation.rgb.invert_c);
+ assert(blend.blend_equation.alpha.a==MALI_BLEND_OPERAND_A_SRC&&
+        blend.blend_equation.alpha.b==MALI_BLEND_OPERAND_B_DEST&&
+        blend.blend_equation.alpha.c==MALI_BLEND_OPERAND_C_SRC_ALPHA&&
+        blend.blend_equation.alpha.invert_c);
+ pan_unpack((struct mali_job_header_packed*)descriptor,JOB_HEADER,first);
+ pan_unpack((struct mali_job_header_packed*)(descriptor+0x1800),JOB_HEADER,preload);
+ pan_unpack((struct mali_job_header_packed*)(descriptor+0x100),JOB_HEADER,tiler);
+ assert(first.next==m.draw.descriptorGPUVA+0x1800&&
+        preload.type==MALI_JOB_TYPE_TILER&&preload.index==2&&
+        preload.dependency_1==1&&preload.next==m.draw.descriptorGPUVA+0x100&&
+        tiler.index==3&&tiler.dependency_1==1&&tiler.dependency_2==2);
+ assert(!memcmp(descriptor+0x6000,baseline+0x6000,2192)&&
+        !memcmp(descriptor+0x8000,baseline+0x8000,976));
+ m.draw.blend=A5RuntimeBlendCopy;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ assert(!memcmp(descriptor,baseline,sizeof(descriptor)));
  uint16_t indices[]={99,0,1,2,2,1,3};
  m.draw.primitive=A5RuntimeTriangle;m.draw.indexCount=6;m.draw.indexSize=2;
  m.draw.indexBuffer=(A5RuntimeBuffer){0,sizeof(indices),2,(const uint8_t*)indices};
@@ -136,9 +171,24 @@ int main(int argc,char**argv){
  resources[4].metalIndex=1;
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
  resources[4].metalIndex=0;
+ attachment[1].attachments[0].destinationRGB=0;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ attachment[1].attachments[0].destinationRGB=5;
+ attachment[1].attachments[0].sourceAlpha=0;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ attachment[1].attachments[0].sourceAlpha=1;
+ attachment[1].attachments[1].blendEnabled=1;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ attachment[1].attachments[1].blendEnabled=0;
+ p.flags=0;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ p.flags=A5MaliProfileSourceOverBlend;
+ p.attachmentContractCount=1;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ p.attachmentContractCount=2;
  pass.fragment.sha256="wrong";
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
  free(vs);free(fs);
- puts("PASS generic603 native texture descriptor/state/bounds; device pixels unverified");
+ puts("PASS generic603 native texture copy/source-over descriptors, preload order, bounds; device pixels unverified");
  return 0;
 }

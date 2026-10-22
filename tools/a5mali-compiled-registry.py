@@ -357,17 +357,22 @@ def textured_profile(receipt_path, capture_path, metallib_path):
         stages[key]=shader(receipt_path.parent/(stage+'.midgard'),dict(
             bytes=r['midgard_bytes'],sha256=r['midgard_sha256'],first_tag=info['first_tag'],
             work_regs=info['work_regs'],tls=info['tls'],wls=info['wls']))
+    copy=[[15,0,0,0,1,0,1,0] for _ in range(8)]
+    source_over=[list(a) for a in copy]
+    # Actual 0191 RT0 state: ADD, ONE, ONE_MINUS_SOURCE_ALPHA for both
+    # colour and alpha. Preserve the previously accepted copy contract.
+    source_over[0]=[15,1,0,0,1,5,1,5]
     return {'id':603,'name':'fixed_frag_lph_cph_textured_bgra8',
         'vertex':j['vertex_function'],'fragment':j['compiled_function'],
-        'formats':[80]+[0]*7,'flags':0,'viewport':[0,0],
+        'formats':[80]+[0]*7,'flags':16,'viewport':[0,0],
         'resources':resources,'push':pushes,
         'attributes':ATTRIBUTES,'layouts':LAYOUTS,
         'passes':[dict(id=603,target=0,**stages)],
-        'attachment_contracts':[[[15,0,0,0,1,0,1,0] for _ in range(8)]],
+        'attachment_contracts':[copy,source_over],
         'function_constants':constants(j['fragment_constants']),
         'vertex_function_constants':constants({v['name']:{k:x for k,x in v.items() if k!='name'}
             for v in j['vertex_candidate_constants']}),
-        'proof':'Observed complete textured fragment; compatible compiled vertex/state candidate, runtime selection still requires exact typed stage/state match'}
+        'proof':'Observed 0191 typed vertex/fragment pair and exact BGRA8 copy/source-over attachment contracts; native GPU pixels still require device validation'}
 
 
 def emit(profiles,output):

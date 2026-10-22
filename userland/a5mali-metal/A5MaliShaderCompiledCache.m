@@ -62,6 +62,7 @@ static const CacheContract *contractForID(uint32_t profileID)
     NSString *_requestID;
     A5MaliCompiledProfile _profile;
     A5MaliCompiledPass _pass;
+    A5MaliCompiledAttachmentContract _attachmentContracts[2];
 }
 - (instancetype)initWithRequestID:(NSString *)requestID expected:(const A5MaliCompiledProfile *)expected
     vertex:(NSData *)vertex fragment:(NSData *)fragment
@@ -71,6 +72,11 @@ static const CacheContract *contractForID(uint32_t profileID)
         _profile=*expected;_pass=expected->passes[0];
         _pass.vertex.bytes=_vertexData.bytes;_pass.fragment.bytes=_fragmentData.bytes;
         _profile.passes=&_pass;
+        if(expected->attachmentContracts&&expected->attachmentContractCount<=2){
+            memcpy(_attachmentContracts,expected->attachmentContracts,
+                expected->attachmentContractCount*sizeof(_attachmentContracts[0]));
+            _profile.attachmentContracts=_attachmentContracts;
+        }
     }
     return self;
 }
@@ -138,6 +144,23 @@ static BOOL expectedShader(const A5MaliCompiledShader *shader,const CacheContrac
         shader->sha256&&[pin isEqualToString:[NSString stringWithUTF8String:shader->sha256]]&&
         [digest(shader->bytes,shader->byteCount) isEqual:pin];
 }
+static BOOL exact603Attachments(const A5MaliCompiledProfile *profile)
+{
+    static const A5MaliCompiledAttachmentState copy={15,0,0,0,1,0,1,0};
+    static const A5MaliCompiledAttachmentState sourceOver={15,1,0,0,1,5,1,5};
+    if(profile->flags!=A5MaliProfileSourceOverBlend||
+       profile->attachmentContractCount!=2||!profile->attachmentContracts||
+       profile->colorFormats[0]!=80||profile->viewportWidth||profile->viewportHeight)
+        return NO;
+    for(unsigned i=1;i<8;++i)if(profile->colorFormats[i])return NO;
+    for(unsigned contract=0;contract<2;++contract)
+        for(unsigned slot=0;slot<8;++slot){
+            const A5MaliCompiledAttachmentState *want=contract==1&&slot==0?&sourceOver:&copy;
+            if(memcmp(&profile->attachmentContracts[contract].attachments[slot],want,sizeof(*want)))
+                return NO;
+        }
+    return YES;
+}
 static BOOL exactNumber(id value,uint32_t expected)
 {
     return [value isKindOfClass:NSNumber.class]&&CFGetTypeID((__bridge CFTypeRef)value)!=CFBooleanGetTypeID()&&
@@ -167,7 +190,8 @@ A5MaliShaderCompiledCacheEntry *A5MaliLoadShaderCompiledCache(NSString *requestI
         (expected->flags&A5MaliProfileNotExecutable)||expected->passes[0].passID!=contract->profileID||
         expected->passes[0].logicalTarget||!expected->vertexName||!expected->fragmentName||
         strcmp(expected->vertexName,"fixed_vert_lph_spc")||strcmp(expected->fragmentName,"fixed_frag_lph_cph")||
-        !expectedShader(&expected->passes[0].vertex,contract,YES)||!expectedShader(&expected->passes[0].fragment,contract,NO))
+        !expectedShader(&expected->passes[0].vertex,contract,YES)||!expectedShader(&expected->passes[0].fragment,contract,NO)||
+        (expected->profileID==603&&!exact603Attachments(expected)))
         return failure(error,EINVAL,@"compiled cache requires an exact authenticated602/603 stage contract");
     int root=open(cacheRoot,O_RDONLY|O_DIRECTORY|O_NOFOLLOW),dir=-1;
     if(root<0)return failure(error,errno==ENOENT?ENOENT:EIO,@"compiled cache not published");

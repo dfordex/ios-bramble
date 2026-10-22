@@ -77,8 +77,18 @@ int main(int argc,const char **argv)
         A5MaliCompiledPass pass={.passID=testProfile,.logicalTarget=0,
             .vertex={vertex.bytes,vertexLength,5,8,0,0,vs.UTF8String},
             .fragment={fragment.bytes,fragmentLength,5,fragmentRegisters,0,0,fs.UTF8String}};
+#if A5_CACHE_TEST_PROFILE == 603
+        A5MaliCompiledAttachmentContract contracts[2]={0};
+        for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i)
+            contracts[c].attachments[i]=(A5MaliCompiledAttachmentState){15,0,0,0,1,0,1,0};
+        contracts[1].attachments[0]=(A5MaliCompiledAttachmentState){15,1,0,0,1,5,1,5};
+#endif
         A5MaliCompiledProfile profile={.profileID=testProfile,.name="generic-cache-test",.vertexName="fixed_vert_lph_spc",
-            .fragmentName="fixed_frag_lph_cph",.passes=&pass,.passCount=1,.colorFormats={80}};
+            .fragmentName="fixed_frag_lph_cph",.passes=&pass,.passCount=1,.colorFormats={80}
+#if A5_CACHE_TEST_PROFILE == 603
+            ,.flags=A5MaliProfileSourceOverBlend,.attachmentContracts=contracts,.attachmentContractCount=2
+#endif
+        };
         NSFileManager *fm=NSFileManager.defaultManager;[fm removeItemAtPath:root error:NULL];
         NSError *error=nil;assert(!A5MaliLoadShaderCompiledCache(key,&profile,&error)&&error.code==ENOENT);
         assert([fm createDirectoryAtPath:entryPath() withIntermediateDirectories:YES attributes:nil error:NULL]);
@@ -90,6 +100,21 @@ int main(int argc,const char **argv)
         assert(!memcmp(loaded.profile->passes[0].vertex.bytes,vertex.bytes,vertex.length));
         assert(!memcmp(loaded.profile->passes[0].fragment.bytes,fragment.bytes,fragment.length));
         assert(loaded.profile->passes[0].passID==testProfile&&loaded.profile->colorFormats[0]==80&&[loaded.requestID isEqual:key]);
+#if A5_CACHE_TEST_PROFILE == 603
+        assert(loaded.profile->attachmentContractCount==2&&
+            loaded.profile->attachmentContracts!=profile.attachmentContracts&&
+            loaded.profile->attachmentContracts[1].attachments[0].destinationRGB==5);
+        contracts[1].attachments[0].destinationRGB=0;
+        expectRejected(&profile);
+        assert(loaded.profile->attachmentContracts[1].attachments[0].destinationRGB==5);
+        contracts[1].attachments[0].destinationRGB=5;
+        contracts[0].attachments[0].blendEnabled=1;expectRejected(&profile);
+        contracts[0].attachments[0].blendEnabled=0;
+        profile.flags=0;expectRejected(&profile);
+        profile.flags=A5MaliProfileSourceOverBlend;
+        profile.attachmentContractCount=1;expectRejected(&profile);
+        profile.attachmentContractCount=2;
+#endif
 
         NSMutableData *changed=[vertex mutableCopy];((uint8_t *)changed.mutableBytes)[37]^=1;
         writeFile(@"vertex.midgard",changed);expectRejected(&profile);writeFile(@"vertex.midgard",vertex);

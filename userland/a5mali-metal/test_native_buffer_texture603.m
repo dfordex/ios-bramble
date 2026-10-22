@@ -20,6 +20,7 @@ _Static_assert(sizeof(Vertex)==48,"actual stock packing0");
 typedef enum {Good,FailBulk,FailQuery,FailSubmit} Fault;
 typedef struct {
     Fault fault;
+    BOOL blend;
     unsigned creates,bulkCalls,queries,submits,releases,deallocations;
     size_t length,uploaded;
     uint8_t *host,*expected,*actual;
@@ -124,12 +125,19 @@ static A5MaliReadSurfCandidate *pipeline(A5MaliRestrictedDevice *device,State *s
     d.vertexDescriptor.layouts[l->index].stride=l->stride;
     d.vertexDescriptor.layouts[l->index].stepFunction=l->stepFunction;
     d.vertexDescriptor.layouts[l->index].stepRate=l->stepRate;
-    for(unsigned i=0;i<8;++i){const A5MaliCompiledAttachmentState *a=&s->profile->attachmentContracts[0].attachments[i];
+    for(unsigned i=0;i<8;++i){const A5MaliCompiledAttachmentState *a=&s->profile->attachmentContracts[s->blend?1:0].attachments[i];
         MTLRenderPipelineColorAttachmentDescriptor *actual=d.colorAttachments[i];
         actual.pixelFormat=s->profile->colorFormats[i];actual.writeMask=a->writeMask;actual.blendingEnabled=a->blendEnabled;
         actual.rgbBlendOperation=a->rgbOperation;actual.alphaBlendOperation=a->alphaOperation;
         actual.sourceRGBBlendFactor=a->sourceRGB;actual.destinationRGBBlendFactor=a->destinationRGB;
         actual.sourceAlphaBlendFactor=a->sourceAlpha;actual.destinationAlphaBlendFactor=a->destinationAlpha;
+    }
+    if(s->blend){
+        assert(s->profile->flags&A5MaliProfileSourceOverBlend);
+        d.colorAttachments[0].destinationAlphaBlendFactor=MTLBlendFactorZero;
+        assert(![device newRenderPipelineStateWithDescriptor:d error:&error]&&error);
+        d.colorAttachments[0].destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
+        error=nil;
     }
     A5MaliReadSurfCandidate *result=[device newRenderPipelineStateWithDescriptor:d error:&error];assert(result&&!error);return result;
 }
@@ -163,9 +171,9 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,id pipelineState,
     memcpy((uint8_t*)lod.contents+16,s->lod,sizeof(s->lod));
     assert(!b.privateBuffer.completedFence.fragmentFence);return b;
 }
-static void runCase(Fault fault,BOOL useSPI)
+static void runCase(Fault fault,BOOL useSPI,BOOL blend)
 {
-    State s={.fault=fault,.length=0x101000};
+    State s={.fault=fault,.blend=blend,.length=0x101000};
     s.profile=A5MaliCompiledProfileForID(603);assert(s.profile);
     s.expected=malloc(s.length);s.actual=calloc(1,s.length);
     assert(s.expected&&s.actual);
@@ -226,8 +234,9 @@ static void runCase(Fault fault,BOOL useSPI)
 }
 int main(void)
 {
-    runCase(Good,NO);runCase(Good,YES);
-    runCase(FailBulk,NO);runCase(FailQuery,NO);runCase(FailSubmit,NO);
-    puts("buffer-backed native603: real no-copy Shared alias, commit snapshot, full bulk upload, bufferVA+offset, fences and cleanup PASS (mock transport; no GPU pixels)");
+    runCase(Good,NO,NO);runCase(Good,YES,NO);
+    runCase(Good,NO,YES);runCase(Good,YES,YES);
+    runCase(FailBulk,NO,YES);runCase(FailQuery,NO,YES);runCase(FailSubmit,NO,YES);
+    puts("buffer-backed native603: copy/source-over pipelines, real no-copy Shared alias, commit snapshot, full bulk upload, bufferVA+offset, fences and cleanup PASS (mock transport; no GPU pixels)");
     return 0;
 }

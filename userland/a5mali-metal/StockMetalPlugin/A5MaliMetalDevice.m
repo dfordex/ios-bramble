@@ -7,6 +7,7 @@
 #import "A5MaliStockABI.h"
 #import <objc/runtime.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static NSError *unsupported(NSString *operation)
 {
@@ -62,6 +63,9 @@ static unsigned missingRequiredMethods(Class cls, Protocol *protocol)
     class_addProtocol(self, publicProtocol);
     class_addProtocol(self, privateProtocol);
     fprintf(stderr, "A5XELTE Metal: provider bundle loaded; stock protocols registered\n");
+    const char *ignoreSendErrors=getenv("CA_IGNORE_MACH_SEND_ERRORS");
+    if(ignoreSendErrors)fprintf(stderr,"A5XELTE Metal: CA_IGNORE_MACH_SEND_ERRORS=%u\n",
+        atoi(ignoreSendErrors)!=0);
 }
 
 - (instancetype)initWithAcceleratorPort:(io_service_t)service

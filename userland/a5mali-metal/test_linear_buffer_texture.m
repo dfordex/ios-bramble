@@ -40,10 +40,34 @@ int main(void)
  A5MaliPrivateBuffer*b=[d newBufferWithLength:4096 options:0];MTLTextureDescriptor*good=descriptor(80,NO);
  A5MaliMetalTexture*publicView=(id)[b newTextureWithDescriptor:good offset:64 bytesPerRow:128];
  assert(publicView&&publicView.buffer==b&&publicView.bufferBytesPerImage==512);
+ A5MaliMetalTexture*unalignedImage=(id)[b newLinearTextureWithDescriptor:good offset:64 bytesPerRow:128 bytesPerImage:513];
+ assert(unalignedImage&&unalignedImage.bufferBytesPerImage==513);
+ /* Exact0191 live request: only last-row active texels count toward the
+  * declared image length. The real buffer also owns the GPU padded span. */
+ MTLTextureDescriptor*live=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:80 width:194 height:237 mipmapped:NO];
+ live.storageMode=MTLStorageModeShared;live.usage=MTLTextureUsageShaderRead;
+ void*livePages=NULL;assert(!posix_memalign(&livePages,4096,200704));memset(livePages,0xa5,200704);
+ A5MaliPrivateBuffer*liveBuffer=[d newBufferWithBytesNoCopy:livePages length:200704 options:0
+  deallocator:^(void*p,NSUInteger n){assert(n==200704);free(p);}];assert(liveBuffer&&liveBuffer.contents==livePages);
+ const NSUInteger active=236*832+194*4,padded=237*832;
+ assert(active==197128&&padded==197184);
+ A5MaliMetalTexture*liveTexture=(id)[liveBuffer newLinearTextureWithDescriptor:live offset:0 bytesPerRow:832 bytesPerImage:active];
+ A5MaliTextureLevelLayout liveLayout;
+ assert(liveTexture&&liveTexture.buffer==liveBuffer&&liveTexture.bufferBytesPerImage==active&&
+  [liveTexture getLevelLayout:&liveLayout level:0]&&liveLayout.byteLength==padded&&liveLayout.rowBytes==832);
+ uint32_t lastPixel=0x12345678,result=0;memcpy((uint8_t*)liveBuffer.contents+active-4,&lastPixel,4);
+ [liveTexture getBytes:&result bytesPerRow:4 fromRegion:MTLRegionMake2D(193,236,1,1) mipmapLevel:0];assert(result==lastPixel);
+ result=0xaabbccdd;[liveTexture replaceRegion:MTLRegionMake2D(193,236,1,1) mipmapLevel:0 withBytes:&result bytesPerRow:4];
+ assert(!memcmp((uint8_t*)liveBuffer.contents+active-4,&result,4));
+ assert(![liveBuffer newLinearTextureWithDescriptor:live offset:0 bytesPerRow:832 bytesPerImage:active-1]);
+ A5MaliPrivateBuffer*shortBuffer=[d newBufferWithLength:padded-1 options:0];
+ assert(![shortBuffer newLinearTextureWithDescriptor:live offset:0 bytesPerRow:832 bytesPerImage:active]);
+ assert(![liveBuffer newLinearTextureWithDescriptor:live offset:0 bytesPerRow:832 bytesPerImage:NSUIntegerMax]);
+ assert(![liveBuffer newLinearTextureWithDescriptor:live offset:NSUIntegerMax-63 bytesPerRow:832 bytesPerImage:active]);
  for(unsigned fault=0;fault<15;++fault){MTLTextureDescriptor*bad=[good copy];NSUInteger off=64,row=128,image=512;
   switch(fault){case 0:off=1;break;case 1:row=65;break;case 2:row=0;break;case 3:row=32769;break;
    case 4:row=64;bad.width=17;break;case 5:off=4096;break;case 6:off=NSUIntegerMax-63;break;
-   case 7:image=128;break;case 8:image=513;break;case 9:bad.mipmapLevelCount=2;break;
+   case 7:image=128;break;case 8:image=3*128+13*4-1;break;case 9:bad.mipmapLevelCount=2;break;
    case 10:bad.storageMode=MTLStorageModePrivate;break;case 11:bad.usage=MTLTextureUsageRenderTarget;break;
    case 12:bad.textureType=MTLTextureType3D;break;case 13:bad.arrayLength=2;break;case 14:bad.pixelFormat=MTLPixelFormatRGBA32Float;break;}
   assert(![b newLinearTextureWithDescriptor:bad offset:off bytesPerRow:row bytesPerImage:image]);

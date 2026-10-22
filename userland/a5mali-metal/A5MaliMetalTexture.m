@@ -215,7 +215,11 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
     else if(d.height>NSUIntegerMax/row)reason=@"linear-row-span-overflow";
     else {
         NSUInteger span=row*d.height,effectiveImage=image?:span;
-        if(effectiveImage<span||(effectiveImage&63)||effectiveImage>UINT32_MAX)
+        /* Metal's image length ends at the final active texel, not at the
+         * end of that row's padding. Keep the real padded allocation span
+         * for bounded native sampling, independently of caller image stride. */
+        NSUInteger active=(d.height-1)*row+d.width*l.bytesPerElement;
+        if(effectiveImage<active||effectiveImage>UINT32_MAX)
             reason=@"linear-image-stride";
         else if(offset>buffer.length||span>buffer.length-offset)
             reason=@"linear-buffer-span";
