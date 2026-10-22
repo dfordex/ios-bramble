@@ -293,8 +293,14 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
   else if(f->kind!=A5MaliPushColorWriteRule)return A5RuntimeUnsupported;
   u32(d,(st?FS_SYS:VS_SYS)+f->offset,value);
  }
+ /* These stock AIR vertex programs preserve Metal clip-space Y.
+  * Metal2Vulkan requires a negative-height viewport at the binding boundary:
+  * NDC +1 is the top row, while the texture/scissor origins stay unchanged.
+  * Apply this once to all nine misc profiles; the vertex programs do not
+  * independently negate their final position Y. */
+ float yScale=(float)(-r->viewportHeight*.5);
  for(unsigned st=0;st<2;++st){unsigned o=st?FS_SYS:VS_SYS;
-  f32(d,o+512,(float)(r->viewportWidth*.5));f32(d,o+516,(float)(r->viewportHeight*.5));f32(d,o+520,(float)((r->viewportFar-r->viewportNear)*.5));
+  f32(d,o+512,(float)(r->viewportWidth*.5));f32(d,o+516,yScale);f32(d,o+520,(float)((r->viewportFar-r->viewportNear)*.5));
   f32(d,o+528,(float)(r->viewportX+r->viewportWidth*.5));f32(d,o+532,(float)(r->viewportY+r->viewportHeight*.5));f32(d,o+536,(float)((r->viewportFar+r->viewportNear)*.5));
  }
  if(home||generic_color||generic_textured){

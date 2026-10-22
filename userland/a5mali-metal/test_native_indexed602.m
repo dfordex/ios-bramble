@@ -87,6 +87,8 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
     assert(q->readSurfaces==1&&q->writeSurfaces==1&&q->readBuffers==0);
     for(unsigned i=0;i<A5NativeSlots;++i)assert(!q->buffers[i]);
     const uint8_t *jobs=(const uint8_t *)input+sizeof(*q);
+    float sy,oy;memcpy(&sy,jobs+0x1000+516,4);memcpy(&oy,jobs+0x1000+532,4);
+    assert(sy+oy==0&&-sy+oy==32); /* Metal NDC +Y maps to top */
     const A5MaliCompiledPass *pass=s->profile->passes;
     assert(!memcmp(jobs+0x6000,pass->vertex.bytes,pass->vertex.byteCount));
     assert(!memcmp(jobs+0x8000,pass->fragment.bytes,pass->fragment.byteCount));

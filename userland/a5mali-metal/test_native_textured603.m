@@ -71,6 +71,13 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
  assert(q->readSurfaces==3&&q->writeSurfaces==1&&!q->readBuffers);
  const uint8_t*j=(const uint8_t*)input+sizeof(*q);const A5MaliCompiledPass*p=s->profile->passes;
  assert(p->vertex.byteCount==2192&&p->fragment.byteCount==880);
+ /* Nonzero origin and unequal dimensions distinguish a clip-space Y
+  * correction from flipping texture UV or translating the whole image. */
+ float sx,sy,ox,oy;
+ memcpy(&sx,j+0x1000+512,4);memcpy(&sy,j+0x1000+516,4);
+ memcpy(&ox,j+0x1000+528,4);memcpy(&oy,j+0x1000+532,4);
+ assert(-sx+ox==3&&sx+ox==27);
+ assert(sy+oy==5&&-sy+oy==25); /* NDC +Y top, -Y bottom */
  assert(!memcmp(j+0x6000,p->vertex.bytes,p->vertex.byteCount)&&!memcmp(j+0x8000,p->fragment.bytes,p->fragment.byteCount));
  assert(contains(j+0x20000,0x10000,s->vertices,sizeof(s->vertices)));
  assert(contains(j+0x20000,0x10000,s->matrix,sizeof(s->matrix)));
@@ -139,7 +146,7 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,A5MaliRestrictedDevice
  pass.colorAttachments[0].texture=(id)target;pass.colorAttachments[0].loadAction=MTLLoadActionLoad;
  pass.colorAttachments[0].storeAction=MTLStoreActionStore;
  A5MaliMetalRenderEncoder*r=[b renderCommandEncoderWithDescriptor:pass];assert(r);
- [r setRenderPipelineState:p];[r setViewport:(MTLViewport){0,0,32,32,0,1}];
+ [r setRenderPipelineState:p];[r setViewport:(MTLViewport){3,5,24,20,0,1}];
  A5MaliPrivateBuffer*vb=[d newBufferWithLength:sizeof(s->vertices)+32 options:0];
  A5MaliPrivateBuffer*matrix=[d newBufferWithLength:80 options:0];
  A5MaliPrivateBuffer*uv=[d newBufferWithLength:32 options:0];

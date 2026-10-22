@@ -90,6 +90,8 @@ static kern_return_t wire(void *context,uint32_t selector,const void *input,size
  assert(q->readSurfaces==1&&q->writeSurfaces==1);
  for(unsigned i=0;i<buffers;++i)assert(s->uploaded[i]==s->lengths[i]&&!memcmp(s->actual[i],s->expected[i],s->lengths[i]));
  const uint8_t*d=(const uint8_t*)input+sizeof(*q);
+ float sy,oy;memcpy(&sy,d+0x1000+516,4);memcpy(&oy,d+0x1000+532,4);
+ assert(sy+oy==0&&-sy+oy==32); /* all stock AIR misc profiles: Metal +Y is top */
  assert(!memcmp(d+0x6000,s->profile->passes[pass].vertex.bytes,s->profile->passes[pass].vertex.byteCount));
  assert(!memcmp(d+0x8000,s->profile->passes[pass].fragment.bytes,s->profile->passes[pass].fragment.byteCount));
  uint64_t vsStorage=0,fsStorage=0;
