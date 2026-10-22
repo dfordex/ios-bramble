@@ -8,6 +8,14 @@ if [[ $# != 4 || ${EUID} != 0 ]]; then
     exit 2
 fi
 os=$1 sysos=$2 appos=$3 root=$4
+# /Applications also contains launchd-managed system UI services, not just
+# optional home-screen apps. Require their source before starting any staging.
+ui_apps=(PosterBoard PaperBoard InputUI MediaRemoteUI PreBoard)
+for app in "${ui_apps[@]}"; do
+    [[ -f "$os/Applications/$app.app/$app" ]] || {
+        echo "missing required UI source: $app" >&2; exit 1;
+    }
+done
 for source in "$os/sbin/launchd" "$os/System/Library/CoreServices/SpringBoard.app/SpringBoard" \
     "$sysos/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64"; do
     [[ -f "$source" ]] || { echo "missing source: $source" >&2; exit 1; }
@@ -30,11 +38,10 @@ mount | grep -F " on $root (hfs," >/dev/null || {
     exit 1
 }
 
-# These are stock apps/assets outside the initial launchd -> backboardd ->
-# SpringBoard path. Leave SpringBoard and every framework in the OS volume.
-# The exclusion list can be reduced if a concrete missing-file error appears.
+# Preserve all /Applications: it includes PosterBoard, InputUI and other
+# launchd/FrontBoard services. Only the separately listed large asset families
+# remain omitted; they are not established as safe for every system feature.
 omit=(
-    '--exclude=/Applications/***'
     '--exclude=/System/Library/LinguisticData/***'
     '--exclude=/System/Library/PreinstalledAssetsV2/***'
     '--exclude=/System/Library/Health/***'
@@ -95,6 +102,11 @@ chmod 0600 "$root/private/var/keybags/systembag.kb"
     exit 1
 }
 [[ -f "$root/System/Library/CoreServices/SpringBoard.app/SpringBoard" ]] || exit 1
+for app in "${ui_apps[@]}"; do
+    [[ -f "$root/Applications/$app.app/$app" ]] || {
+        echo "required UI executable missing after copy: $app" >&2; exit 1;
+    }
+done
 [[ -f "$root/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64" ]] || exit 1
 sync
 df -h "$root"
