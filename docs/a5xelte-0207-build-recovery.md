@@ -65,8 +65,10 @@ identified the mismatch and the final suite was regenerated. The first BOOT
 installation attempt also stopped on its byte-count guard after a partial
 write, before sync or reboot. The installer had passed a buffered file handle
 whose underlying offset was advanced; it must use a fresh unbuffered handle.
-The phone remains in TWRP until the corrected 31-case kernel is linked,
-repacked and the complete replacement BOOT is written successfully.
+The corrected 31-case kernel was then linked and repacked. A fresh unbuffered
+source descriptor rewrote the complete31,418,384-byte BOOT from offset0; directdd
+acknowledged the exact byte count, sync completed and reboot was requested.
+No post-write hash or readback was performed. Device behavior remains pending.
 
 ## Samsung packaging
 
