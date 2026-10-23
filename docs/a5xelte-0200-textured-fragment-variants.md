@@ -69,3 +69,11 @@ The next device trial must prove the two new pixel cases, actual 604/605
 specialization and pipeline acceptance, terminal GPU jobs and visible UI.
 This build closes the two captured requests; it does not claim that every
 future iOS shader or render state is implemented.
+
+## Installation
+
+Source `5b4323f` was pushed before flashing. Exact model, recovery and BOOT p10
+mapping/capacity checks passed. Direct streaming acknowledged all 30,341,136
+bytes, sync completed and reboot was requested. No BOOT backup, post-write
+hash/readback, format or full USERDATA transfer was performed. Runtime results
+remain pending the user's next TWRP capture.
