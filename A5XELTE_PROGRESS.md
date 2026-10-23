@@ -664,3 +664,9 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Local verification:** All18 native wrapper binaries/final iOS compile pass; all ten profiles exercise absent/caller RT1, real auxiliary IOSurfaces, mapping/fence/bounds/alias failures. Structural u16/u32 tests pass for all ten. Signed bundle/payload preflight and full XNU pass. BOOT31,709,200bytes, unchanged loader/ADT, exact signed provider embedded;41 GPU cases. Hardware results pending. See[0211](docs/a5xelte-0211-inactive-blur-targets.md).
 
 - **0211 installed:** Source649de3bpushed. Guarded direct BOOTp10 write acknowledges31,709,200bytes; synccomplete/rebootrequested. NoBOOTbackup/readback/hash/fullroottransfer. Physical41-case results andbackboardd progressionpending.
+
+
+## 2026-10-24 — 0211 phone verifies missing-RT1 fix, waits for new fragment
+
+- **Read-only evidence:** SYSTEMflush79/all444,650recordedbytes/5,322lines/nooverwrite/kernelpanic/backboarddcrash. New104/108GPUcasesbothpass;total37/41, oldfourfailuresunchanged. Actual104missingRT1factoryaccepted; live104submitnotcaptured.
+- **Next wait:** BackboarddPID58waitsfornew two-image fixed_frag_lph_cph stage; parentreportsmetal2vulkanRUNNINGthrough121.4s. Soleworkfolderhasemptyair.log/noSPIR-Voutput. ExactrequestreplayonMacpassesSPIR-V/vulkan1.2validation. Needworkerstartup/exec/loading/scheduling evidence; cannotclaimphonecompilerprogressorMalioutput. PosterBoardstateassertionpersists. No device write/reboot. See[0211readout](docs/a5xelte-0211-log-review.md).
