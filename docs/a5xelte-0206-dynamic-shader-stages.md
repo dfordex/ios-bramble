@@ -90,3 +90,12 @@ On first use, a new shader can take minutes on the A53. Look for `STAGE
 PUBLISHED` and provider dynamic acceptance before concluding compilation has
 finished. Successful compile is separate from pipeline admission, GPU pixels
 and visible iOS progress. Recover the next SYSTEM log to check all four.
+
+## Installation
+
+Source `08efcbb` was pushed before flashing. Exact recovery/model/TWRP, BOOTp10
+mapping and33,554,432-byte capacity checks passed. Direct streaming acknowledged
+30,459,920 bytes; sync completed and reboot was requested. No BOOT backup,
+post-write hash/readback, formatting or whole USERDATA transfer was performed.
+Device-stage publication, native compositor receipts, new physical pixels and
+visible UI remain pending.
