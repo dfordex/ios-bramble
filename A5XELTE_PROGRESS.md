@@ -613,3 +613,11 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Local evidence:** Complete16-binary native render suite passes, including actual Mac IOSurface import/release and real released-Mesa emitter with mocked kernel transport. Negative descriptor, mapping span, GPU alias, allocation and fence cases pass. ARM64 iOS/Cortex-A53 provider compile/signature and actual kernel19-file payload preflight pass (raw40,578,032; packed9,812,557 bytes). Full XNU compile/link and final dSYM/strip/symset steps pass. BOOT31,426,576 bytes fits32MiB; proven0207d loader and ADT byte-identical, new compressed provider present in linked kernel. Install result is recorded below. Existing four0207d pixel-suite failures remain open; runtime admission/UI not yet claimed. See[0208](docs/a5xelte-0208-inactive-color-target.md).
 
 - **0208 installed:** Sourcec5fff96pushed; exactrecovery/model/TWRP/BOOTp10/capacityguardspass. Full31,426,576bytewriteacknowledged,synccomplete,rebootrequested. NoBOOTbackup/newreadback/hash/format/fullroottransfer. Physicalprofile100RT1mapping/fenceandUIbehaviorpendingnextcapture.
+
+
+## 2026-10-23 — 0208 physical readout: next reflected IO gap
+
+- **Capture:** Read-only SYSTEMflush54/all581,184recordedbytes;580,939decoded/6,089lines, about9m29sofFBintervals. CPU4/4,19fileinstall/newbundleconfirmed; nokernelpanicrecord.
+- **RT1 admission fixed:** Actualbackboarddacceptsprofile100withinternalBGRA8color1/writeMask0. No captured100query/submit/fence yet. An adjacentindexedDrawUnsupportedrecordappears; activeprofile/argumentsareunlogged. Sourceconfirmsblur99..108lackindexedroute, so donotclaimauxGPUexecution.
+- **New crash blocker:** Phonecacheaccepts2448-bytefixed_frag_lph_cph, thenpipelinefailscompiledstageIOABIandbackboarddSIGABRTstwice(ns13/code4). Exactdevicecacheconfirmsorderedframebufferfetch,color0vec4output,zeroactualtextures/samplersandnointerpolatedinputs. CurrentfactorymandatesUV+>=1texture; nativegraphalsorequiresnonzerotextures. Needgenuineuntextured/no-varyingfetchrouteacrossbothgates/emitteranduniformbounds. Merelycompilinganotherstageorignoringerrorsdoesnotrepairit.
+- **Working/open:**38loggedmiscsubmits,18Completed/error0CBs,eight4096panel/sourcechecksallmatch; nothomeUIor100/65536executionproof. Suite27/31unchangedfourfailuresremainopen. See[0208review](docs/a5xelte-0208-log-review.md).
