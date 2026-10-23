@@ -116,10 +116,9 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
   * this native pass writes only its authenticated logicalTarget0. */
  if(r->hasInactiveColor1){
   const A5RuntimeImage*a=&r->inactiveColor1;
-  if(r->hasInactiveColor1!=1||p->profileID!=100||p->colorFormats[1]!=80||
-     !p->attachmentContractCount||p->attachmentContracts[0].attachments[1].writeMask)
-   return A5RuntimeUnsupported;
-  if(a->metalPixelFormat!=80||!image(a,4)||a->width!=r->destination.width||a->height!=r->destination.height||
+  uint32_t format=A5MaliCompiledInactiveColor1Format(p);
+  if(r->hasInactiveColor1!=1||!format)return A5RuntimeUnsupported;
+  if(a->metalPixelFormat!=format||!image(a,format==115?8:4)||a->width!=r->destination.width||a->height!=r->destination.height||
      overlaps(a->gpuVA,a->bytes,r->source.gpuVA,r->source.bytes)||
      overlaps(a->gpuVA,a->bytes,r->destination.gpuVA,r->destination.bytes)||
      overlaps(a->gpuVA,a->bytes,r->descriptorGPUVA,A5RuntimeJobBytes))return A5RuntimeBounds;

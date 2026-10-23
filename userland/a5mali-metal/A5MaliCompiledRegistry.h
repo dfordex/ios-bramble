@@ -114,6 +114,26 @@ typedef struct A5MaliCompiledProfile {
     uint32_t immutableSamplerCount;
 } A5MaliCompiledProfile;
 
+/* Existing native blur route: the secondary declaration is inert only if
+ * every authenticated attachment variant disables its writes and no pass or
+ * input-attachment resource addresses it. Return its actual format; zero is
+ * not permission to synthesize an attachment. No shader-name special cases. */
+static inline uint32_t A5MaliCompiledInactiveColor1Format(const A5MaliCompiledProfile *p)
+{
+    if(!p || p->profileID<99 || p->profileID>108 || p->passCount!=1 ||
+        !p->passes || p->passes[0].logicalTarget!=0 ||
+        (p->colorFormats[1]!=80 && p->colorFormats[1]!=115) ||
+        !p->attachmentContracts || !p->attachmentContractCount ||
+        (p->resourceCount && !p->resources)) return 0;
+    for(uint32_t i=0;i<p->attachmentContractCount;++i)
+        if(p->attachmentContracts[i].attachments[1].writeMask ||
+            p->attachmentContracts[i].attachments[1].blendEnabled) return 0;
+    for(uint32_t i=0;i<p->resourceCount;++i)
+        if(p->resources[i].kind==A5MaliResourceInputAttachment &&
+            p->resources[i].metalIndex==1) return 0;
+    return p->colorFormats[1];
+}
+
 /* IDs are stable wire identities, not array positions. Absent profiles are
  * unsupported. 100..108 blur, 200..208 misc native passes, 300..302 path
  * coverage remaps; 400..403 are host-only original MRT metadata.

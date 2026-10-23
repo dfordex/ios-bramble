@@ -252,7 +252,7 @@ int main(void)
     assert(![device newRenderPipelineStateWithDescriptor:bad error:NULL]);
     bad=descriptor(A5MaliCompiledProfileForID(99),library);
     bad.colorAttachments[1].pixelFormat=MTLPixelFormatInvalid;
-    assert(![device newRenderPipelineStateWithDescriptor:bad error:NULL]);
+    assert([device newRenderPipelineStateWithDescriptor:bad error:NULL]); /* now metadata-normalized */
     A5MaliRestrictedDevice *wrong=[[A5MaliRestrictedDevice alloc]initWithTransport:transport context:&t
         commandCapabilities:63 operationCapabilities:127|(1u<<7)|(1u<<8)|(1u<<13)|(1u<<14)|(1u<<16)|(1u<<17)];
     assert(![wrong newRenderPipelineStateWithDescriptor:d error:NULL]);

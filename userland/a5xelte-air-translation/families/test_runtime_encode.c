@@ -37,9 +37,25 @@ static void check_indexed(const A5MaliCompiledProfile*p){
   for(unsigned i=0;i<6;++i)memcpy(indices+32+i*width,sequence+i,width);
   d.indexBuffer=(A5RuntimeBuffer){0,sizeof(indices),32,indices};
   d.primitive=A5RuntimeTriangle;
-  if(p->profileID==100){d.hasInactiveColor1=1;
-   d.inactiveColor1=(A5RuntimeImage){0x24000000,32768,64,128,256,80};}
+  if(A5MaliCompiledInactiveColor1Format(p)){unsigned pixel=p->colorFormats[1]==115?8:4;
+   d.hasInactiveColor1=1;
+   d.inactiveColor1=(A5RuntimeImage){0x24000000,64*128*pixel,64,128,64*pixel,p->colorFormats[1]};}
   assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
+  if(d.hasInactiveColor1){
+   A5RuntimeDraw bad=d;bad.inactiveColor1.gpuVA=d.destination.gpuVA;
+   assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeBounds&&zero());
+   bad=d;bad.inactiveColor1.bytes=128;
+   assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeBounds&&zero());
+   bad=d;bad.inactiveColor1.metalPixelFormat=1;
+   assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeBounds&&zero());
+   A5MaliCompiledProfile active=*p;
+   A5MaliCompiledAttachmentContract contract=*p->attachmentContracts;
+   contract.attachments[1].writeMask=15;active.attachmentContracts=&contract;active.attachmentContractCount=1;
+   assert(!A5MaliCompiledInactiveColor1Format(&active));
+   bad=d;bad.profile=&active;
+   assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeUnsupported&&zero());
+   assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
+  }
   pan_unpack((struct mali_primitive_packed*)(output+0x128),PRIMITIVE,indexed);
   assert(indexed.index_type==(width==2?MALI_INDEX_TYPE_UINT16:MALI_INDEX_TYPE_UINT32));
   assert(indexed.index_count==6&&indexed.indices==d.descriptorGPUVA+0x3a000);

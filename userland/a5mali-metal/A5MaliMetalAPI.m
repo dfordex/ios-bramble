@@ -393,30 +393,33 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         code:kIOReturnUnsupported userInfo:@{NSLocalizedDescriptionKey:
         @"factory requires authenticated same-device functions from one library"}];
     else profile=A5MaliSelectCompiledProfile(descriptor,&rejection);
-    /* The released downsample_8 program has an authenticated BGRA8 RT1
-     * declaration with writeMask=0. QuartzCore also requests the same program
-     * with RT1 absent. Materialize that inactive attachment internally, without
-     * changing caller state or accepting an unproved MRT write. All remaining
-     * constants, formats, vertex layouts and blend state still pass the exact
-     * registry selector. This is deliberately not a general format fallback. */
-    if(!profile && authenticatedPair &&
-        [[vertex name]isEqualToString:@"downsample_blur_vert_lph"] &&
-        [[fragment name]isEqualToString:@"downsample_8_frag_lph"]){
+    /* Omitted inactive RT1 is a descriptor adaptation, not another shader.
+     * Find the actual authenticated family contract, normalize only RT1 in a
+     * private copy, then run the full selector again. Active targets, samples,
+     * constants, layouts and blend state are never relaxed. */
+    if(!profile && authenticatedPair){
         MTLRenderPipelineColorAttachmentDescriptor *a=descriptor.colorAttachments[1];
         if(a.pixelFormat==MTLPixelFormatInvalid && !a.isBlendingEnabled &&
             (a.writeMask==MTLColorWriteMaskAll || a.writeMask==MTLColorWriteMaskNone) &&
             a.rgbBlendOperation==MTLBlendOperationAdd && a.alphaBlendOperation==MTLBlendOperationAdd &&
             a.sourceRGBBlendFactor==MTLBlendFactorOne && a.sourceAlphaBlendFactor==MTLBlendFactorOne &&
             a.destinationRGBBlendFactor==MTLBlendFactorZero && a.destinationAlphaBlendFactor==MTLBlendFactorZero){
-            MTLRenderPipelineDescriptor *internal=[descriptor copy];
-            internal.colorAttachments[1].pixelFormat=MTLPixelFormatBGRA8Unorm;
-            internal.colorAttachments[1].writeMask=MTLColorWriteMaskNone;
-            const A5MaliCompiledProfile *candidate=A5MaliSelectCompiledProfile(internal,NULL);
-            if(candidate && candidate->profileID==100 && candidate->passCount==1 &&
-                candidate->passes[0].logicalTarget==0 && candidate->colorFormats[1]==80 &&
-                candidate->attachmentContractCount &&
-                candidate->attachmentContracts[0].attachments[1].writeMask==0){
-                profile=candidate;suppliesInactiveColor1=YES;rejection=nil;
+            size_t count=0;
+            const A5MaliCompiledProfile *profiles=A5MaliCompiledProfiles(&count);
+            for(size_t i=0;i<count;++i){
+                const A5MaliCompiledProfile *contract=profiles+i;
+                uint32_t format=A5MaliCompiledInactiveColor1Format(contract);
+                if(!format || ![[vertex name]isEqualToString:
+                    [NSString stringWithUTF8String:contract->vertexName]] ||
+                    ![[fragment name]isEqualToString:
+                    [NSString stringWithUTF8String:contract->fragmentName]])continue;
+                MTLRenderPipelineDescriptor *internal=[descriptor copy];
+                internal.colorAttachments[1].pixelFormat=(MTLPixelFormat)format;
+                internal.colorAttachments[1].writeMask=MTLColorWriteMaskNone;
+                const A5MaliCompiledProfile *candidate=A5MaliSelectCompiledProfile(internal,NULL);
+                if(candidate==contract){
+                    profile=candidate;suppliesInactiveColor1=YES;rejection=nil;break;
+                }
             }
         }
     }
@@ -433,7 +436,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     if(executable && [[self privateDevice]supportsNativePrograms]){
         if(error)*error=nil;
         logPipelineDecision(self,descriptor,profileID,YES,suppliesInactiveColor1?
-            @"authenticated executable profile; internal BGRA8 color1 writeMask=0":@"authenticated executable profile");
+            @"authenticated executable profile; internal inactive color1 writeMask=0":@"authenticated executable profile");
         return [[A5MaliCompiledPipeline alloc]initWithDevice:self profile:profile
             sourceOver:descriptor.colorAttachments[0].isBlendingEnabled compileRequestID:compileRequestID dynamicOwner:dynamicOwner
             suppliesInactiveColor1:suppliesInactiveColor1];
@@ -1320,16 +1323,18 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     if(pipeline.suppliesInactiveColor1){
         auxiliary=_attachments[@1];
         if(!auxiliary){
-            if(!_inactiveColor1){
+            if(!_inactiveColor1 || _inactiveColor1.width!=destination.width ||
+                _inactiveColor1.height!=destination.height ||
+                _inactiveColor1.pixelFormat!=profile->colorFormats[1]){
                 MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
-                    MTLPixelFormatBGRA8Unorm width:destination.width height:destination.height mipmapped:NO];
+                    (MTLPixelFormat)profile->colorFormats[1] width:destination.width height:destination.height mipmapped:NO];
                 d.storageMode=MTLStorageModePrivate;d.usage=MTLTextureUsageRenderTarget;
                 _inactiveColor1=[_buffer.device newTextureWithDescriptor:d];
             }
             auxiliary=_inactiveColor1;
         }
         if(!auxiliary || auxiliary.device!=_buffer.device || !auxiliary.privateSurface ||
-            auxiliary.pixelFormat!=MTLPixelFormatBGRA8Unorm || auxiliary.width!=destination.width ||
+            auxiliary.pixelFormat!=A5MaliCompiledInactiveColor1Format(profile) || auxiliary.width!=destination.width ||
             auxiliary.height!=destination.height || !(auxiliary.usage&MTLTextureUsageRenderTarget) ||
             textureBackingAliases(auxiliary,source) || textureBackingAliases(auxiliary,destination))return NO;
     }

@@ -47,7 +47,7 @@ typedef struct {
     uint64_t descriptorGPUVA;
     A5RuntimeImage source, destination;
     A5RuntimeBlurSampler sourceSampler;
-    /* Optional mapped RT1 backing for profile100's inactive BGRA8 output.
+    /* Optional mapped RT1 backing for an authenticated inactive blur output.
      * Its authenticated write mask is zero: it is retained/validated, never
      * emitted as an SFBD writeback or advertised as general MRT support. */
     A5RuntimeImage inactiveColor1;

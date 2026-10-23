@@ -6,12 +6,32 @@
 #import "A5MaliMetalDeviceResources.h"
 #import "A5MaliCompiledRegistry.h"
 #import "A5MaliNative.h"
+#import "A5MaliMetalTexture.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdio.h>
 
+/* Exercise non-BGRA target metadata without forging the internal auxiliary:
+ * the auxiliary itself is always a real IOSurface through production allocation. */
+@interface A5MaliRestrictedDevice (HostBackingDevice)
+- (A5MaliDevice *)privateDevice;
+@end
+@interface A5MaliMetalTexture (HostBackingInitializer)
+- (instancetype)initWithSurface:(A5MaliSurface *)surface device:(A5MaliRestrictedDevice *)device
+    descriptor:(MTLTextureDescriptor *)descriptor layout:(A5MaliTextureAllocationLayout)layout external:(BOOL)external;
+@end
+static A5MaliMetalTexture *target(A5MaliRestrictedDevice *device,uint64_t token,MTLPixelFormat format)
+{
+    NSUInteger row=32*A5MaliTexturePixelBytes(format);
+    MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:32 height:32 mipmapped:NO];
+    d.usage=MTLTextureUsageRenderTarget;d.storageMode=MTLStorageModeShared;
+    A5MaliTextureAllocationLayout layout;assert(A5MaliBuildTextureAllocationLayout(d,&layout,NULL));
+    A5MaliSurface *surface=[[device privateDevice]hostTestSurfaceWithResource:
+        (A5MaliResource){token,32,32,(uint32_t)row,A5MaliRead|A5MaliWrite}];
+    return [[A5MaliMetalTexture alloc]initWithSurface:surface device:device descriptor:d layout:layout external:YES];
+}
 @interface A5MaliMetalBuffer (StockSelectorForwardTest)
 - (BOOL)commitAndWaitUntilSubmitted;
 @end
@@ -24,7 +44,7 @@ typedef struct {
     IOSurfaceRef imported[32];
     BOOL badAuxSpan,badAuxAlias,failImport,providedAux;
     BOOL badFormat,badFence,badDestinationRead;
-    uint8_t vertex[144],matrix[64],texmat[16],filter[72],edr[2];
+    uint8_t vertex[144],matrix[64],texmat[16],filter[256],edr[2];
     const A5MaliCompiledProfile *profile;
 } Transport;
 static BOOL contains(const uint8_t *haystack,size_t count,const void *needle,size_t bytes)
@@ -42,7 +62,10 @@ static kern_return_t transport(void *opaque,uint32_t selector,const void *input,
         unsigned i=t->imports++;t->imported[i]=surface;
         assert(q->usage==(A5MaliRead|A5MaliWrite));
         assert(IOSurfaceGetWidth(surface)==32 && IOSurfaceGetHeight(surface)==32);
-        Imported r={{1,sizeof(r),0,0},UINT64_C(0x100000010)+i,32,32,128,0x42475241};
+        assert(IOSurfaceGetPixelFormat(surface)==A5MaliTexturePixelCode(t->profile->colorFormats[1]));
+        assert(IOSurfaceGetBytesPerElement(surface)==A5MaliTexturePixelBytes(t->profile->colorFormats[1]));
+        Imported r={{1,sizeof(r),0,0},UINT64_C(0x100000010)+i,32,32,
+            (uint32_t)IOSurfaceGetBytesPerRow(surface),IOSurfaceGetPixelFormat(surface)};
         assert(*outBytes==sizeof(r));memcpy(output,&r,sizeof(r));return KERN_SUCCESS;
     }
     if(selector==A5MaliMap){
@@ -72,8 +95,10 @@ static kern_return_t transport(void *opaque,uint32_t selector,const void *input,
         A5NativeQueryResult r={.header={1,sizeof(r),0,0},.jobVA=A5NativeJobVA,
             .jobBytes=A5NativeJobBytes,.flags=41};
         r.surfaces[0]=(A5NativeSpan){q->surfaces[0],0x10000000,16384,64,64,256,0x42475241,A5MaliRead};
-        r.surfaces[1]=(A5NativeSpan){q->surfaces[1],0x11000000,4096,32,32,128,0x42475241,A5MaliRead|A5MaliWrite};
-        r.surfaces[2]=(A5NativeSpan){q->surfaces[2],0x12000000,4096,32,32,128,0x42475241,A5MaliRead|A5MaliWrite};
+        unsigned pixel=(unsigned)A5MaliTexturePixelBytes(t->profile->colorFormats[0]);
+        unsigned code=A5MaliTexturePixelCode(t->profile->colorFormats[0]);
+        r.surfaces[1]=(A5NativeSpan){q->surfaces[1],0x11000000,1024*pixel,32,32,32*pixel,code,A5MaliRead|A5MaliWrite};
+        r.surfaces[2]=(A5NativeSpan){q->surfaces[2],0x12000000,1024*pixel,32,32,32*pixel,code,A5MaliRead|A5MaliWrite};
         if(t->badAuxSpan)r.surfaces[2].bytes=128;
         if(t->badAuxAlias)r.surfaces[2].gpuVA=r.surfaces[1].gpuVA;
         if(t->badFormat)r.surfaces[0].pixelFormat=0x52476841;
@@ -84,7 +109,7 @@ static kern_return_t transport(void *opaque,uint32_t selector,const void *input,
     assert(bytes==sizeof(A5NativeSubmitRequest)+A5NativeJobBytes);
     const A5NativeSubmitRequest *q=input;
     assert(q->header.version==1 && q->header.size==sizeof(*q));
-    assert(q->mappingEpoch==41 && q->profileID==100 && q->jobBytes==A5NativeJobBytes);
+    assert(q->mappingEpoch==41 && q->profileID==t->profile->profileID && q->jobBytes==A5NativeJobBytes);
     assert(q->vertexOffset==0 && q->tilerOffset==0x100 && q->fragmentOffset==0x200);
     assert(q->readSurfaces==7 && q->writeSurfaces==2 && !q->readBuffers);
     const uint8_t *jobs=(const uint8_t *)input+sizeof(*q);
@@ -136,8 +161,7 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     pass.colorAttachments[0].texture=(id)destination;
     pass.colorAttachments[0].loadAction=MTLLoadActionLoad;
     pass.colorAttachments[0].storeAction=MTLStoreActionStore;
-    if(t->providedAux)pass.colorAttachments[1].texture=(id)[device hostTestTextureWithResource:
-        (A5MaliResource){0x100000003,32,32,128,A5MaliRead|A5MaliWrite}];
+    if(t->providedAux)pass.colorAttachments[1].texture=(id)target(device,0x100000003,t->profile->colorFormats[1]);
     pass.colorAttachments[1].loadAction=MTLLoadActionLoad;
     pass.colorAttachments[1].storeAction=MTLStoreActionStore;
     A5MaliMetalRenderEncoder *r=[buffer renderCommandEncoderWithDescriptor:pass];assert(r);
@@ -149,8 +173,12 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     [r setVertexBuffer:vertices offset:17 atIndex:1];
     [r setVertexBytes:t->matrix length:64 atIndex:2];
     [r setVertexBytes:t->texmat length:16 atIndex:3];
-    uint8_t inlineFilter[72];memcpy(inlineFilter,t->filter,72);
-    [r setFragmentBytes:inlineFilter length:undersized?71:72 atIndex:1];
+    NSUInteger filterBytes=0;
+    for(unsigned i=0;i<t->profile->resourceCount;++i){const A5MaliCompiledResource *r=t->profile->resources+i;
+        if(r->stage==A5MaliStageFragment && r->kind==A5MaliResourceBuffer && r->metalIndex==1)filterBytes=r->uniformBytes;}
+    assert(filterBytes && filterBytes<=sizeof(t->filter));
+    uint8_t inlineFilter[256];memcpy(inlineFilter,t->filter,sizeof(inlineFilter));
+    [r setFragmentBytes:inlineFilter length:undersized?filterBytes-1:filterBytes atIndex:1];
     memset(inlineFilter,0xff,sizeof(inlineFilter)); /* setBytes owns the old copy */
     [r setFragmentBytes:t->edr length:2 atIndex:6];
     if(samplerMissing)[r setFragmentTexture:source atIndex:3];
@@ -161,10 +189,10 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     memcpy((uint8_t *)vertices.contents+17,t->vertex,144); /* visible at commit */
     return buffer;
 }
-int main(void)
+static void runProfile(unsigned profileID)
 {
  @autoreleasepool {
-    Transport t={0};t.profile=A5MaliCompiledProfileForID(100);assert(t.profile);
+    Transport t={0};t.profile=A5MaliCompiledProfileForID(profileID);assert(t.profile);
     memset(t.vertex,0x31,sizeof(t.vertex));memset(t.matrix,0x42,sizeof(t.matrix));
     memset(t.texmat,0x53,sizeof(t.texmat));memset(t.filter,0x64,sizeof(t.filter));
     t.edr[0]=0x34;t.edr[1]=0x38;
@@ -180,18 +208,15 @@ int main(void)
     A5MaliReadSurfCandidate *pipeline=[device newRenderPipelineStateWithDescriptor:d error:&error];
     assert(pipeline&&!error);
     assert(d.colorAttachments[1].pixelFormat==MTLPixelFormatInvalid && d.colorAttachments[1].writeMask==MTLColorWriteMaskAll);
-    MTLRenderPipelineDescriptor *bad=[d copy];bad.colorAttachments[1].pixelFormat=MTLPixelFormatRGBA16Float;
+    MTLRenderPipelineDescriptor *bad=[d copy];bad.colorAttachments[1].pixelFormat=t.profile->colorFormats[1]==80?MTLPixelFormatRGBA16Float:MTLPixelFormatBGRA8Unorm;
     assert(![device newRenderPipelineStateWithDescriptor:bad error:NULL]);
     bad=[d copy];bad.colorAttachments[1].writeMask=MTLColorWriteMaskRed;
     assert(![device newRenderPipelineStateWithDescriptor:bad error:NULL]);
     bad=[d copy];bad.colorAttachments[1].blendingEnabled=YES;
     assert(![device newRenderPipelineStateWithDescriptor:bad error:NULL]);
-    bad=[d copy];bad.colorAttachments[0].pixelFormat=MTLPixelFormatRGBA16Float;
+    bad=[d copy];bad.colorAttachments[0].pixelFormat=MTLPixelFormatR8Unorm;
     assert(![device newRenderPipelineStateWithDescriptor:bad error:NULL]);
     bad=[d copy];bad.vertexDescriptor.layouts[1].stride=47;
-    assert(![device newRenderPipelineStateWithDescriptor:bad error:NULL]);
-    bad=descriptor(A5MaliCompiledProfileForID(99),library);
-    bad.colorAttachments[1].pixelFormat=MTLPixelFormatInvalid;
     assert(![device newRenderPipelineStateWithDescriptor:bad error:NULL]);
     A5MaliRestrictedDevice *wrong=[[A5MaliRestrictedDevice alloc]initWithTransport:transport context:&t
         commandCapabilities:63 operationCapabilities:127|(1u<<16)|(1u<<17)];
@@ -199,8 +224,7 @@ int main(void)
     @autoreleasepool {
       A5MaliMetalTexture *source=[device hostTestTextureWithResource:
           (A5MaliResource){0x100000001,64,64,256,A5MaliRead}];
-      A5MaliMetalTexture *destination=[device hostTestTextureWithResource:
-          (A5MaliResource){0x100000002,32,32,128,A5MaliWrite}];
+      A5MaliMetalTexture *destination=target(device,0x100000002,t.profile->colorFormats[0]);
       A5MaliMetalBuffer *b=encode(device,pipeline,source,destination,&t,NO,NO);
       assert(t.imports==1 && !t.queries);[b commit];[b waitUntilCompleted];
       assert(b.status==MTLCommandBufferStatusCompleted && !b.error && t.queries==1 && t.submits==1);
@@ -224,7 +248,11 @@ int main(void)
     assert(t.imports>0);
     for(unsigned i=0;i+1<t.imports;++i)assert(!t.imported[i]);
     assert(t.imported[t.imports-1]); /* uncertain GPU access must retain pages */
-    printf("profile100 absent RT1: exact factory, real IOSurface, query3/read7/write2, caller RT1, bounds/alias/fence/allocation gates passed\n");
+    printf("profile%u absent RT1: exact factory, real IOSurface format%u, query3/read7/write2, caller RT1, bounds/alias/fence/allocation gates passed\n",profileID,t.profile->colorFormats[1]);
  }
- return 0;
+}
+int main(void)
+{
+    for(unsigned i=99;i<=108;++i)runProfile(i);
+    return 0;
 }

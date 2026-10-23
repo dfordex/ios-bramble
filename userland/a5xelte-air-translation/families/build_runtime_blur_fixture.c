@@ -31,18 +31,27 @@ static void rgba_source_to_bgra(uint8_t*dst,const uint8_t*src){
 }
 
 int main(int argc,char**argv){
- if(argc<3||argc>5)return 2;
- int linear=argc==5&&!strcmp(argv[4],"--linear");if(argc==5&&!linear)return 2;FILE*f=fopen(argv[1],"rb");if(!f)return 2;
+ if(argc<3||argc>6)return 2;
+ int linear=0;unsigned profileID=100,bits=0;
+ for(int i=3;i<argc;++i){
+  if(!strcmp(argv[i],"--linear"))linear=1;
+  else if(!strncmp(argv[i],"--profile=",10))profileID=(unsigned)strtoul(argv[i]+10,NULL,10);
+  else if(!bits)bits=(unsigned)strtoul(argv[i],NULL,10);
+  else return 2;
+ }
+ if(bits&&bits!=16&&bits!=32)return 2;
+ FILE*f=fopen(argv[1],"rb");if(!f)return 2;
  if(fread(legacy,1,sizeof(legacy),f)!=sizeof(legacy)||fgetc(f)!=EOF)return 2;fclose(f);
  if(!legacy_source_is_rgba(legacy)){fputs("legacy source must be exact RGBA8 linear64x64 contract\n",stderr);return 2;}
  const A5MaliCompiledProfile*p=NULL;
  for(unsigned i=0;i<sizeof(kA5MaliCompiledProfiles)/sizeof(kA5MaliCompiledProfiles[0]);++i)
-  if(kA5MaliCompiledProfiles[i].profileID==100)p=kA5MaliCompiledProfiles+i;
+  if(kA5MaliCompiledProfiles[i].profileID==profileID)p=kA5MaliCompiledProfiles+i;
  if(!p||(p->flags&A5MaliProfileFixedViewport))return 2;
  float mvp[16]={0};mvp[0]=mvp[5]=2.f/32;mvp[10]=mvp[15]=1;mvp[12]=mvp[13]=-1;
  A5RuntimeDraw d={0};d.profile=p;d.descriptorGPUVA=0x02000000;
  d.source=(A5RuntimeImage){0x03000000,0x4000,64,64,256,80};
- d.destination=(A5RuntimeImage){0x04000000,0x1000,32,32,128,80};
+ unsigned pixel=p->colorFormats[0]==115?8:4;
+ d.destination=(A5RuntimeImage){0x04000000,32*32*pixel,32,32,32*pixel,p->colorFormats[0]};
  uint8_t vertices[192];memcpy(vertices,legacy+0xc00,sizeof(vertices));
  if(linear){
   /* Same positions and indexed topology; fractional source coordinates cross
@@ -56,13 +65,16 @@ int main(int argc,char**argv){
  d.vertexBuffers[1]=(A5RuntimeBuffer){0,192,0,vertices};
  d.vertexBuffers[2]=(A5RuntimeBuffer){0,64,0,(const uint8_t*)mvp};
  d.vertexBuffers[3]=(A5RuntimeBuffer){0,16,0,legacy+0xa40};
- d.fragmentBuffers[1]=(A5RuntimeBuffer){0,32,0,legacy+0xa80};
+ unsigned filterBytes=0;
+ for(unsigned i=0;i<p->resourceCount;++i)if(p->resources[i].stage==A5MaliStageFragment &&
+  p->resources[i].kind==A5MaliResourceBuffer && p->resources[i].metalIndex==1)filterBytes=p->resources[i].uniformBytes;
+ if(!filterBytes||filterBytes>128)return 2;
+ d.fragmentBuffers[1]=(A5RuntimeBuffer){0,filterBytes,0,legacy+0xa80};
  d.fragmentBuffers[6]=(A5RuntimeBuffer){0,2,0,legacy+0xb00};
  d.viewportWidth=d.viewportHeight=32;d.viewportFar=1;
  d.scissorWidth=d.scissorHeight=32;d.vertexCount=4;d.primitive=A5RuntimeTriangleStrip;
  uint8_t indexBytes[32]={0};unsigned indexWidth=0;
- if(argc>=4){
-  unsigned bits=(unsigned)strtoul(argv[3],NULL,10);if(bits!=16&&bits!=32)return 2;
+ if(bits){
   indexWidth=bits/8;const uint32_t indices[]={2,0,1,2,1,3};
   memset(indexBytes,0xa6,sizeof(indexBytes));
   for(unsigned i=0;i<6;i++)memcpy(indexBytes+(i+2)*indexWidth,indices+i,indexWidth);
@@ -95,7 +107,7 @@ int main(int argc,char**argv){
  MALI_FRAMEBUFFER_PARAMETERS_pack((struct mali_framebuffer_parameters_packed*)(out+0x320),&fb);
  pan_unpack((struct mali_surface_with_stride_packed*)(out+0x19a0),SURFACE_WITH_STRIDE,preload);
  preload.pointer=d.descriptorGPUVA+0x3e000;MALI_SURFACE_WITH_STRIDE_pack((struct mali_surface_with_stride_packed*)(out+0x19a0),&preload);
- rgba_source_to_bgra(out+0x3a000,legacy+0xa000);memset(out+0x3e000,0xcd,0x1000);memset(out+0x3f000,0xa7,0x1000);
+ rgba_source_to_bgra(out+0x3a000,legacy+0xa000);memset(out+0x3e000,0xcd,32*32*pixel);if(pixel==4)memset(out+0x3f000,0xa7,0x1000);else memset(out+0x39d00,0xa7,0x300);
  f=fopen(argv[2],"wb");if(!f)return 2;
  if(fwrite(out,1,sizeof(out),f)!=sizeof(out)||fclose(f))return 2;
  printf("Encoded genuine dynamic blur VS offscreen32x32, index width=%u; real runtime descriptors and caller ortho MVP; linear=%u; no GPU execution claim\n",indexWidth,linear);return 0;
