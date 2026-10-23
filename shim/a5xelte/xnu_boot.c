@@ -43,6 +43,15 @@ _Static_assert(sizeof(struct boot_args) == 736, "boot_args size");
 
 static void zero_bytes(uintptr_t dst, uint64_t size)
 {
+    /* MMU-off byte stores make large kernel BSS ranges unnecessarily slow. */
+    if (!(dst & 7)) {
+        volatile uint64_t *words = (volatile uint64_t *)dst;
+        while (size >= 8) {
+            *words++ = 0;
+            size -= 8;
+        }
+        dst = (uintptr_t)words;
+    }
     volatile uint8_t *d = (volatile uint8_t *)dst;
     for (uint64_t i = 0; i < size; ++i)
         d[i] = 0;
@@ -50,6 +59,17 @@ static void zero_bytes(uintptr_t dst, uint64_t size)
 
 static void copy_bytes(uintptr_t dst, uintptr_t src, uint64_t size)
 {
+    /* Payload segments are eight-byte aligned; keep an exact bounded tail. */
+    if (!((dst | src) & 7)) {
+        volatile uint64_t *dw = (volatile uint64_t *)dst;
+        volatile const uint64_t *sw = (volatile const uint64_t *)src;
+        while (size >= 8) {
+            *dw++ = *sw++;
+            size -= 8;
+        }
+        dst = (uintptr_t)dw;
+        src = (uintptr_t)sw;
+    }
     volatile uint8_t *d = (volatile uint8_t *)dst;
     volatile const uint8_t *s = (volatile const uint8_t *)src;
     for (uint64_t i = 0; i < size; ++i)
@@ -83,6 +103,15 @@ static uintptr_t align_page(uintptr_t value)
 /* Returns entry PA or zero. Status is kept in reserved RAM for TWRP. */
 uintptr_t a5_prepare_xnu(uintptr_t fdt, volatile uint64_t *log)
 {
+    /* Exynos7580 downstream s3c2410wdt_stop(): WTCON ENABLE(bit5), RSTEN(bit0).
+     * Take over S-Boot's live timer before copying the kernel with the MMU off.
+     * This register is volatile runtime state, not a persistent device setting.
+     */
+    volatile uint32_t *wtcon = (volatile uint32_t *)0x101b0000UL;
+    log[21] = *wtcon;
+    *wtcon = (uint32_t)log[21] & ~((1U << 5) | 1U);
+    __asm__ volatile("dsb sy" : : : "memory");
+    log[22] = *wtcon;
     uint64_t rd_start, rd_end;
     log[10] = (uint64_t)-1;
     if (!fdt_chosen_u64(fdt, "linux,initrd-start", &rd_start) ||
@@ -119,9 +148,14 @@ uintptr_t a5_prepare_xnu(uintptr_t fdt, volatile uint64_t *log)
             s->vmsize > p->mem_size || s->vmaddr - p->virt_base > p->mem_size - s->vmsize)
             return 0;
         uintptr_t dst = p->phys_base + (s->vmaddr - p->virt_base);
+        log[18] = i + 1;
+        log[19] = 1;
         copy_bytes(dst, rd_start + s->file_off, s->file_size);
+        log[19] = 2;
         zero_bytes(dst + s->file_size, s->vmsize - s->file_size);
+        log[19] = 3;
         clean_bytes(dst, dst + s->vmsize);
+        log[19] = 4;
     }
     log[10] = 4;
     uintptr_t adt_pa = kernel_end;
