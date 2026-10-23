@@ -647,3 +647,5 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Local build:** Signed provider,19-file payload preflight (40,637,488 raw /9,833,968 packed), full XNU and31,641,616-byte BOOT pass. Proven loader/ADT unchanged. Suite39 cases includes actual602 ordered fetch and independent fractional-UV linear blur tests. New phone results and live UI remain pending. See[0210 implementation](docs/a5xelte-0210-native-metal-integration.md).
 
 - **Final local gate:** All18 native wrapper binaries and Cortex-A53/iOS API compile pass, including actual IOSurface command-buffer dependency integration. Tests retain backing memory after injected GPU timeout instead of assuming reusable destinations. Kernel transport remains mocked in host tests.
+
+- **0210 installed:** Sourcec9649edpushed; exactserial/A5/TWRP/BOOTp10/capacityguardspass. Full31,641,616-bytewriteacknowledged,synccomplete,rebootrequested. NoBOOTbackup/readback/hash/fullroottransfer. New39-case GPUresults andbackboardd/UIprogresspendingphonecapture.

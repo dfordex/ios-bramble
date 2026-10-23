@@ -57,3 +57,12 @@ Only BOOT p10 is explicitly written. The existing embedded installer updates its
 exact incremental userland files on HFS root. No whole USERDATA image transfer,
 BOOT backup, post-write hash/readback, recovery/EFS/factory partition write occurs.
 Physical runtime results remain pending until the next SYSTEM-log capture.
+
+## Installed0210
+
+Source `c9649ed` was pushed before installation. Serial/recovery/model/TWRP,
+BOOT p10 mapping and32MiB capacity guards passed. The direct offset-zero write
+acknowledged all31,641,616 bytes, sync completed and reboot was requested.
+No BOOT backup, device readback/hash or whole USERDATA transfer was performed.
+New39-case results, actual backboardd pipeline admission and visible UI remain
+pending phone observation and the next SYSTEM-log capture.
