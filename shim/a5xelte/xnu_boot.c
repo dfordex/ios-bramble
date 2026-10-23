@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "../fdt.h"
 #include "display_console.h"
+#include "watchdog.h"
 
 #define LOG_BASE 0x469ff000UL
 #define RAM_BASE 0x80000000UL
@@ -47,6 +48,7 @@ static void zero_bytes(uintptr_t dst, uint64_t size)
     if (!(dst & 7)) {
         volatile uint64_t *words = (volatile uint64_t *)dst;
         while (size >= 8) {
+            if (!(size & 0xffffU)) a5_watchdog_keepalive();
             *words++ = 0;
             size -= 8;
         }
@@ -54,7 +56,10 @@ static void zero_bytes(uintptr_t dst, uint64_t size)
     }
     volatile uint8_t *d = (volatile uint8_t *)dst;
     for (uint64_t i = 0; i < size; ++i)
+    {
+        if (!(i & 0xffffU)) a5_watchdog_keepalive();
         d[i] = 0;
+    }
 }
 
 static void copy_bytes(uintptr_t dst, uintptr_t src, uint64_t size)
@@ -64,6 +69,7 @@ static void copy_bytes(uintptr_t dst, uintptr_t src, uint64_t size)
         volatile uint64_t *dw = (volatile uint64_t *)dst;
         volatile const uint64_t *sw = (volatile const uint64_t *)src;
         while (size >= 8) {
+            if (!(size & 0xffffU)) a5_watchdog_keepalive();
             *dw++ = *sw++;
             size -= 8;
         }
@@ -73,7 +79,10 @@ static void copy_bytes(uintptr_t dst, uintptr_t src, uint64_t size)
     volatile uint8_t *d = (volatile uint8_t *)dst;
     volatile const uint8_t *s = (volatile const uint8_t *)src;
     for (uint64_t i = 0; i < size; ++i)
+    {
+        if (!(i & 0xffffU)) a5_watchdog_keepalive();
         d[i] = s[i];
+    }
 }
 
 static void clean_bytes(uintptr_t start, uintptr_t end)
@@ -82,7 +91,10 @@ static void clean_bytes(uintptr_t start, uintptr_t end)
     __asm__ volatile("mrs %0, CTR_EL0" : "=r" (ctr));
     uintptr_t line = 4UL << ((ctr >> 16) & 0xf);
     for (uintptr_t p = start & ~(line - 1); p < end; p += line)
+    {
+        if (!(p & 0xffffU)) a5_watchdog_keepalive();
         __asm__ volatile("dc cvac, %0" : : "r" (p) : "memory");
+    }
     __asm__ volatile("dsb sy" : : : "memory");
 }
 
@@ -112,6 +124,9 @@ uintptr_t a5_prepare_xnu(uintptr_t fdt, volatile uint64_t *log)
     *wtcon = (uint32_t)log[21] & ~((1U << 5) | 1U);
     __asm__ volatile("dsb sy" : : : "memory");
     log[22] = *wtcon;
+    a5_watchdog_keepalive();
+    log[23] = *(volatile uint32_t *)0x101b0004UL;
+    log[24] = *(volatile uint32_t *)0x101b0008UL;
     uint64_t rd_start, rd_end;
     log[10] = (uint64_t)-1;
     if (!fdt_chosen_u64(fdt, "linux,initrd-start", &rd_start) ||

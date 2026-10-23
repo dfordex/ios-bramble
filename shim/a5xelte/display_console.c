@@ -6,6 +6,7 @@
  */
 #include <stdint.h>
 #include "display_console.h"
+#include "watchdog.h"
 
 #define BIT(n) (1U << (n))
 #define DECON 0x14830000UL
@@ -80,8 +81,10 @@ static void mask(uintptr_t address, uint32_t bits, uint32_t value)
 
 static int poll(uintptr_t address, uint32_t bits, uint32_t want)
 {
-    for (unsigned i = 0; i < MAX_POLL; ++i)
+    for (unsigned i = 0; i < MAX_POLL; ++i) {
+        if (!(i & 255U)) a5_watchdog_keepalive();
         if ((rd(address) & bits) == want) return 1;
+    }
     return 0;
 }
 
@@ -91,7 +94,10 @@ static void clean_fb(void)
     __asm__ volatile("mrs %0, CTR_EL0" : "=r" (ctr));
     uintptr_t line = 4UL << ((ctr >> 16) & 15U);
     for (uintptr_t p = FB_BASE; p < FB_BASE + FB_STRIDE * FB_HEIGHT; p += line)
+    {
+        if (!(p & 0xffffU)) a5_watchdog_keepalive();
         __asm__ volatile("dc cvac, %0" : : "r" (p) : "memory");
+    }
     __asm__ volatile("dsb sy" : : : "memory");
 }
 
@@ -157,10 +163,12 @@ static void enable_clocks(void)
     setbits(DISP_CMU + 0xa00, BIT(0) | BIT(1) | BIT(5) | BIT(9) | BIT(10));
 }
 
-static int dsim_handoff(void)
+static int dsim_handoff(volatile uint64_t *log)
 {
+    log[79] = 1;
     setbits(DSIM + 0x0c, BIT(16));
     if (!poll(DSIM + 0x0c, BIT(16), 0)) return 0;
+    log[79] = 2;
     setbits(DSIM + 0x1c, 0x7ffU << 21);
     setbits(DSIM + 0x14, 0xffffffU);
     mask(DSIM + 0x78, 0xffffU, 0xffffU);
@@ -169,7 +177,9 @@ static int dsim_handoff(void)
     mask(DSIM + 0x1c, BIT(7) | BIT(6), 0);
     setbits(DSIM + 0x20, BIT(31));
     setbits(DSIM + 0x0c, BIT(16));
+    log[79] = 3;
     if (!poll(DSIM + 0x0c, BIT(16), 0)) return 0;
+    log[79] = 4;
     setbits(DSIM + 0x10, BIT(31));
     return 1;
 }
@@ -284,20 +294,27 @@ int a5_display_console_start(volatile uint64_t *log)
     wr(DECON + TRIGCON, BIT(13) | BIT(3));
     wr(DECON + INTCON1, 7);
     log[DISP_STATE] = 3;
-    if (!dsim_handoff()) return -6;
+    if (!dsim_handoff(log)) return -6;
+    log[79] = 5;
     static const uint8_t column[] = {0x2a, 0, 0, 0x04, 0x37};
     static const uint8_t page[] = {0x2b, 0, 0, 0x07, 0x7f};
     if (!dcs_long(column, sizeof(column))) return -7;
+    log[79] = 6;
     if (!dcs_long(page, sizeof(page))) return -8;
+    log[79] = 7;
     uint8_t address_mode;
     if (!dcs_address_mode(&address_mode)) return -9;
+    log[79] = 8;
     log[78] = address_mode;
     if (!dcs_short_param(0x36, address_mode & (uint8_t)~BIT(3))) return -10;
+    log[79] = 9;
 
     log[DISP_STATE] = 4;
     volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)FB_BASE;
-    for (unsigned i = 0; i < FB_WIDTH * FB_HEIGHT; ++i)
+    for (unsigned i = 0; i < FB_WIDTH * FB_HEIGHT; ++i) {
+        if (!(i & 0x3fffU)) a5_watchdog_keepalive();
         fb[i] = 0xff000000U;
+    }
     draw_text(0, "A5XELTE XNU");
     draw_text(1, "DECON DISPLAY READY");
     draw_text(2, "XNU ENTRY:");

@@ -584,3 +584,8 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Correction:** FollowactualExynos7580downstreamWTCONstop(bits5/0) beforelongMMU-offcopy; aligned64-bitcopy/zero withboundedbytefallback; recordtimerbefore/afterandsegment/phase. Actualhelperspass12,800ASanUBSanchecks; ARMv8-Aloadercompile/linkpass. Repacked0207b31,418,384bytes; entirekernel/ADT/argumentsandDTBHremainbyte-identical. Exactexpiryinstructionandphysicalcorrectionremainpending. See[0207b](docs/a5xelte-0207b-loader-watchdog.md).
 
 - **0207b installed:** Exact recovery/model/TWRP/BOOT p10/capacity guards pass; full31,418,384byte write acknowledged, sync completed and reboot requested. Only loader changed; no further readback/hash or backup. Source6395199. Physical earlyboot/watchdog readback and31caseGPU result pending.
+
+## 2026-10-23 — 0207b reaches display handoff; 0207c keepalive
+
+- **Readout:** A5XNU002 status5, all10segments/phase4, entry0x81e02488/bootargs0x83283000prepared, displaystate3/resultabsent; noXNUentrymarker. WTCONbefore/afterboth0x8021; priorstopisnotverified. S-Bootstillreportswatchdogresets. Copyimprovementpassedtheoldcheckpoint; exactDSIMoperationunknown.
+- **0207c candidate:** FollowdownstreamWTCNTreloadfromexistingWTDATduringcopy/zero/cacheclean,pollingandframebufferclear. Retainconfiguration,logtimerdata/countandDSIM/DCSsubsteps. Actualhelpers12,800ASanUBSanchecksplus65,536reloadcasespass; ARMv8-Aloadercompile/linkpass. BOOT31,420,432bytes; entirekernel/ADT/argumentsandDTBHremainidenticalto0207. Hardwaretimerreload/DSIM/XNUentrypending. See[0207c](docs/a5xelte-0207c-loader-keepalive.md).
