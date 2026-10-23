@@ -531,7 +531,8 @@ static NSDictionary *a5DynamicIdentity(NSDictionary *request,BOOL success)
         @"gpu_id":@"07201000",@"compiler_abi":@1,@"stage":request[@"stage"],
         @"function":request[@"function"],@"stage_compiled":@(success),@"pipeline_compatible":@NO,
         @"named_constants_sha256":digest(a5Canonical(request[@"named_constants"])),
-        @"indexed_constants_sha256":digest(a5Canonical(request[@"indexed_constants"]))};
+        @"indexed_constants_sha256":digest(a5Canonical(request[@"indexed_constants"])),
+        @"support_generation":@2};
 }
 static void a5PublishDynamic(NSDictionary *request,NSDictionary *receipt,NSDictionary *files)
 {
@@ -559,6 +560,110 @@ static void a5DynamicFailure(NSDictionary *request,NSString *reason)
     a5PublishDynamic(request,receipt,@{});
     fprintf(stderr,"A5XELTE shader compiler: STAGE FAILED stage=%s request=%s reason=%s\n",
         [request[@"stage"] UTF8String],[request[@"request_id"] UTF8String],reason.UTF8String);
+}
+
+/* One generation-scoped retry for the feature newly implemented here.
+ * Prior workers saved only the bounded child-failure text, not a typed feature
+ * code, so require the complete authenticated fragment request's explicit
+ * destination-read constants as well as its matching old failed receipt.
+ * No successful publication, current-generation failure or other feature is
+ * retired. Renamed evidence remains root-owned and cannot be overwritten.
+ */
+static void a5RetirePriorFetchFailure(NSDictionary *request)
+{
+    if(![request[@"stage"] isEqual:@"fragment"])return;
+    BOOL fetch=NO,destination=NO;
+    for(NSDictionary *constant in request[@"named_constants"]){
+        if([constant[@"name"] isEqual:@"fc_framebuffer_fetch"])
+            fetch=[constant[@"type"] isEqual:@53]&&[constant[@"raw"] isEqual:@"01"];
+        if([constant[@"name"] isEqual:@"fc_dest_count"])
+            destination=[constant[@"type"] isEqual:@49]&&![constant[@"raw"] isEqual:@"00"];
+    }
+    if(!fetch||!destination)return;
+    NSString *key=request[@"request_id"];
+    NSString *retired=[@".fetch-old-generation2-" stringByAppendingString:key];
+    int root=open(publishedRoot.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(root<0)fail(@"cannot open fetch publication root");
+    BOOL archived=NO;
+    int publication=openat(root,key.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(publication<0){
+        if(errno!=ENOENT)fail(@"untrusted prior fetch publication");
+        publication=openat(root,retired.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+        if(publication<0){int error=errno;close(root);if(error==ENOENT)return;
+            fail(@"untrusted retired fetch publication");}
+        archived=YES;
+    }
+    struct stat directory,file;
+    if(fstat(publication,&directory)||directory.st_uid!=geteuid()||
+       (directory.st_mode&07777)!=0755)fail(@"untrusted prior fetch publication directory");
+    int fd=openat(publication,"receipt.json",O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0||fstat(fd,&file)||!S_ISREG(file.st_mode)||file.st_uid!=geteuid()||
+       file.st_nlink!=1||(file.st_mode&07777)!=0444||file.st_size<=0||file.st_size>16384)
+        fail(@"untrusted prior fetch receipt");
+    NSMutableData *data=[NSMutableData dataWithLength:(NSUInteger)file.st_size];
+    size_t length=data.length;uint8_t *cursor=data.mutableBytes;
+    while(length){ssize_t n=read(fd,cursor,length);if(n<0&&errno==EINTR)continue;
+        if(n<=0)fail(@"short prior fetch receipt");cursor+=n;length-=n;}
+    uint8_t extra;if(read(fd,&extra,1)||close(fd))fail(@"prior fetch receipt changed");
+    NSDictionary *receipt=[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    if([receipt[@"stage_compiled"] isEqual:@YES]||receipt[@"support_generation"]){
+        close(publication);close(root);return;}
+    NSMutableDictionary *identity=[a5DynamicIdentity(request,NO) mutableCopy];
+    [identity removeObjectForKey:@"support_generation"];
+    NSString *reason=receipt[@"error"];
+    if(![reason isKindOfClass:NSString.class]||reason.length>4096||
+       ![reason hasPrefix:@"compiler/validator failed; see "]){
+        close(publication);close(root);return;}
+    identity[@"error"]=reason;
+    if(![receipt isEqual:identity])fail(@"prior fetch receipt identity differs");
+    DIR *entries=fdopendir(dup(publication));if(!entries)fail(@"cannot inspect prior fetch publication");
+    struct dirent *entry;unsigned files=0;
+    while((entry=readdir(entries))){if(!strcmp(entry->d_name,".")||!strcmp(entry->d_name,".."))continue;
+        if(strcmp(entry->d_name,"receipt.json")||++files>1)fail(@"prior failed fetch contains executable artifacts");}
+    if(closedir(entries)||files!=1)fail(@"invalid prior failed fetch publication");
+    struct stat current;
+    if(!archived&&(fstatat(root,key.fileSystemRepresentation,&current,AT_SYMLINK_NOFOLLOW)||
+       current.st_dev!=directory.st_dev||current.st_ino!=directory.st_ino||
+       renameatx_np(root,key.fileSystemRepresentation,root,retired.fileSystemRepresentation,RENAME_EXCL)||
+       fsync(root)))fail(@"cannot retire prior fetch failure");
+    if(close(publication)||close(root))fail(@"cannot close fetch publication");
+    /* The failed private status would otherwise reproduce the old receipt.
+     * Validate and preserve it under a non-scanned, exclusive archive name. */
+    NSString *statusRoot=[cacheRoot stringByAppendingPathComponent:@"request-status"];
+    int statuses=open(statusRoot.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(statuses<0)fail(@"missing prior fetch private status");
+    if(fstat(statuses,&directory)||directory.st_uid!=geteuid()||
+       (directory.st_mode&07777)!=0700)fail(@"untrusted fetch status directory");
+    NSString *name=[key stringByAppendingString:@".json"];
+    fd=openat(statuses,name.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0&&errno==ENOENT){
+        /* A crash between the two renames is resumed above; after the second
+         * rename, no old status remains to prevent the new attempt. */
+        close(statuses);return;
+    }
+    if(fd<0||fstat(fd,&file)||!S_ISREG(file.st_mode)||file.st_uid!=geteuid()||
+       file.st_nlink!=1||(file.st_mode&07777)!=0600||file.st_size<=0||file.st_size>16384)
+        fail(@"untrusted prior fetch private status");
+    data=[NSMutableData dataWithLength:(NSUInteger)file.st_size];length=data.length;cursor=data.mutableBytes;
+    while(length){ssize_t n=read(fd,cursor,length);if(n<0&&errno==EINTR)continue;
+        if(n<=0)fail(@"short prior fetch private status");cursor+=n;length-=n;}
+    if(read(fd,&extra,1)||close(fd))fail(@"prior fetch status changed");
+    NSDictionary *status=[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    if(!a5ExactKeys(status,@[@"schema",@"request_id",@"status",@"reason"])||
+        ![status[@"schema"] isEqual:@1]||![status[@"request_id"] isEqual:key]||
+        ![status[@"status"] isEqual:@"failed"]||![status[@"reason"] isKindOfClass:NSString.class])
+        fail(@"invalid prior fetch private status identity");
+    if(![status[@"reason"] isEqual:reason]){
+        /* A newly attempted compilation may itself fail. Preserve that new
+         * terminal result; the archived old receipt never licenses a loop. */
+        close(statuses);return;
+    }
+    NSString *archive=[retired stringByAppendingString:@".json"];
+    if(fstatat(statuses,name.fileSystemRepresentation,&current,AT_SYMLINK_NOFOLLOW)||
+       current.st_dev!=file.st_dev||current.st_ino!=file.st_ino||
+       renameatx_np(statuses,name.fileSystemRepresentation,statuses,archive.fileSystemRepresentation,RENAME_EXCL)||
+       fsync(statuses)||close(statuses))fail(@"cannot retire prior fetch private status");
+    fprintf(stderr,"A5XELTE shader compiler: RETRY framebuffer-fetch support_generation=2 request=%s\n",key.UTF8String);
 }
 
 static NSNumber *a5DynamicBufferSize(NSDictionary *reflection,NSString *title,NSDictionary *slot)
@@ -598,7 +703,7 @@ static NSString *a5DynamicABI(NSDictionary *reflection,NSString *stage)
             if(end>80||end%4)fail(@"dynamic push constants exceed aligned80 bytes");pushBytes=MAX(pushBytes,end);}
     }
     [manifest appendFormat:@"push_bytes %lu\n",(unsigned long)pushBytes];
-    unsigned resources=0,textures=0;
+    unsigned resources=0,textures=0,fetches=0;
     if([reflection[@"layout"][@"sets"] count]!=1)fail(@"dynamic stage requires exactly descriptor set0");
     for(NSDictionary *set in reflection[@"layout"][@"sets"]){
         if(![set[@"set"] isEqual:@0]||[set[@"flags"] unsignedIntegerValue])fail(@"dynamic stage only supports descriptor set0");
@@ -617,6 +722,18 @@ static NSString *a5DynamicABI(NSDictionary *reflection,NSString *stage)
             }else if(type==1){
                 NSDictionary *source=binding[@"source"][@"CombinedTextureSampler"];
                 NSDictionary *texture=source[@"texture"],*sampler=source[@"sampler"];
+                NSDictionary *selection=sampler[@"sampler"];
+                if(selection[@"Constexpr"]){
+                    if(![binding[@"immutable_sampler"] isEqual:@{
+                        @"mag_filter":@0,@"min_filter":@0,@"mipmap_mode":@0,
+                        @"address_mode_u":@0,@"address_mode_v":@0,@"address_mode_w":@0,
+                        @"mip_lod_bias":@0,@"max_anisotropy":NSNull.null,@"compare":NSNull.null,
+                        @"min_lod":@0,@"max_lod":@0.25,@"border_color":@0,
+                        @"reduction":@0,@"border_components":NSNull.null}])
+                        fail(@"unsupported immutable dynamic sampler state");
+                }else if(!a5ExactKeys(selection,@[@"Slot"])||
+                    binding[@"immutable_sampler"]!=NSNull.null)
+                    fail(@"unsupported dynamic sampler source");
                 NSDictionary *textureInfo=nil;
                 for(NSArray *slot in reflection[@"interface"][@"slots"])
                     if(slot.count==2&&[slot[0] isEqual:texture])textureInfo=slot[1][@"Texture"];
@@ -629,7 +746,16 @@ static NSString *a5DynamicABI(NSDictionary *reflection,NSString *stage)
                     [sampler[@"cube_gradient"] boolValue]||[sampler[@"raw"] boolValue])
                     fail(@"unsupported dynamic sampled texture ABI");
                 [manifest appendFormat:@"texture %lu %u\n",(unsigned long)index,textures++];}
-            else fail(@"dynamic descriptor kind requires a new lowering");
+            else if(type==10&&[stage isEqual:@"fragment"]&&
+                [binding[@"source"] isEqual:@{@"InputAttachment":@0}]){
+                NSDictionary *graphics=reflection[@"graphics"];
+                if(fetches++||![graphics[@"rasterization_order_attachment_access"] isEqual:@YES]||
+                    ![graphics[@"rasterization_samples"] isEqual:@1]||
+                    ![graphics[@"input_attachments"] isEqual:@[@{@"color_index":@0,
+                       @"input_attachment_index":@0,@"format_class":@"Float"}]])
+                    fail(@"unsupported unordered or multisampled framebuffer fetch");
+                [manifest appendFormat:@"framebuffer_fetch %lu 0\n",(unsigned long)index];
+            }else fail(@"dynamic descriptor kind requires a new lowering");
         }
     }
     NSDictionary *selected=nil;
@@ -677,6 +803,30 @@ static void a5CompileDynamic(NSString *self,NSDictionary *request,NSDictionary *
     NSString *meta=[work stringByAppendingPathComponent:@"reflection.json"];
     NSString *packing=[work stringByAppendingPathComponent:@"packing0.json"];
     writeData(a5Canonical(scaffold[@"configured_vertex_packing0"]),packing);
+    /* This compiler contract is implemented by the native color0 tilebuffer
+     * read, target preload and ordered-fragment runtime, not a Vulkan device.
+     * Keep the installed baseline unchanged for the pinned old recipes. */
+    NSMutableDictionary *deviceProfile=[NSJSONSerialization JSONObjectWithData:
+        regularData([installed stringByAppendingPathComponent:@"profile.json"],1024*1024)
+        options:NSJSONReadingMutableContainers error:NULL];
+    NSMutableDictionary *capabilities=deviceProfile[@"capabilities"];
+    NSMutableDictionary *profiles=deviceProfile[@"profiles"];
+    if(![capabilities isKindOfClass:NSMutableDictionary.class]||
+        ![profiles isKindOfClass:NSMutableDictionary.class]||profiles.count!=1)
+        fail(@"invalid baseline compiler device profile");
+    capabilities[@"a5_ordered_tilebuffer_color0"]=@{
+      @"extensions":@{@"VK_EXT_rasterization_order_attachment_access":@1},@"features":@{
+        @"VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT":@{
+            @"rasterizationOrderColorAttachmentAccess":@YES,
+            @"rasterizationOrderDepthAttachmentAccess":@NO,
+            @"rasterizationOrderStencilAttachmentAccess":@NO}}};
+    NSMutableDictionary *selectedProfile=profiles.allValues.firstObject;
+    NSMutableArray *selectedCapabilities=selectedProfile[@"capabilities"];
+    if(![selectedCapabilities isKindOfClass:NSMutableArray.class])
+        fail(@"invalid baseline compiler capability list");
+    [selectedCapabilities addObject:@"a5_ordered_tilebuffer_color0"];
+    NSString *deviceProfilePath=[work stringByAppendingPathComponent:@"ordered-color0-profile.json"];
+    writeData(a5Canonical(deviceProfile),deviceProfilePath);
     /* The translator currently exposes a render-pair CLI. A trusted stock
      * companion supplies stage-link scaffolding; only the requested stage is
      * compiled/published and the companion is not an executable-pipeline claim. */
@@ -686,7 +836,7 @@ static void a5CompileDynamic(NSString *self,NSDictionary *request,NSDictionary *
     NSArray *named=[[constants allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){return [a[@"name"] compare:b[@"name"]];}];
     NSMutableArray *air=[NSMutableArray arrayWithArray:@[
         [installed stringByAppendingPathComponent:@"metal2vulkan"],sourceLibrary,
-        [prefix stringByAppendingString:@".spv"],@"--profile",[installed stringByAppendingPathComponent:@"profile.json"],
+        [prefix stringByAppendingString:@".spv"],@"--profile",deviceProfilePath,
         @"--function",vertex?request[@"function"]:scaffold[@"vertex_function"],
         @"--fragment",vertex?scaffold[@"fragment_function"]:request[@"function"],
         @"--color-format",@"0:BGRA8Unorm",@"--vertex-descriptor",packing,@"--emit-meta",meta,@"--no-timeout"]];
@@ -795,6 +945,7 @@ static void a5HandleRequest(NSString *self, NSDictionary *request,
     NSDictionary *scaffold=nil;
     for(NSDictionary *candidate in knownProfiles)if([candidate[@"profile_id"] isEqual:@603])scaffold=candidate;
     BOOL dynamic=scaffold&&a5DynamicRequest(request,scaffold[@"metallib_sha256"]);
+    if(dynamic)a5RetirePriorFetchFailure(request);
     if(dynamic&&[NSFileManager.defaultManager fileExistsAtPath:
         [publishedRoot stringByAppendingPathComponent:key]])return;
     if (a5HasTerminalRequestStatus(key,known,dynamic?request:nil)) return;

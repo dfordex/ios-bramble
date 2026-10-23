@@ -14,10 +14,12 @@ struct a5_dynamic_profile {
    unsigned binding_bytes[A5_DYNAMIC_MAX_BINDINGS];
    struct a5_spec_value specs[16];
    struct a5_texture_binding textures[A5_DYNAMIC_MAX_TEXTURES];
+   /* Descriptor binding+1, zero when the stage does not fetch color0. */
+   unsigned framebuffer_fetch_binding;
 };
 struct a5_dynamic_io { unsigned location,base,component,components,bit_size; };
 struct a5_dynamic_info {
-   unsigned ubo_bytes[8],textures;
+   unsigned ubo_bytes[8],textures,framebuffer_fetch;
    struct a5_dynamic_io inputs[A5_DYNAMIC_MAX_IO],outputs[A5_DYNAMIC_MAX_IO];
    unsigned input_count,output_count;
 };
@@ -74,6 +76,11 @@ static int a5_dynamic_read(const char *path,mesa_shader_stage stage,
             a>=32 || b!=n)goto bad;
          for(unsigned i=0;i<n;i++)if(out->textures[i].binding==a)goto bad;
          out->textures[n]=(struct a5_texture_binding){a,b};out->profile.texture_count++;
+      }else if(!strcmp(key,"framebuffer_fetch")){
+         if(stage!=MESA_SHADER_FRAGMENT || out->framebuffer_fetch_binding ||
+            sscanf(line,"framebuffer_fetch %u %u %c",&a,&b,&tail)!=2 || a>=32 || b)
+            goto bad;
+         out->framebuffer_fetch_binding=a+1;
       }else goto bad;
    }
    if(ferror(f)||!got_stage||!got_push)goto bad;
@@ -129,9 +136,21 @@ static int a5_dynamic_analyze(nir_shader *nir,const struct a5_dynamic_profile *p
          if(ubo){bound=0;for(unsigned i=0;i<profile->profile.binding_count;i++)
             if(profile->bindings[i].binding+1==ubo &&
                profile->bindings[i].type==nir_descriptor_type_uniform_buffer)bound=profile->binding_bytes[i];
+            /* UniformWords represents a bounded byte window in uint32 words.
+             * The runtime copies only logical bytes and zero-pads the final
+             * word; a two-byte half still occupies one native UBO word. */
+            if(bound==2)bound=4;
          }
          if(offset>bound || bytes>bound-offset){fprintf(stderr,"dynamic UBO bound index=%u offset=%u bytes=%u bound=%u\n",ubo,offset,bytes,bound);return 0;}
          info->ubo_bytes[ubo]=MAX2(info->ubo_bytes[ubo],offset+bytes);
+      }else if(in->intrinsic==nir_intrinsic_load_output){
+         if(nir->info.stage!=MESA_SHADER_FRAGMENT || !profile->framebuffer_fetch_binding ||
+            !nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0]) ||
+            nir_intrinsic_io_semantics(in).location!=FRAG_RESULT_DATA0 ||
+            nir_intrinsic_base(in) || nir_intrinsic_component(in) ||
+            in->def.num_components!=4 || in->def.bit_size!=32 ||
+            nir_intrinsic_dest_type(in)!=nir_type_float32)return 0;
+         info->framebuffer_fetch=1;
       }else if(in->intrinsic==nir_intrinsic_load_input ||
                in->intrinsic==nir_intrinsic_load_interpolated_input){
          if(!a5_dynamic_io_add(info->inputs,&info->input_count,in,false))return 0;
@@ -154,20 +173,30 @@ static void a5_dynamic_io_json(FILE *f,const struct a5_dynamic_io *list,unsigned
    fputc(']',f);
 }
 static int a5_dynamic_write(const char *path,mesa_shader_stage stage,
-       const struct pan_shader_info *native,unsigned bytes,const struct a5_dynamic_info *info)
+       const struct pan_shader_info *native,unsigned bytes,const struct a5_dynamic_info *info,
+       const struct a5_dynamic_profile *profile)
 {
    FILE *f=fopen(path,"wb");if(!f)return 0;
    fprintf(f,"{\"schema\":1,\"stage\":\"%s\",\"native_info\":{\"bytes\":%u,\"first_tag\":%u,\"textures\":%u,\"work_regs\":%u,\"tls\":%u,\"wls\":%u,\"attributes\":%u,\"ubos\":%u,\"samplers\":%u},\"live_ubos\":[",
        stage==MESA_SHADER_VERTEX?"vertex":"fragment",bytes,native->midgard.first_tag,
        native->texture_count,native->work_reg_count,native->tls_size,native->wls_size,
        native->attribute_count,native->ubo_count,native->sampler_count);
-   unsigned count=0;for(unsigned i=0;i<8;i++)if(info->ubo_bytes[i])fprintf(f,
-       "%s{\"native_index\":%u,\"min_bytes\":%u}",count++?",":"",i,info->ubo_bytes[i]);
+   unsigned count=0;for(unsigned i=0;i<8;i++)if(info->ubo_bytes[i]){
+      unsigned logical=info->ubo_bytes[i];
+      for(unsigned j=0;i&&j<profile->profile.binding_count;j++)
+         if(profile->bindings[j].binding+1==i &&
+            profile->bindings[j].type==nir_descriptor_type_uniform_buffer)
+            logical=MIN2(logical,profile->binding_bytes[j]);
+      fprintf(f,"%s{\"native_index\":%u,\"min_bytes\":%u",count++?",":"",i,info->ubo_bytes[i]);
+      if(logical<info->ubo_bytes[i])fprintf(f,",\"logical_bytes\":%u",logical);
+      fputc('}',f);
+   }
    fputs("],\"live_textures\":[",f);count=0;
    for(unsigned i=0;i<4;i++)if(info->textures&(1u<<i))fprintf(f,"%s%u",count++?",":"",i);
    fputs("],\"inputs\":",f);a5_dynamic_io_json(f,info->inputs,info->input_count);
    fputs(",\"outputs\":",f);a5_dynamic_io_json(f,info->outputs,info->output_count);
-   fprintf(f,",\"sysval_ubo0_read_extent\":%u}\n",info->ubo_bytes[0]);
+   fprintf(f,",\"sysval_ubo0_read_extent\":%u,\"framebuffer_fetch\":%s}\n",
+       info->ubo_bytes[0],info->framebuffer_fetch?"true":"false");
    int error=ferror(f);return fclose(f)==0&&!error;
 }
 #endif

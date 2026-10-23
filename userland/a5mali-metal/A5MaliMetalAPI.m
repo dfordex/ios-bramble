@@ -1298,7 +1298,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     NSDictionary<NSNumber *,A5MaliMetalTexture *> *textures=[_textures copy];
     for(NSNumber *key in attachments)
         if(attachments[key].pixelFormat!=profile->colorFormats[key.unsignedIntegerValue])return NO;
-    A5RuntimeSampler samplerSnapshot={0};
+    struct { A5RuntimeSampler values[31]; } samplerSnapshots={0};
     NSMutableArray<A5MaliMetalTexture *> *mappedImages=[NSMutableArray new];
     NSMutableArray<NSNumber *> *imageSlots=[NSMutableArray new];
     uint32_t readImages=0;
@@ -1315,7 +1315,8 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(r->kind==A5MaliResourceSampler){
             if(r->flags&A5MaliResourceImmutableSampler)continue;
             A5MaliSamplerState *sampler=_samplers[@(r->metalIndex)];
-            if(!textured || r->stage!=A5MaliStageFragment || r->metalIndex ||
+            if(!textured || r->stage!=A5MaliStageFragment || r->metalIndex>=31 ||
+                (profile->profileID!=A5MaliDynamicProfileID && r->metalIndex) ||
                 ![sampler isKindOfClass:[A5MaliSamplerState class]] || sampler.device!=_buffer.device)return NO;
             MTLSamplerDescriptor *sd=sampler.descriptor;
             /* The compiled FS uses normalized coordinates, matching this
@@ -1330,7 +1331,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 sd.compareFunction!=MTLCompareFunctionNever || sd.supportArgumentBuffers ||
                 !isfinite(sd.lodMinClamp) || !isfinite(sd.lodMaxClamp) ||
                 sd.lodMinClamp<0 || sd.lodMaxClamp<sd.lodMinClamp)return NO;
-            samplerSnapshot=(A5RuntimeSampler){.valid=1,.minFilter=(uint32_t)sd.minFilter,
+            samplerSnapshots.values[r->metalIndex]=(A5RuntimeSampler){.valid=1,.minFilter=(uint32_t)sd.minFilter,
                 .magFilter=(uint32_t)sd.magFilter,.mipFilter=(uint32_t)sd.mipFilter,
                 .sAddressMode=A5RuntimeSamplerClampEdge,.tAddressMode=A5RuntimeSamplerClampEdge,
                 .rAddressMode=A5RuntimeSamplerClampEdge,.normalizedCoordinates=1,
@@ -1348,9 +1349,10 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(profile->profileID==606)sourceFormat=image.pixelFormat==MTLPixelFormatA8Unorm;
         if(profile->profileID==A5MaliDynamicProfileID)sourceFormat=
             image.pixelFormat==MTLPixelFormatBGRA8Unorm||image.pixelFormat==MTLPixelFormatA8Unorm||
-            image.pixelFormat==MTLPixelFormatR8Unorm||image.pixelFormat==MTLPixelFormatRG8Unorm;
+            image.pixelFormat==MTLPixelFormatR8Unorm||image.pixelFormat==MTLPixelFormatRG8Unorm||
+            image.pixelFormat==MTLPixelFormatRGBA16Float;
         if(!image || !(image.usage&MTLTextureUsageShaderRead) || !sourceFormat)return NO;
-        if(textured && (r->metalIndex!=3 || image.mipmapLevelCount!=1 ||
+        if(textured && ((profile->profileID!=A5MaliDynamicProfileID && r->metalIndex!=3) || image.mipmapLevelCount!=1 ||
             image.textureType!=MTLTextureType2D || image.sampleCount!=1))return NO;
         if(image.buffer && (image.buffer.device!=_buffer.device ||
             image.buffer.storageMode!=MTLStorageModeShared || !image.buffer.readyForRead ||
@@ -1367,6 +1369,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
     NSMutableArray<NSMutableSet<NSNumber *> *> *storageSlots=
         [NSMutableArray arrayWithObjects:[NSMutableSet new],[NSMutableSet new],nil];
+    NSArray<NSMutableSet<NSNumber *> *> *paddedSlots=@[[NSMutableSet new],[NSMutableSet new]];
     if(profile->profileID==206 || (profile->profileID>=600 && profile->profileID<=606) || profile->profileID==A5MaliDynamicProfileID)
         windows[0][@1]=@((indexed?1:count)*48);
     for(uint32_t i=0;i<profile->resourceCount;++i){const A5MaliCompiledResource*r=profile->resources+i;
@@ -1381,6 +1384,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
             (b.buffer && !b.buffer.readyForRead))return NO;
         windows[stage][slot]=@(required);
         if(r->flags&A5MaliResourceStorage)[storageSlots[stage] addObject:slot];
+        if(r->flags&A5MaliResourcePadUniformTail)[paddedSlots[stage] addObject:slot];
     }
     MTLViewport viewport=_hasViewport?_viewport:(MTLViewport){0,0,_destination.width,_destination.height,0,1};
     MTLScissorRect scissor=_scissor;BOOL sourceOver=pipeline.sourceOver;
@@ -1426,7 +1430,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 .scissorWidth=(uint32_t)scissor.width,.scissorHeight=(uint32_t)scissor.height,
                 .viewportX=viewport.originX,.viewportY=viewport.originY,.viewportWidth=viewport.width,
                 .viewportHeight=viewport.height,.viewportNear=viewport.znear,.viewportFar=viewport.zfar}};
-            if(textured)command.fragmentSamplers[0]=samplerSnapshot;
+            if(textured)memcpy(command.fragmentSamplers,samplerSnapshots.values,sizeof(samplerSnapshots.values));
             if(indexed){
                 command.draw.indexBuffer=(A5RuntimeBuffer){0,(uint32_t)indices.length,0,indices.bytes};
                 command.draw.indexCount=(uint32_t)indexCount;command.draw.indexSize=(uint32_t)indexSize;
@@ -1486,12 +1490,19 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 for(NSNumber *slot in windows[stage]){
                     A5MaliBufferBinding *binding=bindings[stage][slot];
                     if(binding.buffer && !binding.buffer.readyForRead)return kIOReturnNotReady;
-                    uint64_t handle=binding.privateKernelHandle;
+                    BOOL pad=[paddedSlots[stage] containsObject:slot];
+                    uint64_t handle=pad?0:binding.privateKernelHandle;
                     A5RuntimeBuffer native={0};
                     if(!handle){
                         NSUInteger required=(indexed && !stage && slot.unsignedIntegerValue==1)?
                             submittedVertexCount*48:windows[stage][slot].unsignedIntegerValue;
-                        NSData *data=[binding capturePrefixBytesForSubmission:required error:NULL];
+                        NSData *data=nil;
+                        if(pad&&binding.privateKernelHandle){
+                            NSMutableData *copy=[NSMutableData dataWithLength:required];
+                            kern_return_t read=[binding.buffer readBytesForSubmission:copy.mutableBytes
+                                offset:binding.offset length:required client:client];
+                            if(read)return read;data=copy;
+                        }else data=[binding capturePrefixBytesForSubmission:required error:NULL];
                         if(!data)return kIOReturnBadArgument;
                         if(!stage && slot.unsignedIntegerValue==1 &&
                            (profile->profileID==602 || textured) &&
@@ -1548,11 +1559,11 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                     }
                     fprintf(stderr,"A5XELTE Metal input UV: cb=%u transform=%g,%g,%g,%g bounds=%g,%g..%g,%g finite=%u normalized=%u min=%u mag=%u mip=%u\n",
                         diagnosticID,transform[0],transform[1],transform[2],transform[3],
-                        lo[0],lo[1],hi[0],hi[1],finite,samplerSnapshot.normalizedCoordinates,
-                        samplerSnapshot.minFilter,samplerSnapshot.magFilter,samplerSnapshot.mipFilter);
+                        lo[0],lo[1],hi[0],hi[1],finite,samplerSnapshots.values[0].normalizedCoordinates,
+                        samplerSnapshots.values[0].minFilter,samplerSnapshots.values[0].magFilter,samplerSnapshots.values[0].mipFilter);
                 }else fprintf(stderr,"A5XELTE Metal input UV: cb=%u snapshot_unavailable=1 normalized=%u min=%u mag=%u mip=%u\n",
-                    diagnosticID,samplerSnapshot.normalizedCoordinates,samplerSnapshot.minFilter,
-                    samplerSnapshot.magFilter,samplerSnapshot.mipFilter);
+                    diagnosticID,samplerSnapshots.values[0].normalizedCoordinates,samplerSnapshots.values[0].minFilter,
+                    samplerSnapshots.values[0].magFilter,samplerSnapshots.values[0].mipFilter);
             }
             for(uint32_t pass=0;pass<profile->passCount;++pass){
                 A5NativeQueryResult mapped={0};kern_return_t kr=A5MaliQueryNative(client,&query,&mapped);

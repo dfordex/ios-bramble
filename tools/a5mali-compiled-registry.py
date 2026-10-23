@@ -405,7 +405,7 @@ def emit(profiles,output):
         fmt=p['formats']+[0]*(8-len(p['formats']))
         values=[str(p['id']),json.dumps(name(p['name'])),json.dumps(name(p['vertex'])),json.dumps(name(p['fragment'])),'{'+','.join(map(str,fmt))+'}',str(p['flags']),*map(str,p['viewport']),prefix+'_passes',str(len(p['passes']))]
         for field in ('resources','push','attributes','layouts'):values += [prefix+'_'+field if p[field] else 'NULL',str(len(p[field]))]
-        values += [contracts,str(len(p['attachment_contracts']))]
+        values += [contracts,str(len(p['attachment_contracts'])), 'NULL', '0']
         rows.append('{'+','.join(values)+'}')
     lines.append('static const A5MaliCompiledProfile kA5MaliCompiledProfiles[] = {\n'+',\n'.join(rows)+'\n};\n')
     for p in profiles:

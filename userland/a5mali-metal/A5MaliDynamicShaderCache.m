@@ -175,6 +175,8 @@ static BOOL payload(id p) {
     NSDictionary *_functionPayload, *_nativeABI, *_reflection;
     A5MaliCompiledShader _shader;
     A5MaliCompiledResource _resources[32];
+    A5MaliCompiledSampler _immutableSamplers[4];
+    uint32_t _immutableSamplerCount;
     A5MaliCompiledPushField _pushFields[32];
     A5MaliCompiledVertexAttribute _attributes[16];
     A5MaliCompiledVertexLayout _layouts[16];
@@ -214,6 +216,8 @@ static BOOL payload(id p) {
 - (uint32_t)resourceCount {
     return _resourceCount;
 }
+- (const A5MaliCompiledSampler *)immutableSamplers { return _immutableSamplers; }
+- (uint32_t)immutableSamplerCount { return _immutableSamplerCount; }
 - (const A5MaliCompiledPushField *)pushFields {
     return _pushFields;
 }
@@ -291,12 +295,18 @@ static BOOL payload(id p) {
     if (![liveUBOs isKindOfClass:NSArray.class] || [liveUBOs count] > 8 ||
         ![liveTextures isKindOfClass:NSArray.class] || [liveTextures count] > 8)
         return NO;
-    NSMutableDictionary *live = [NSMutableDictionary new];
+    NSMutableDictionary *live = [NSMutableDictionary new], *logical = [NSMutableDictionary new];
     for (id v in liveUBOs) {
-        if (!keys(v, @[ @"native_index", @"min_bytes" ]) || !number(v[@"native_index"], 7) ||
+        if (!(keys(v, @[ @"native_index", @"min_bytes" ]) || keys(v,@[@"native_index",@"min_bytes",@"logical_bytes"])) || !number(v[@"native_index"], 7) ||
             !number(v[@"min_bytes"], 4096) || ![v[@"min_bytes"] unsignedIntValue] || live[v[@"native_index"]])
             return NO;
         live[v[@"native_index"]] = v[@"min_bytes"];
+        if(v[@"logical_bytes"]){
+            unsigned n=[v[@"logical_bytes"] unsignedIntValue],physical=[v[@"min_bytes"] unsignedIntValue];
+            if(!number(v[@"logical_bytes"],4096)||!n||!(n&3)||((n+3)&~3u)!=physical||
+               ![v[@"native_index"] unsignedIntValue])return NO;
+            logical[v[@"native_index"]]=v[@"logical_bytes"];
+        }
     }
     if ([live[@0] unsignedIntValue] != [a[@"sysval_ubo0_read_extent"] unsignedIntValue])
         return NO;
@@ -361,7 +371,11 @@ static BOOL payload(id p) {
     }
     NSMutableSet *usedUBOs = [NSMutableSet setWithObject:@0], *usedTextures = [NSMutableSet new],
                  *seenBindings = [NSMutableSet new];
-    unsigned textureIndex = 0;
+    unsigned textureIndex = 0, fetches = 0;
+    id fetchABI=a[@"framebuffer_fetch"];
+    if(fetchABI&&!boolean(fetchABI,YES)&&!boolean(fetchABI,NO))return NO;
+    BOOL fetch=boolean(fetchABI,YES);
+    if(fetch&&_stage!=2)return NO;
     for (id set in sets) {
         if (!exact(set[@"set"], 0) || ![set[@"bindings"] isKindOfClass:NSArray.class] ||
             [set[@"bindings"] count] > 32)
@@ -383,7 +397,7 @@ static BOOL payload(id p) {
             id buffer = source[@"Buffer"];
             if (buffer) {
                 unsigned native = [b[@"binding"] unsignedIntValue] + 1;
-                NSNumber *extent = live[@(native)];
+                NSNumber *extent = live[@(native)],*logicalExtent=logical[@(native)]?:extent;
                 if (!extent)
                     continue;
                 if (native > 7 || !exact(b[@"ty"], 6) || ![buffer[@"stage"] isEqual:stageName] ||
@@ -403,19 +417,30 @@ static BOOL payload(id p) {
                     ![contract[@"form"][@"Descriptor"] isEqual:@"UniformWords"] ||
                     !exact(contract[@"window"][@"Bounded"][@"start"], 0) ||
                     !number(contract[@"window"][@"Bounded"][@"len"], 65536) ||
-                    [contract[@"window"][@"Bounded"][@"len"] unsignedIntValue] < extent.unsignedIntValue)
+                    [contract[@"window"][@"Bounded"][@"len"] unsignedIntValue] < logicalExtent.unsignedIntValue)
                     return NO;
                 unsigned metal = [buffer[@"index"] unsignedIntValue],
                          push = [pushOffsets[@(metal)] unsignedIntValue];
                 _resources[_resourceCount++] =
                     (A5MaliCompiledResource){_stage, A5MaliResourceBuffer,
                                              metal,  [b[@"binding"] unsignedIntValue],
-                                             native, A5MaliResourceRead,
-                                             0,      extent.unsignedIntValue,
+                                             native, A5MaliResourceRead|(logical[@(native)]?A5MaliResourcePadUniformTail:0),
+                                             0,      logicalExtent.unsignedIntValue,
                                              0,      push};
                 _pushFields[_pushFieldCount++] =
                     (A5MaliCompiledPushField){_stage, A5MaliPushBindOffset, metal, push, 4, 0};
                 [usedUBOs addObject:@(native)];
+                continue;
+            }
+            if(source[@"InputAttachment"]){
+                NSDictionary *g=_reflection[@"graphics"];
+                if(!fetch||fetches++||!exact(source[@"InputAttachment"],0)||
+                   !exact(b[@"ty"],10)||!boolean(g[@"rasterization_order_attachment_access"],YES)||
+                   !exact(g[@"rasterization_samples"],1)||
+                   ![g[@"input_attachments"] isEqual:@[@{@"color_index":@0,@"input_attachment_index":@0,@"format_class":@"Float"}]]||
+                   _resourceCount==32)return NO;
+                _resources[_resourceCount++]=(A5MaliCompiledResource){
+                    2,A5MaliResourceInputAttachment,0,[b[@"binding"] unsignedIntValue],0,A5MaliResourceRead,0,0,0,0};
                 continue;
             }
             id combined = source[@"CombinedTextureSampler"];
@@ -424,11 +449,23 @@ static BOOL payload(id p) {
                 if (![textures containsObject:@(native)])
                     continue;
                 NSDictionary *t = combined[@"texture"], *s = combined[@"sampler"];
+                id immutable=b[@"immutable_sampler"],token=s[@"sampler"][@"Constexpr"];
+                BOOL constant=immutable&&immutable!=NSNull.null;
+                if(constant){
+                    NSDictionary *want=@{@"mag_filter":@0,@"min_filter":@0,@"mipmap_mode":@0,
+                        @"address_mode_u":@0,@"address_mode_v":@0,@"address_mode_w":@0,
+                        @"mip_lod_bias":@0.0,@"max_anisotropy":NSNull.null,@"compare":NSNull.null,
+                        @"min_lod":@0.0,@"max_lod":@0.25,@"border_color":@0,@"reduction":@0,
+                        @"border_components":NSNull.null};
+                    if(![immutable isEqual:want]||![token isKindOfClass:NSArray.class]||[token count]!=2||
+                       !number(token[0],UINT64_MAX)||!number(token[1],UINT64_MAX)||_immutableSamplerCount==4)return NO;
+                    _immutableSamplers[_immutableSamplerCount++]=(A5MaliCompiledSampler){native,0,0,0,1,1,1,1,0,0.25f};
+                }
                 if (!exact(b[@"ty"], 1) || ![t[@"stage"] isEqual:stageName] ||
                     ![t[@"class"] isEqual:@"Texture"] || !number(t[@"index"], 30) ||
-                    !number(s[@"sampler"][@"Slot"], 30) || !boolean(s[@"compare"], NO) ||
+                    (!constant&&!number(s[@"sampler"][@"Slot"], 30)) || !boolean(s[@"compare"], NO) ||
                     !boolean(s[@"integer"], NO) || !boolean(s[@"cube_gradient"], NO) ||
-                    !boolean(s[@"raw"], NO) || b[@"immutable_sampler"] != NSNull.null || _resourceCount > 30)
+                    !boolean(s[@"raw"], NO) || (!constant&&immutable!=NSNull.null) || _resourceCount > 30)
                     return NO;
                 _resources[_resourceCount++] = (A5MaliCompiledResource){_stage,
                                                                         A5MaliResourceTexture,
@@ -443,10 +480,10 @@ static BOOL payload(id p) {
                 _resources[_resourceCount++] =
                     (A5MaliCompiledResource){_stage,
                                              A5MaliResourceSampler,
-                                             [s[@"sampler"][@"Slot"] unsignedIntValue],
+                                             constant?31:[s[@"sampler"][@"Slot"] unsignedIntValue],
                                              [b[@"binding"] unsignedIntValue],
                                              native,
-                                             A5MaliResourceRead,
+                                             A5MaliResourceRead|(constant?A5MaliResourceImmutableSampler:0),
                                              0,
                                              0,
                                              0,
@@ -459,6 +496,7 @@ static BOOL payload(id p) {
     for (NSNumber *k in live)
         if (![usedUBOs containsObject:k])
             return NO;
+    if (fetch!=(fetches==1))return NO;
     if (![usedTextures isEqual:textures])
         return NO;
     if (_stage == 1) {
@@ -571,15 +609,16 @@ A5MaliDynamicShaderCacheEntry *A5MaliLoadDynamicShaderStage(NSString *requestID,
         id n = r[@"native"], f = r[@"reflection"];
         if (![n isKindOfClass:NSDictionary.class] || ![f isKindOfClass:NSDictionary.class] ||
             ![n[@"file"] isEqual:@"stage.midgard"] || ![f[@"file"] isEqual:@"reflection.json"] ||
-            !number(n[@"bytes"], 4096) || ![n[@"bytes"] unsignedIntValue] ||
-            ([n[@"bytes"] unsignedIntValue] & 15) || !exact(n[@"first_tag"], 5) ||
+            !number(n[@"bytes"], 8192) || ![n[@"bytes"] unsignedIntValue] ||
+            ([n[@"bytes"] unsignedIntValue] & 15) || (!number(n[@"first_tag"],15)||[n[@"first_tag"] unsignedIntValue]<2||
+             [n[@"first_tag"] unsignedIntValue]==6||[n[@"first_tag"] unsignedIntValue]==7) ||
             !number(n[@"work_registers"], 16) || ![n[@"work_registers"] unsignedIntValue] ||
             !exact(n[@"tls_bytes"], 0) || !exact(n[@"wls_bytes"], 0) || !hex(n[@"sha256"], 64) ||
             !number(f[@"bytes"], 256 * 1024) || ![f[@"bytes"] unsignedIntValue] || !hex(f[@"sha256"], 64)) {
             close(dir);
             return fail(error, EINVAL, @"dynamic stage code/metadata bounds rejected");
         }
-        NSData *code = readFile(dir, "stage.midgard", 4096, error);
+        NSData *code = readFile(dir, "stage.midgard", 8192, error);
         NSData *reflect = code ? readFile(dir, "reflection.json", 256 * 1024, error) : nil;
         close(dir);
         if (!code || !reflect) {
@@ -590,8 +629,9 @@ A5MaliDynamicShaderCacheEntry *A5MaliLoadDynamicShaderStage(NSString *requestID,
             return nil;
         }
         if (code.length != [n[@"bytes"] unsignedIntValue] ||
+            (((const uint8_t*)code.bytes)[0]&15)!=[n[@"first_tag"] unsignedIntValue] ||
             reflect.length != [f[@"bytes"] unsignedIntValue] || ![digest(code) isEqual:n[@"sha256"]] ||
-            ![digest(reflect) isEqual:f[@"sha256"]] || (((const uint8_t *)code.bytes)[0] & 15) != 5)
+            ![digest(reflect) isEqual:f[@"sha256"]])
             return fail(error, EINVAL, @"dynamic stage native/reflection integrity rejected");
         id reflection = [NSJSONSerialization JSONObjectWithData:reflect options:0 error:NULL];
         if (![reflection isKindOfClass:NSDictionary.class])

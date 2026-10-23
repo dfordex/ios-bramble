@@ -19,7 +19,8 @@ enum { A5MaliStageVertex = 1, A5MaliStageFragment = 2 };
 enum { A5MaliResourceBuffer = 1, A5MaliResourceTexture = 2,
        A5MaliResourceSampler = 3, A5MaliResourceInputAttachment = 4 };
 enum { A5MaliResourceRead = 1, A5MaliResourceWrite = 2,
-       A5MaliResourceStorage = 4, A5MaliResourceImmutableSampler = 8 };
+       A5MaliResourceStorage = 4, A5MaliResourceImmutableSampler = 8,
+       A5MaliResourcePadUniformTail = 16 };
 enum { A5MaliPushBindOffset = 1, A5MaliPushColorWriteRule = 2 };
 enum { A5MaliProfileFixedViewport = 1, A5MaliProfileNearestSampler = 2,
        A5MaliProfileNormalizedSampler = 4, A5MaliProfileIndependentTargets = 8,
@@ -30,7 +31,9 @@ enum { A5MaliProfileFixedViewport = 1, A5MaliProfileNearestSampler = 2,
         * than a constant/module fingerprint. These flags do not authorize a
         * new resource layout; the runtime validates it independently. */
        A5MaliProfileDynamicStages = 512,
-       A5MaliProfileDynamicColorVarying = 1024 };
+       A5MaliProfileDynamicColorVarying = 1024,
+       A5MaliProfileFramebufferFetch = 2048,
+       A5MaliProfileFragmentPosition = 4096 };
 enum { A5MaliDynamicProfileID = 65536 };
 
 typedef struct {
@@ -77,6 +80,14 @@ typedef struct {
     A5MaliCompiledAttachmentState attachments[8];
 } A5MaliCompiledAttachmentContract;
 
+/* Immutable sampler states decoded by the AIR translator. Address modes use
+ * the A5RuntimeSampler enum; these are not application Metal sampler slots. */
+typedef struct {
+    uint32_t nativeIndex, minFilter, magFilter, mipFilter;
+    uint32_t sAddressMode, tAddressMode, rAddressMode, normalizedCoordinates;
+    float lodMinClamp, lodMaxClamp;
+} A5MaliCompiledSampler;
+
 typedef struct A5MaliCompiledProfile {
     uint32_t profileID;
     const char *name, *vertexName, *fragmentName;
@@ -94,6 +105,8 @@ typedef struct A5MaliCompiledProfile {
     uint32_t layoutCount;
     const A5MaliCompiledAttachmentContract *attachmentContracts;
     uint32_t attachmentContractCount;
+    const A5MaliCompiledSampler *immutableSamplers;
+    uint32_t immutableSamplerCount;
 } A5MaliCompiledProfile;
 
 /* IDs are stable wire identities, not array positions. Absent profiles are

@@ -10,6 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) const A5MaliCompiledShader *shader;
 @property(nonatomic, readonly) const A5MaliCompiledResource *resources;
 @property(nonatomic, readonly) uint32_t resourceCount;
+@property(nonatomic, readonly) const A5MaliCompiledSampler *immutableSamplers;
+@property(nonatomic, readonly) uint32_t immutableSamplerCount;
 @property(nonatomic, readonly) const A5MaliCompiledPushField *pushFields;
 @property(nonatomic, readonly) uint32_t pushFieldCount;
 @property(nonatomic, readonly) const A5MaliCompiledVertexAttribute *attributes;

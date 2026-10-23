@@ -19,6 +19,7 @@
     A5MaliCompiledVertexAttribute _attributes[4];
     A5MaliCompiledVertexLayout _layout;
     A5MaliCompiledAttachmentContract _attachments[2];
+    A5MaliCompiledSampler _samplers[4];
     NSArray *_owners;
     NSString *_vertexName,*_fragmentName;
 }
@@ -53,7 +54,7 @@ static BOOL interfaceABI(A5MaliDynamicShaderCacheEntry *e) {
        [interface[@"reaches_command_buffers"] boolValue]||[interface[@"texture_writing_stages"] count])return NO;
     NSString *stage=e.stage==A5MaliStageVertex?@"Vertex":@"Fragment";
     for(unsigned i=0;i<e.resourceCount;++i){const A5MaliCompiledResource *r=e.resources+i;
-        if(r->kind==A5MaliResourceBuffer)continue;
+        if(r->kind==A5MaliResourceBuffer||r->kind==A5MaliResourceInputAttachment||(r->flags&A5MaliResourceImmutableSampler))continue;
         NSString *kind=r->kind==A5MaliResourceTexture?@"Texture":@"Sampler";
         NSDictionary *want=r->kind==A5MaliResourceTexture?
             @{@"texture_type":@"Type2D",@"sampled_type":@"Float",@"depth_compare":@NO,
@@ -91,21 +92,33 @@ static BOOL vertexABI(A5MaliDynamicShaderCacheEntry *e) {
         @"pulled":@[],@"variant_pulled":@[]};
     return [e.reflection[@"vertex_input"] isEqual:want];
 }
-static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color) {
+static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch,BOOL *position) {
     NSDictionary *n=e.nativeABI[@"native_info"];
     if(!interfaceABI(e)||e.stage!=A5MaliStageFragment||[n[@"attributes"] unsignedIntValue]||
-       [n[@"textures"] unsignedIntValue]!=1||[n[@"samplers"] unsignedIntValue]!=1||
-       ![e.nativeABI[@"live_textures"] isEqual:@[@0]])return NO;
-    unsigned locations[]={32,33},bases[]={0,1},masks[]={3,15};
-    *color=ioShape(e.nativeABI[@"inputs"],locations,bases,masks,2);
-    if(!*color&&!ioShape(e.nativeABI[@"inputs"],locations,bases,masks,1))return NO;
+       [n[@"textures"] unsignedIntValue]<1||[n[@"textures"] unsignedIntValue]>4||
+       [n[@"samplers"] unsignedIntValue]!=[n[@"textures"] unsignedIntValue]||
+       ![e.nativeABI[@"live_textures"] count])return NO;
+    unsigned locations[]={32,33,0},bases[]={0,1,2},masks[]={3,15,15};
+    NSArray *io=e.nativeABI[@"inputs"];
+    *position=NO;for(NSDictionary *r in io)if([r[@"location"] unsignedIntValue]==0)*position=YES;
+    *color=NO;for(NSDictionary *r in io)if([r[@"location"] unsignedIntValue]==33)*color=YES;
+    unsigned selectedLocations[3],selectedBases[3],selectedMasks[3],count=0;
+    for(unsigned i=0;i<3;i++)if(!i||(i==1?*color:*position)){
+        selectedLocations[count]=locations[i];selectedBases[count]=bases[i];selectedMasks[count++]=masks[i];
+    }
+    if(!ioShape(io,selectedLocations,selectedBases,selectedMasks,count))return NO;
     unsigned outLocations[]={4},outBases[]={0},outMasks[]={15};
     if(!ioShape(e.nativeABI[@"outputs"],outLocations,outBases,outMasks,1))return NO;
     NSDictionary *g=e.reflection[@"graphics"];
+    *fetch=[e.nativeABI[@"framebuffer_fetch"] boolValue];
+    BOOL attachment=*fetch?
+        ([g[@"rasterization_order_attachment_access"] boolValue]&&[g[@"rasterization_samples"] unsignedIntValue]==1&&
+         [g[@"input_attachments"] isEqual:@[@{@"color_index":@0,@"input_attachment_index":@0,@"format_class":@"Float"}]]):
+        ![g[@"input_attachments"] count];
     return [g[@"color_write_rules"] isEqual:@[@[@0,@8738]]]&&
         ![g[@"writes_depth"] boolValue]&&![g[@"fragment_writes_memory"] boolValue]&&
         ![g[@"reads_position_depth"] boolValue]&&![g[@"snapshot_reads"] boolValue]&&
-        ![g[@"input_attachments"] count]&&![g[@"storage_attachments"] count]&&
+        attachment&&![g[@"storage_attachments"] count]&&
         [g[@"color_outputs"] unsignedIntValue]==1;
 }
 A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescriptor *d,NSError **error) {
@@ -120,9 +133,9 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     if(!A5MaliShaderCompilePipelinePayload(d,vf.compileRequestPayload,ff.compileRequestPayload,error))return nil;
     const A5MaliCompiledProfile *vp=vs?NULL:A5MaliCompiledProfileForID(vf.specializationProfileID);
     const A5MaliCompiledProfile *fp=fs?NULL:A5MaliCompiledProfileForID(ff.specializationProfileID);
-    BOOL color=NO;
+    BOOL color=NO,fetch=NO,position=NO;
     if((vs?!vertexABI(vs):(!vp||vp->profileID<603||vp->profileID>606))||
-       (fs?!fragmentABI(fs,&color):(!fp||fp->profileID<603||fp->profileID>606))){
+       (fs?!fragmentABI(fs,&color,&fetch,&position):(!fp||fp->profileID<603||fp->profileID>606))){
         if(error)*error=unsupported(@"compiled stage IO is outside the implemented QC textured runtime ABI");return nil;
     }
     if(!fs)color=fp->profileID==604;
@@ -151,13 +164,16 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     e->_layout=(A5MaliCompiledVertexLayout){1,48,1,1};
     for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i){unsigned over=c==1&&i==0;
         e->_attachments[c].attachments[i]=(A5MaliCompiledAttachmentState){15,over,0,0,1,over?5u:0u,1,over?5u:0u};}
+    unsigned immutableCount=fs?fs.immutableSamplerCount:0;
+    if(immutableCount>4){if(error)*error=unsupported(@"too many immutable samplers");return nil;}
+    if(immutableCount)memcpy(e->_samplers,fs.immutableSamplers,immutableCount*sizeof(e->_samplers[0]));
     e->_profile=(A5MaliCompiledProfile){.profileID=A5MaliDynamicProfileID,.name="dynamic-reflected-QC",
         .vertexName=e->_vertexName.UTF8String,.fragmentName=e->_fragmentName.UTF8String,
         .colorFormats={80},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
-            (color?A5MaliProfileDynamicColorVarying:0),.passes=&e->_pass,.passCount=1,
+            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0),.passes=&e->_pass,.passCount=1,
         .resources=e->_resources,.resourceCount=resourceCount,.pushFields=e->_pushes,.pushFieldCount=pushCount,
         .attributes=e->_attributes,.attributeCount=4,.layouts=&e->_layout,.layoutCount=1,
-        .attachmentContracts=e->_attachments,.attachmentContractCount=2};
+        .attachmentContracts=e->_attachments,.attachmentContractCount=2,.immutableSamplers=e->_samplers,.immutableSamplerCount=immutableCount};
 #if __has_include("A5MaliCompiledRegistryData.inc") || defined(A5_MALI_REQUIRE_COMPILED_REGISTRY)
     if(!A5MaliDynamicRuntimeProfileSupported(&e->_profile)){if(error)*error=unsupported(@"dynamic resource graph is outside native emitter bounds");return nil;}
 #else

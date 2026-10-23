@@ -238,6 +238,33 @@ int main(void) {
         lanes[@"native_abi"][@"inputs"][1][@"base"] = @1;
         writeFile(receipt, j(lanes));
         assert(!A5MaliLoadDynamicShaderStage(rid, p, &error));
+        /* Ordered color0 fetch must agree in compiler liveness and reflected
+         * renderpass metadata. It is never exposed as a sampled texture. */
+        NSMutableDictionary *fetchReflection=clone(reflection());
+        [fetchReflection[@"layout"][@"sets"][0][@"bindings"] addObject:@{
+            @"binding":@6,@"ty":@10,@"count":@1,@"stages":@16,@"flags":@0,
+            @"source":@{@"InputAttachment":@0},@"immutable_sampler":NSNull.null}];
+        fetchReflection[@"graphics"][@"rasterization_order_attachment_access"]=@YES;
+        fetchReflection[@"graphics"][@"rasterization_samples"]=@1;
+        fetchReflection[@"graphics"][@"input_attachments"]=
+            @[@{@"color_index":@0,@"input_attachment_index":@0,@"format_class":@"Float"}];
+        for(unsigned fault=0;fault<7;fault++){
+            NSMutableDictionary *fr=clone(fetchReflection),*r=clone(base);
+            r[@"native_abi"][@"framebuffer_fetch"]=@YES;
+            if(fault==1)r[@"native_abi"][@"framebuffer_fetch"]=@NO;
+            if(fault==2)fr[@"graphics"][@"rasterization_order_attachment_access"]=@NO;
+            if(fault==3)fr[@"graphics"][@"rasterization_samples"]=@4;
+            if(fault==4)fr[@"layout"][@"sets"][0][@"bindings"][2][@"source"][@"InputAttachment"]=@1;
+            if(fault==5)fr[@"graphics"][@"input_attachments"]=@[];
+            if(fault==6)r[@"native_abi"][@"framebuffer_fetch"]=@1;
+            NSData *data=j(fr);writeFile(meta,data);
+            r[@"reflection"]=@{@"file":@"reflection.json",@"bytes":@(data.length),@"sha256":sha(data)};
+            writeFile(receipt,j(r));
+            A5MaliDynamicShaderCacheEntry *got=A5MaliLoadDynamicShaderStage(rid,p,&error);
+            if(!fault)assert(got&&got.resourceCount==4&&got.resources[3].kind==A5MaliResourceInputAttachment);
+            else assert(!got&&error.code!=ENOENT);
+        }
+        writeFile(meta,reflect);
         for (unsigned fault = 0; fault < 15; fault++) {
             NSMutableDictionary *r = clone(base);
             switch (fault) {

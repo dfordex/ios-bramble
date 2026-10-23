@@ -43,6 +43,45 @@ struct a5_stage_profile {
 };
 #include A5_FAMILY_CONFIG
 #include "misc_dynamic.h"
+/* A Vulkan SubpassData read is Metal's current pixel, not an ordinary texture.
+ * Map only the reflected, float, single-sample color0 read at offset(0,0).
+ * Released Midgard emits TARGET_TILEBUF_WAIT for outputs_read before executing
+ * ld_special on T720. Runtime must preload the target and preserve raster order.
+ */
+struct a5_fetch_lowering { const struct a5_dynamic_profile *profile; bool invalid; };
+static bool lower_framebuffer_fetch(nir_builder *b,nir_intrinsic_instr *in,void *data)
+{
+   struct a5_fetch_lowering *ctx=data;
+   if(in->intrinsic!=nir_intrinsic_image_deref_load)return false;
+   nir_deref_instr *deref=nir_src_as_deref(in->src[0]);
+   if(!glsl_type_is_image(deref->type))return false;
+   enum glsl_sampler_dim dim=glsl_get_sampler_dim(deref->type);
+   if(dim!=GLSL_SAMPLER_DIM_SUBPASS && dim!=GLSL_SAMPLER_DIM_SUBPASS_MS)return false;
+   nir_variable *var=nir_deref_instr_get_variable(deref);
+   /* SPIR-V image coordinates are widened to int4 with undef trailing lanes.
+    * Only SubpassData's two actual offset lanes participate in this contract. */
+   nir_scalar x=nir_scalar_resolved(in->src[1].ssa,0);
+   nir_scalar y=nir_scalar_resolved(in->src[1].ssa,1);
+   if(!ctx->profile->framebuffer_fetch_binding || dim!=GLSL_SAMPLER_DIM_SUBPASS ||
+      deref->deref_type!=nir_deref_type_var || var->data.descriptor_set || var->data.index ||
+      var->data.binding+1!=ctx->profile->framebuffer_fetch_binding ||
+      glsl_get_sampler_result_type(deref->type)!=GLSL_TYPE_FLOAT ||
+      in->def.num_components!=4 || in->def.bit_size!=32 ||
+      !nir_scalar_is_const(x) || !nir_scalar_is_const(y) ||
+      nir_scalar_as_uint(x) || nir_scalar_as_uint(y)){
+      fprintf(stderr,"unsupported dynamic framebuffer fetch ABI binding=%u reflected=%u set=%u color=%u dimension=%u deref=%u type=%u shape=%u/%u constant_coord=%u\n",
+         var->data.binding,ctx->profile->framebuffer_fetch_binding,var->data.descriptor_set,
+         var->data.index,dim,deref->deref_type,glsl_get_sampler_result_type(deref->type),
+         in->def.num_components,in->def.bit_size,nir_src_is_const(in->src[1]));
+      ctx->invalid=true;return false;
+   }
+   b->cursor=nir_before_instr(&in->instr);
+   nir_def *pixel=nir_load_output(b,4,32,nir_imm_int(b,0),.base=0,
+      .io_semantics.location=FRAG_RESULT_DATA0,.io_semantics.num_slots=1,
+      .dest_type=nir_type_float32);
+   nir_def_replace(&in->def,pixel);
+   return true;
+}
 #ifndef A5_PROFILE_COUNT
 #define A5_PROFILE_COUNT 2
 #endif
@@ -106,10 +145,10 @@ static bool lower_half(nir_builder *b, nir_alu_instr *alu, void *data)
 }
 static bool lower_fragcoord(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
-   (void)data;
+   bool dynamic=data!=NULL;
    if (intr->intrinsic != nir_intrinsic_load_frag_coord) return false;
    b->cursor = nir_before_instr(&intr->instr);
-   nir_def *value = nir_load_input(b,4,32,nir_imm_int(b,0),.base=0,
+   nir_def *value = nir_load_input(b,4,32,nir_imm_int(b,0),.base=dynamic?2:0,
       .io_semantics.location=VARYING_SLOT_POS,.io_semantics.num_slots=1,
       .dest_type=nir_type_float32);
    nir_def_rewrite_uses(&intr->def,value); return true;
@@ -219,6 +258,16 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage,
       pan_get_nir_shader_compiler_options(4,stage,false));
    free(words);if(!nir)return 2;
    nir_validate_shader(nir,"family SPIR-V");
+   if(dynamic){
+      NIR_PASS(_,nir,nir_opt_deref);
+      NIR_PASS(_,nir,nir_opt_constant_folding);
+      NIR_PASS(_,nir,nir_opt_copy_prop);
+      struct a5_fetch_lowering fetch={.profile=dynamic};
+      NIR_PASS(_,nir,nir_shader_intrinsics_pass,lower_framebuffer_fetch,
+         nir_metadata_control_flow,&fetch);
+      if(fetch.invalid){ralloc_free(nir);return 2;}
+      nir_validate_shader(nir,"dynamic ordered tilebuffer fetch");
+   }
    NIR_PASS(_,nir,nir_lower_system_values);
    if(stage==MESA_SHADER_FRAGMENT)NIR_PASS(_,nir,nir_lower_wpos_center);
    NIR_PASS(_,nir,nir_lower_explicit_io,nir_var_mem_push_const,nir_address_format_32bit_offset);
@@ -256,7 +305,7 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage,
    NIR_PASS(_,nir,nir_shader_intrinsics_pass,a5_lower_ssbo_sysval,nir_metadata_control_flow,&resources);
    NIR_PASS(_,nir,nir_shader_intrinsics_pass,lower_push,nir_metadata_control_flow,&ctx);
    if(stage==MESA_SHADER_FRAGMENT)
-      NIR_PASS(_,nir,nir_shader_intrinsics_pass,lower_fragcoord,nir_metadata_control_flow,NULL);
+      NIR_PASS(_,nir,nir_shader_intrinsics_pass,lower_fragcoord,nir_metadata_control_flow,(void*)dynamic);
    NIR_PASS(_,nir,nir_shader_alu_pass,lower_half,nir_metadata_control_flow,NULL);
    NIR_PASS(_,nir,nir_opt_dce);
    if(resources.invalid||ctx.invalid){fprintf(stderr,"unsupported resource ABI\n");return 2;}
@@ -312,9 +361,11 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage,
       fprintf(stderr,"unsupported dynamic live resource or IO ABI\n");
       util_dynarray_fini(&binary);ralloc_free(nir);return 2;
    }
-   if(dynamic && (!binary.size || binary.size>4096 || info.tls_size || info.wls_size ||
+   if(dynamic && (!binary.size || binary.size>8192 || info.tls_size || info.wls_size ||
       info.work_reg_count>16 || info.texture_count>4 || info.ubo_count>8)){
-      fprintf(stderr,"unsupported dynamic native limits\n");util_dynarray_fini(&binary);ralloc_free(nir);return 2;
+      fprintf(stderr,"unsupported dynamic native limits bytes=%u tls=%u wls=%u regs=%u textures=%u ubos=%u\n",
+         binary.size,info.tls_size,info.wls_size,info.work_reg_count,info.texture_count,info.ubo_count);
+      util_dynarray_fini(&binary);ralloc_free(nir);return 2;
    }
    FILE *f=fopen(output,"wb");
    int rc=1;
@@ -325,7 +376,7 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage,
          info.tls_size,info.wls_size,info.attribute_count,info.ubo_count,info.sampler_count);
    }
    if(f)fclose(f);
-   if(!rc && dynamic && !a5_dynamic_write(info_path,stage,&info,binary.size,&dynamic_info))rc=2;
+   if(!rc && dynamic && !a5_dynamic_write(info_path,stage,&info,binary.size,&dynamic_info,dynamic))rc=2;
    if(rc && dynamic){remove(output);remove(info_path);}
    util_dynarray_fini(&binary);ralloc_free(nir);return rc;
 }

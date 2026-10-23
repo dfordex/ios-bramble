@@ -18,6 +18,7 @@ enum { SIZE=0x40000, W=32,H=32, FB=0x300,VS_RSD=0x500,FS_RSD=0x540,
  VIEWPORT=0xe00,VS_SYS=0x1000,FS_SYS=0x1400,
  SSBO_VERT=0x2000,ORDINARY=0x3000,POS=0x30000,PSIZ=0x31000,
  VARY_DATA=0x32000,VS_CODE=0x6000,FS_CODE=0x8000,POLY=0xa000,POLY_BODY=0xa200,
+ DYNAMIC_TEX=0x4000,DYNAMIC_TEX_TABLE=0x4100,DYNAMIC_SAMPLERS=0x4140,
  HEAP=0x10000,HEAP_SIZE=0x10000,SOURCE=0x20000,LUT=0x22000,
  DEST=0x24000,GUARDS=0x28000 };
 enum { RG_SWIZZLE=MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9),
@@ -95,6 +96,7 @@ static void renderer(uint8_t*d,uint64_t VA,int home,int clear,int generic_color,
 }
 static int span(uint64_t a,uint64_t n){return a&&n&&a<(UINT64_C(1)<<40)&&n<=(UINT64_C(1)<<40)-a;}
 static int overlap(uint64_t a,uint64_t n,uint64_t b,uint64_t m){return a<b+m&&b<a+n;}
+static int shader_tag(unsigned t){return t>=2&&t<=15&&t!=6&&t!=7;}
 static unsigned bpp(unsigned f){return f==80?4:f==115?8:(f==1||f==10)?1:f==30?2:0;}
 static int valid_image(const A5RuntimeImage*i){unsigned n=bpp(i->metalPixelFormat);
  return n&&span(i->gpuVA,i->bytes)&&!(i->gpuVA&63)&&i->width&&i->width<=2048&&i->height&&i->height<=2048&&
@@ -152,6 +154,79 @@ static int textured_image(uint8_t*d,const A5RuntimeMiscDraw*m){
  }
  /* The normalized-coordinate native shader samples interpolated UV directly.
   * It does not read synthetic texture dimensions from FS_SYS. */
+ return A5RuntimeOK;
+}
+/* Preserve the verified one-Texture3/Sampler0 descriptor layout exactly.
+ * Multi-resource or half4 inputs use the independent expanded table below. */
+static int dynamic_legacy_texture(const A5RuntimeMiscDraw*m){
+ unsigned textures=0,samplers=0;const A5MaliCompiledProfile*p=m->draw.profile;
+ if(m->fragmentTextures[3].metalPixelFormat==115)return 0;
+ for(unsigned i=0;i<p->resourceCount;i++){
+  const A5MaliCompiledResource*r=p->resources+i;
+  if(r->kind==A5MaliResourceTexture){if(r->metalIndex!=3||r->nativeIndex||textures++)return 0;}
+  if(r->kind==A5MaliResourceSampler){if(r->metalIndex||r->nativeIndex||samplers++)return 0;}
+ }
+ return textures==1&&samplers==1;
+}
+/* Four independently reflected combined image/sampler bindings live in a
+ * separate descriptor region. Legacy descriptor offsets remain byte-identical.
+ * No assumption about a Metal texture/sampler slot is made on this route. */
+_Static_assert(DYNAMIC_TEX+4*64<=DYNAMIC_TEX_TABLE,"dynamic texture table overlap");
+_Static_assert(DYNAMIC_TEX_TABLE+4*8<=DYNAMIC_SAMPLERS,"dynamic sampler table overlap");
+_Static_assert(DYNAMIC_SAMPLERS+4*MALI_SAMPLER_LENGTH<=VS_CODE,"dynamic code overlap");
+static int dynamic_images(uint8_t*d,const A5RuntimeMiscDraw*m){
+ const A5MaliCompiledProfile*p=m->draw.profile;uint64_t va=m->draw.descriptorGPUVA;
+ for(unsigned n=0;n<p->resourceCount;n++){
+  const A5MaliCompiledResource*r=p->resources+n;
+  if(r->kind!=A5MaliResourceTexture)continue;
+  const A5MaliCompiledResource*sampler=NULL;
+  for(unsigned j=0;j<p->resourceCount;j++){
+   const A5MaliCompiledResource*t=p->resources+j;
+   if(t->kind==A5MaliResourceSampler&&t->stage==2&&t->nativeIndex==r->nativeIndex&&
+      t->bindingIndex==r->bindingIndex){if(sampler)return A5RuntimeUnsupported;sampler=t;}
+  }
+  if(!sampler||r->nativeIndex>=4||r->metalIndex>=31||
+    (!(sampler->flags&A5MaliResourceImmutableSampler)&&sampler->metalIndex>=31))return A5RuntimeUnsupported;
+  const A5RuntimeImage*im=m->fragmentTextures+r->metalIndex;
+  A5RuntimeSampler immutable={0};
+  const A5RuntimeSampler*sm=&immutable;
+  if(sampler->flags&A5MaliResourceImmutableSampler){
+   const A5MaliCompiledSampler*state=NULL;
+   for(unsigned j=0;j<p->immutableSamplerCount;j++)if(p->immutableSamplers[j].nativeIndex==r->nativeIndex)state=p->immutableSamplers+j;
+   if(!state)return A5RuntimeUnsupported;
+   immutable=(A5RuntimeSampler){1,state->minFilter,state->magFilter,state->mipFilter,
+      state->sAddressMode,state->tAddressMode,state->rAddressMode,state->normalizedCoordinates,
+      1,0,state->lodMinClamp,state->lodMaxClamp};
+  }else sm=m->fragmentSamplers+sampler->metalIndex;
+  if((!(sampler->flags&A5MaliResourceImmutableSampler)&&!textured_sampler(sm))||!valid_image(im)||overlap(im->gpuVA,im->bytes,va,SIZE))return A5RuntimeUnsupported;
+  for(unsigned j=0;j<p->passCount;j++){
+   const A5RuntimeImage*out=m->colorAttachments+p->passes[j].logicalTarget;
+   if(overlap(im->gpuVA,im->bytes,out->gpuVA,out->bytes))return A5RuntimeUnsupported;
+  }
+  unsigned format=im->metalPixelFormat==80?MALI_RGBA8_UNORM:
+   im->metalPixelFormat==115?MALI_RGBA16F:im->metalPixelFormat==30?MALI_RG8_UNORM:MALI_R8_UNORM;
+  unsigned swizzle=im->metalPixelFormat==80?0x60a:im->metalPixelFormat==115?0x688:
+   im->metalPixelFormat==30?RG_SWIZZLE:im->metalPixelFormat==1?A_SWIZZLE:R_SWIZZLE;
+  unsigned tex=DYNAMIC_TEX+r->nativeIndex*64;
+  pan_pack((struct mali_texture_packed*)(d+tex),TEXTURE,c){
+   c.width=im->width;c.height=im->height;c.array_size=1;c.levels=1;c.format=(format<<12)|swizzle;
+   c.dimension=MALI_TEXTURE_DIMENSION_2D;c.texel_ordering=MALI_TEXTURE_LAYOUT_LINEAR;c.swizzle=0x688;
+  }
+  pan_pack((struct mali_surface_with_stride_packed*)(d+tex+32),SURFACE_WITH_STRIDE,c){
+   c.pointer=im->gpuVA;c.row_stride=im->rowBytes;c.surface_stride=im->rowBytes*im->height;
+  }
+  u64(d,DYNAMIC_TEX_TABLE+r->nativeIndex*8,va+tex);
+  pan_pack((struct mali_sampler_packed*)(d+DYNAMIC_SAMPLERS+r->nativeIndex*MALI_SAMPLER_LENGTH),SAMPLER,c){
+   c.normalized_coordinates=true;c.seamless_cube_map=false;
+   c.minify_nearest=sm->minFilter==A5RuntimeSamplerNearest;
+   c.magnify_nearest=sm->magFilter==A5RuntimeSamplerNearest;
+   c.mipmap_mode=MALI_MIPMAP_MODE_NEAREST;
+   c.wrap_mode_s=sm->sAddressMode==A5RuntimeSamplerRepeat?MALI_WRAP_MODE_REPEAT:MALI_WRAP_MODE_CLAMP_TO_EDGE;
+   c.wrap_mode_t=sm->tAddressMode==A5RuntimeSamplerRepeat?MALI_WRAP_MODE_REPEAT:MALI_WRAP_MODE_CLAMP_TO_EDGE;
+   c.wrap_mode_r=sm->rAddressMode==A5RuntimeSamplerRepeat?MALI_WRAP_MODE_REPEAT:MALI_WRAP_MODE_CLAMP_TO_EDGE;
+   c.minimum_lod=0;c.maximum_lod=(sampler->flags&A5MaliResourceImmutableSampler)?sm->lodMaxClamp:0;
+  }
+ }
  return A5RuntimeOK;
 }
 /* Admit only the captured, host-compiled native VS/FS pairs below. This is
@@ -278,7 +353,7 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
 static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(p->profileID!=A5MaliDynamicProfileID||
     !(p->flags&A5MaliProfileDynamicStages)||
-    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend))||
+    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition))||
     !(p->flags&A5MaliProfileSourceOverBlend)||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
@@ -294,22 +369,54 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  }
  const A5MaliCompiledVertexLayout*l=p->layouts;
  if(l->index!=1||l->stride!=48||l->stepFunction!=1||l->stepRate!=1)return 0;
- unsigned textures=0,samplers=0;uint32_t bindings[2]={0},slots[2]={0};
+ unsigned textures=0,samplers=0,fetches=0;uint32_t textureBindings[4]={0},samplerBindings[4]={0};
+ uint32_t bindings[2]={0},slots[2]={0},descriptorBindings[2]={0};
  for(unsigned i=0;i<p->resourceCount;++i){const A5MaliCompiledResource*r=p->resources+i;
-  if((r->stage!=1&&r->stage!=2)||r->flags!=A5MaliResourceRead||r->windowOffset||r->sysvalOffset)return 0;
+  if((r->stage!=1&&r->stage!=2)||r->windowOffset||r->sysvalOffset)return 0;
+  unsigned allowed=A5MaliResourceRead|(r->kind==A5MaliResourceBuffer?A5MaliResourcePadUniformTail:
+   r->kind==A5MaliResourceSampler?A5MaliResourceImmutableSampler:0);
+  if(!(r->flags&A5MaliResourceRead)||(r->flags&~allowed))return 0;
   unsigned st=r->stage-1;
   if(r->kind==A5MaliResourceBuffer){
    if(r->metalIndex>=31||r->bindingIndex>=7||r->nativeIndex!=r->bindingIndex+1||
       !r->uniformBytes||r->uniformBytes>4096||r->pushOffset>76||(r->pushOffset&3)||
       (bindings[st]&(1u<<r->bindingIndex))||(slots[st]&(1u<<r->metalIndex)))return 0;
+   if(descriptorBindings[st]&(1u<<r->bindingIndex))return 0;
+   descriptorBindings[st]|=1u<<r->bindingIndex;
    bindings[st]|=1u<<r->bindingIndex;slots[st]|=1u<<r->metalIndex;
   }else if(r->kind==A5MaliResourceTexture){
-   if(r->stage!=2||r->metalIndex!=3||r->nativeIndex||r->uniformBytes||r->pushOffset||textures++)return 0;
+   if(r->stage!=2||r->metalIndex>=31||r->bindingIndex>=32||r->nativeIndex>=4||r->uniformBytes||r->pushOffset||
+      (textures&(1u<<r->nativeIndex)))return 0;
+   if(descriptorBindings[1]&(1u<<r->bindingIndex))return 0;
+   descriptorBindings[1]|=1u<<r->bindingIndex;
+   textures|=1u<<r->nativeIndex;textureBindings[r->nativeIndex]=r->bindingIndex;
   }else if(r->kind==A5MaliResourceSampler){
-   if(r->stage!=2||r->metalIndex||r->nativeIndex||r->uniformBytes||r->pushOffset||samplers++)return 0;
+   if(r->stage!=2||((r->flags&A5MaliResourceImmutableSampler)?r->metalIndex!=31:r->metalIndex>=31)||r->bindingIndex>=32||r->nativeIndex>=4||r->uniformBytes||r->pushOffset||
+      (samplers&(1u<<r->nativeIndex)))return 0;
+   samplers|=1u<<r->nativeIndex;samplerBindings[r->nativeIndex]=r->bindingIndex;
+  }else if(r->kind==A5MaliResourceInputAttachment){
+   if(!(p->flags&A5MaliProfileFramebufferFetch)||fetches++||r->stage!=2||r->metalIndex||
+      r->bindingIndex>=32||r->nativeIndex||r->uniformBytes||r->pushOffset||
+      (descriptorBindings[1]&(1u<<r->bindingIndex)))return 0;
+   descriptorBindings[1]|=1u<<r->bindingIndex;
   }else return 0;
  }
- if(textures!=1||samplers!=1)return 0;
+ if(!!(p->flags&A5MaliProfileFramebufferFetch)!=(fetches==1))return 0;
+ if(!textures||textures!=samplers)return 0;
+ for(unsigned i=0;i<4;i++)if((textures&(1u<<i))&&textureBindings[i]!=samplerBindings[i])return 0;
+ unsigned immutableMask=0,constantMask=0;
+ for(unsigned i=0;i<p->resourceCount;i++)if(p->resources[i].kind==A5MaliResourceSampler&&
+   (p->resources[i].flags&A5MaliResourceImmutableSampler))constantMask|=1u<<p->resources[i].nativeIndex;
+ if(p->immutableSamplerCount>4||(p->immutableSamplerCount&&!p->immutableSamplers))return 0;
+ for(unsigned i=0;i<p->immutableSamplerCount;i++){
+  const A5MaliCompiledSampler*s=p->immutableSamplers+i;
+  if(s->nativeIndex>=4||(immutableMask&(1u<<s->nativeIndex))||s->minFilter||s->magFilter||s->mipFilter||
+     s->sAddressMode!=A5RuntimeSamplerRepeat||s->tAddressMode!=A5RuntimeSamplerRepeat||
+     s->rAddressMode!=A5RuntimeSamplerRepeat||s->normalizedCoordinates!=1||
+     s->lodMinClamp!=0||s->lodMaxClamp!=0.25f)return 0;
+  immutableMask|=1u<<s->nativeIndex;
+ }
+ if(immutableMask!=constantMask)return 0;
  uint32_t used[2]={0};
  for(unsigned i=0;i<p->pushFieldCount;++i){const A5MaliCompiledPushField*f=p->pushFields+i;
   if((f->stage!=1&&f->stage!=2)||f->bytes!=4||f->offset>76||(f->offset&3)||
@@ -371,6 +478,7 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
   const A5RuntimeBuffer*b=st?&r->fragmentBuffers[c->metalIndex]:&r->vertexBuffers[c->metalIndex];
   unsigned storage=!!(c->flags&A5MaliResourceStorage),need=storage?(b->offset<=b->bytes?b->bytes-b->offset:0):c->uniformBytes;
   uint64_t addr;unsigned push,available;
+  if((c->flags&A5MaliResourcePadUniformTail)&&!b->cpuBytes)return A5RuntimeUnsupported;
   if(!bind_buffer(m,d,&arena,b,need,&addr,&push,&available))return A5RuntimeBounds;
   if(storage){
    if(c->sysvalOffset<96||c->sysvalOffset>336||(c->sysvalOffset&15))return A5RuntimeUnsupported;
@@ -406,7 +514,7 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
   if(generic_color)attr(d,ATTRS+8,0,MALI_RGBA16F,0x688,low+32);
   else{attr(d,ATTRS+8,0,MALI_RG32F,RG_SWIZZLE,low+16);attr(d,ATTRS+16,0,MALI_RGBA16F,0x688,low+32);}
   buf(d,ATTR_BUFS,vertex,48,r->vertexCount*48+low);
-  if(generic_textured){int rc=textured_image(d,m);if(rc)return rc;}
+  if(generic_textured){int rc=(p->profileID==A5MaliDynamicProfileID&&!dynamic_legacy_texture(m))?dynamic_images(d,m):textured_image(d,m);if(rc)return rc;}
   if(home)for(unsigned t=0;t<2;++t){const A5RuntimeImage*im=&m->fragmentTextures[t+3];unsigned tex=t?TEX1:TEX0;
    if(!valid_image(im)||im->metalPixelFormat!=80)return A5RuntimeUnsupported;
    for(unsigned i=0;i<p->passCount;++i){const A5RuntimeImage*dest=&m->colorAttachments[p->passes[i].logicalTarget];
@@ -443,6 +551,14 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
      * interpolated half4 vertex colour (VAR1, promoted to float4). */
     attr(d,FS_VARY+8,1,MALI_RGBA32F,0x688,0);
     buf(d,FS_VARY_BUFS+16,VA+VARY_DATA+0x1000,16,r->vertexCount*16);
+   }
+   if(p->flags&A5MaliProfileFragmentPosition){
+    /* Native POSvarying uses raster-generated FragCoord, not interpolated
+     * UV or the snapped vertex position array. */
+    attr(d,FS_VARY+16,2,MALI_RGBA32F,0x688,0);
+    pan_pack((struct mali_attribute_buffer_packed*)(d+FS_VARY_BUFS+32),ATTRIBUTE_BUFFER,c){
+     c.type=0;c.special=MALI_ATTRIBUTE_SPECIAL_FRAG_COORD;
+    }
    }
   }else{
    attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);
@@ -548,9 +664,10 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  if(!r->scissorWidth||!r->scissorHeight||r->scissorX>=out->width||r->scissorY>=out->height||
    r->scissorWidth>out->width-r->scissorX||r->scissorHeight>out->height-r->scissorY)return A5RuntimeBounds;
  const A5MaliCompiledShader*vs=&pass->vertex,*fs=&pass->fragment;
- if(!vs->bytes||!fs->bytes||!vs->byteCount||vs->byteCount>0x1000||!fs->byteCount||fs->byteCount>0x1000||
-   (vs->byteCount&15)||(fs->byteCount&15)||vs->firstTag!=5||fs->firstTag!=5||vs->tlsBytes||vs->wlsBytes||
+ if(!vs->bytes||!fs->bytes||!vs->byteCount||vs->byteCount>(dynamic?0x2000u:0x1000u)||!fs->byteCount||fs->byteCount>(dynamic?0x2000u:0x1000u)||
+   (vs->byteCount&15)||(fs->byteCount&15)||(dynamic?(!shader_tag(vs->firstTag)||!shader_tag(fs->firstTag)):vs->firstTag!=5||fs->firstTag!=5)||vs->tlsBytes||vs->wlsBytes||
    fs->tlsBytes||fs->wlsBytes||!vs->workRegisters||vs->workRegisters>16||!fs->workRegisters||fs->workRegisters>16)return A5RuntimeUnsupported;
+ if(dynamic&&(((vs->bytes[0]&15)!=vs->firstTag)||((fs->bytes[0]&15)!=fs->firstTag)))return A5RuntimeUnsupported;
  memcpy(d+VS_CODE,vs->bytes,vs->byteCount);memcpy(d+FS_CODE,fs->bytes,fs->byteCount);
  unsigned fmt=out->metalPixelFormat==115?2:out->metalPixelFormat==10?1:out->metalPixelFormat==30?3:0;
  framebuffer(d,r->descriptorGPUVA,fmt,out);renderer(d,r->descriptorGPUVA,home,clear,generic_color,generic_textured,p->profileID==604||!!(p->flags&A5MaliProfileDynamicColorVarying),vs->workRegisters,fs->workRegisters,
@@ -558,15 +675,25 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  if(dynamic){
   struct MALI_RENDERER_STATE rs;
   MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+VS_RSD),&rs);
+  rs.shader.shader=r->descriptorGPUVA+VS_CODE+vs->firstTag;
   rs.properties.uniform_buffer_count=dynamic_ubo_count(p,A5MaliStageVertex);
   MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+VS_RSD),&rs);
   MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
+  rs.shader.shader=r->descriptorGPUVA+FS_CODE+fs->firstTag;
   rs.properties.uniform_buffer_count=dynamic_ubo_count(p,A5MaliStageFragment);
+  unsigned count=0;for(unsigned i=0;i<p->resourceCount;i++){
+   const A5MaliCompiledResource*r=p->resources+i;
+   if(r->kind==A5MaliResourceTexture&&r->nativeIndex>=count)count=r->nativeIndex+1;
+  }
+  rs.shader.texture_count=count;rs.shader.sampler_count=count;
+  if(p->flags&A5MaliProfileFragmentPosition)rs.shader.varying_count=3;
   MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
  }
- if(p->flags&A5MaliProfileInlineSourceOver){
+ if(p->flags&(A5MaliProfileInlineSourceOver|A5MaliProfileFramebufferFetch)){
   /* Inline blend shader reads the preloaded tilebuffer. Fixed-function RSD
-   * remains copy, never applies the equation a second time. */
+   * remains copy, never applies the equation a second time. For general
+   * framebuffer fetch preserve the actual pipeline blend equation and turn
+   * on tilebuffer destination loads even when fixed-function blending is off. */
   struct MALI_RENDERER_STATE rs;MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
   rs.multisample_misc.load_destination=true;MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
  }
@@ -574,6 +701,11 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  int rc=resources(d,m,home,clear,generic_color,generic_textured,&arena);if(rc)return rc;
  uint64_t indexVA=0;rc=index_data(d,r,arena,&indexVA);if(rc)return rc;
  jobs(d,r->descriptorGPUVA,r,indexVA);
+ if(dynamic&&!dynamic_legacy_texture(m)){
+  struct MALI_DRAW draw;MALI_DRAW_unpack((const struct mali_draw_packed*)(d+0x140),&draw);
+  draw.textures=r->descriptorGPUVA+DYNAMIC_TEX_TABLE;draw.samplers=r->descriptorGPUVA+DYNAMIC_SAMPLERS;
+  MALI_DRAW_pack((struct mali_draw_packed*)(d+0x140),&draw);
+ }
  return a5_runtime_preload(d,r->descriptorGPUVA,&m->colorAttachments[pass->logicalTarget]);
 }
 int A5MaliEncodeRuntimeMiscPass(const A5RuntimeMiscDraw*m,void*out,size_t n){
