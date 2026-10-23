@@ -31,7 +31,7 @@ static void rgba_source_to_bgra(uint8_t*dst,const uint8_t*src){
 }
 
 int main(int argc,char**argv){
- if(argc!=3)return 2;FILE*f=fopen(argv[1],"rb");if(!f)return 2;
+ if(argc!=3&&argc!=4)return 2;FILE*f=fopen(argv[1],"rb");if(!f)return 2;
  if(fread(legacy,1,sizeof(legacy),f)!=sizeof(legacy)||fgetc(f)!=EOF)return 2;fclose(f);
  if(!legacy_source_is_rgba(legacy)){fputs("legacy source must be exact RGBA8 linear64x64 contract\n",stderr);return 2;}
  const A5MaliCompiledProfile*p=NULL;
@@ -49,7 +49,28 @@ int main(int argc,char**argv){
  d.fragmentBuffers[6]=(A5RuntimeBuffer){0,2,0,legacy+0xb00};
  d.viewportWidth=d.viewportHeight=32;d.viewportFar=1;
  d.scissorWidth=d.scissorHeight=32;d.vertexCount=4;d.primitive=A5RuntimeTriangleStrip;
+ uint8_t indexBytes[32]={0};unsigned indexWidth=0;
+ if(argc==4){
+  unsigned bits=(unsigned)strtoul(argv[3],NULL,10);if(bits!=16&&bits!=32)return 2;
+  indexWidth=bits/8;const uint32_t indices[]={2,0,1,2,1,3};
+  memset(indexBytes,0xa6,sizeof(indexBytes));
+  for(unsigned i=0;i<6;i++)memcpy(indexBytes+(i+2)*indexWidth,indices+i,indexWidth);
+  d.indexBuffer=(A5RuntimeBuffer){0,sizeof(indexBytes),2*indexWidth,indexBytes};
+  d.indexCount=6;d.indexSize=indexWidth;d.primitive=A5RuntimeTriangle;
+ }
  if(A5MaliEncodeRuntimeDraw(&d,out,sizeof(out)))return 2;
+ if(indexWidth){
+  /* The test BO's source image occupies3a000..3e000; move only this tiny
+   * fixture's genuine index stream below it before inserting source pixels.
+   * Production uses the separately validated descriptor index arena. */
+  pan_unpack((struct mali_primitive_packed*)(out+0x128),PRIMITIVE,primitive);
+  if(primitive.indices<d.descriptorGPUVA ||
+     primitive.indices-d.descriptorGPUVA>sizeof(out)-6*indexWidth)return 2;
+  memcpy(out+0x39c00,out+(primitive.indices-d.descriptorGPUVA),6*indexWidth);
+  if(memcmp(out+0x39c00,indexBytes+2*indexWidth,6*indexWidth))return 2;
+  primitive.indices=d.descriptorGPUVA+0x39c00;
+  MALI_PRIMITIVE_pack((struct mali_primitive_packed*)(out+0x128),&primitive);
+ }
  /* Suite-only relocation into an unused tail of its one mapped test BO.
   * Production encoder correctly forbids image aliases of its descriptor BO. */
  pan_unpack((struct mali_surface_with_stride_packed*)(out+0x620),SURFACE_WITH_STRIDE,s);
@@ -66,5 +87,5 @@ int main(int argc,char**argv){
  rgba_source_to_bgra(out+0x3a000,legacy+0xa000);memset(out+0x3e000,0xcd,0x1000);memset(out+0x3f000,0xa7,0x1000);
  f=fopen(argv[2],"wb");if(!f)return 2;
  if(fwrite(out,1,sizeof(out),f)!=sizeof(out)||fclose(f))return 2;
- puts("Encoded genuine dynamic blur VS offscreen32x32, real runtime descriptors and caller ortho MVP; no GPU execution claim");return 0;
+ printf("Encoded genuine dynamic blur VS offscreen32x32, index width=%u; real runtime descriptors and caller ortho MVP; no GPU execution claim\n",indexWidth);return 0;
 }

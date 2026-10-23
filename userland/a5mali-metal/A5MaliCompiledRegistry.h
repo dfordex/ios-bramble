@@ -33,7 +33,10 @@ enum { A5MaliProfileFixedViewport = 1, A5MaliProfileNearestSampler = 2,
        A5MaliProfileDynamicStages = 512,
        A5MaliProfileDynamicColorVarying = 1024,
        A5MaliProfileFramebufferFetch = 2048,
-       A5MaliProfileFragmentPosition = 4096 };
+       A5MaliProfileFragmentPosition = 4096,
+       /* Reflected ordered-fetch fragment has no native interpolants or
+        * sampled resources. VS outputs still follow the validated QC ABI. */
+       A5MaliProfileFragmentNoInputs = 8192 };
 enum { A5MaliDynamicProfileID = 65536 };
 
 typedef struct {

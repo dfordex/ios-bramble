@@ -27,6 +27,51 @@ static A5RuntimeDraw request(const A5MaliCompiledProfile*p,unsigned w,unsigned h
  }
  d.vertexBuffers[1]=(A5RuntimeBuffer){0,sizeof(vertex),17,vertex};return d;
 }
+/* Actual indexed JM descriptors for every authenticated blur profile. */
+static void check_indexed(const A5MaliCompiledProfile*p){
+ uint8_t indices[A5RuntimeMaxIndices*4+32]={0};
+ for(unsigned width=2;width<=4;width+=2){
+  A5RuntimeDraw d=request(p,64,128);
+  d.indexCount=6;d.indexSize=width;
+  const uint32_t sequence[6]={2,0,1,2,1,3};
+  for(unsigned i=0;i<6;++i)memcpy(indices+32+i*width,sequence+i,width);
+  d.indexBuffer=(A5RuntimeBuffer){0,sizeof(indices),32,indices};
+  d.primitive=A5RuntimeTriangle;
+  if(p->profileID==100){d.hasInactiveColor1=1;
+   d.inactiveColor1=(A5RuntimeImage){0x24000000,32768,64,128,256,80};}
+  assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
+  pan_unpack((struct mali_primitive_packed*)(output+0x128),PRIMITIVE,indexed);
+  assert(indexed.index_type==(width==2?MALI_INDEX_TYPE_UINT16:MALI_INDEX_TYPE_UINT32));
+  assert(indexed.index_count==6&&indexed.indices==d.descriptorGPUVA+0x3a000);
+  assert(!memcmp(output+0x3a000,indices+32,6*width));
+  assert(!memcmp(output+0x2000,p->passes[0].vertex.bytes,p->passes[0].vertex.byteCount));
+  assert(!memcmp(output+0x4000,p->passes[0].fragment.bytes,p->passes[0].fragment.byteCount));
+  A5RuntimeDraw bad=d;bad.indexBuffer.cpuBytes=NULL;
+  assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeBounds&&zero());
+  bad=d;bad.indexBuffer.offset=33;
+  assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeBounds&&zero());
+  bad=d;bad.indexBuffer.bytes=32+6*width-1;
+  assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeBounds&&zero());
+  bad=d;bad.indexCount=1539;
+  assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeUnsupported&&zero());
+  bad=d;bad.indexSize=1;
+  assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeUnsupported&&zero());
+  bad=d;bad.vertexCount=3;
+  assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeBounds&&zero());
+  bad=d;bad.vertexCount=5;
+  assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeUnsupported&&zero());
+  /* Maximum bounded span, repeated/reordered actual indices, maximum VS
+   * output size. The index area does not consume the uniform/vertex arena. */
+  d.indexCount=A5RuntimeMaxIndices;d.vertexCount=A5RuntimeMaxVertices;
+  for(unsigned i=0;i<d.indexCount;++i){uint32_t value=i%256;
+   memcpy(indices+32+i*width,&value,width);}
+  assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
+  assert(!memcmp(output+0x3a000,indices+32,d.indexCount*width));
+  d.primitive=A5RuntimeTriangleStrip;d.indexCount=3;d.vertexCount=1;
+  memset(indices+32,0,3*width);
+  assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
+ }
+}
 static void compare_legacy(const char*path){
  uint8_t*legacy=malloc(A5RuntimeJobBytes);assert(legacy);FILE*f=fopen(path,"rb");assert(f);
  assert(fread(legacy,1,A5RuntimeJobBytes,f)==A5RuntimeJobBytes&&fgetc(f)==EOF);fclose(f);
@@ -44,7 +89,7 @@ static void compare_legacy(const char*path){
  for(unsigned i=0;i<4;++i){unsigned table=i<2?0x700:0x740,slot=i+1;
   pan_unpack((struct mali_uniform_buffer_packed*)(output+table+slot*8),UNIFORM_BUFFER,a);
   const unsigned off[4]={0xa00,0xa40,0xa80,0xb00},len[4]={64,16,32,2};
-  assert(!memcmp(output+a.pointer-d.descriptorGPUVA,legacy+off[i],len[i]));
+  assert(!memcmp(output+(a.pointer-d.descriptorGPUVA),legacy+off[i],len[i]));
  }
  pan_unpack((struct mali_renderer_state_packed*)(output+0x500),RENDERER_STATE,vs);
  pan_unpack((struct mali_renderer_state_packed*)(legacy+0x500),RENDERER_STATE,oldvs);
@@ -64,6 +109,7 @@ int main(int argc,char**argv){
  unsigned passed=0;
  for(unsigned i=0;i<sizeof(kA5MaliCompiledProfiles)/sizeof(kA5MaliCompiledProfiles[0]);++i){
   const A5MaliCompiledProfile*p=kA5MaliCompiledProfiles+i;if(p->profileID<99||p->profileID>108)continue;
+  check_indexed(p);
   A5RuntimeDraw d=p->colorFormats[0]==115?request(p,64,128):request(p,1080,1920);
   int rc=A5MaliEncodeRuntimeDraw(&d,output,sizeof(output));if(rc){fprintf(stderr,"profile%u rc%d\n",p->profileID,rc);return 1;}
   check_preload(output,d.descriptorGPUVA,&d.destination);
@@ -71,9 +117,9 @@ int main(int argc,char**argv){
   assert(fb.bound_max_x==d.destination.width-1&&fb.bound_max_y==d.destination.height-1&&fb.color_writeback.base==d.destination.gpuVA);
   pan_unpack((struct mali_attribute_buffer_packed*)(output+0x840),ATTRIBUTE_BUFFER,vb);
   assert(vb.pointer>=d.descriptorGPUVA+0xc000&&vb.pointer+192<=d.descriptorGPUVA+0x10000);
-  assert(!memcmp(output+vb.pointer-d.descriptorGPUVA,vertex+17,192));
+  assert(!memcmp(output+(vb.pointer-d.descriptorGPUVA),vertex+17,192));
   pan_unpack((struct mali_uniform_buffer_packed*)(output+0x708),UNIFORM_BUFFER,ubo);
-  assert(!memcmp(output+ubo.pointer-d.descriptorGPUVA,uniforms+31,64));
+  assert(!memcmp(output+(ubo.pointer-d.descriptorGPUVA),uniforms+31,64));
   pan_unpack((struct mali_tiler_context_packed*)(output+0x3c0),TILER_CONTEXT,t);
   assert(t.polygon_list_size==(d.destination.width==1080?0xa00:0x400)&&t.polygon_list_body==d.descriptorGPUVA+0x10200);
   d.vertexCount=256;assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);

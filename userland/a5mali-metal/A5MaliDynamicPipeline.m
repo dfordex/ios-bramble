@@ -92,18 +92,24 @@ static BOOL vertexABI(A5MaliDynamicShaderCacheEntry *e) {
         @"pulled":@[],@"variant_pulled":@[]};
     return [e.reflection[@"vertex_input"] isEqual:want];
 }
-static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch,BOOL *position) {
+static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch,BOOL *position,BOOL *noInputs) {
     NSDictionary *n=e.nativeABI[@"native_info"];
     if(!interfaceABI(e)||e.stage!=A5MaliStageFragment||[n[@"attributes"] unsignedIntValue]||
-       [n[@"textures"] unsignedIntValue]<1||[n[@"textures"] unsignedIntValue]>4||
-       [n[@"samplers"] unsignedIntValue]!=[n[@"textures"] unsignedIntValue]||
-       ![e.nativeABI[@"live_textures"] count])return NO;
+       [n[@"textures"] unsignedIntValue]>4||
+       [n[@"samplers"] unsignedIntValue]!=[n[@"textures"] unsignedIntValue])return NO;
     unsigned locations[]={32,33,0},bases[]={0,1,2},masks[]={3,15,15};
     NSArray *io=e.nativeABI[@"inputs"];
+    if(![io isKindOfClass:NSArray.class])return NO;
+    *noInputs=io.count==0;
+    unsigned textureCount=[n[@"textures"] unsignedIntValue];
+    NSArray *live=e.nativeABI[@"live_textures"];
+    if(![live isKindOfClass:NSArray.class]||
+       (*noInputs?(textureCount||live.count||![e.nativeABI[@"framebuffer_fetch"] boolValue]):
+                   (!textureCount||!live.count)))return NO;
     *position=NO;for(NSDictionary *r in io)if([r[@"location"] unsignedIntValue]==0)*position=YES;
     *color=NO;for(NSDictionary *r in io)if([r[@"location"] unsignedIntValue]==33)*color=YES;
     unsigned selectedLocations[3],selectedBases[3],selectedMasks[3],count=0;
-    for(unsigned i=0;i<3;i++)if(!i||(i==1?*color:*position)){
+    for(unsigned i=0;i<3;i++)if(!*noInputs&&(!i||(i==1?*color:*position))){
         selectedLocations[count]=locations[i];selectedBases[count]=bases[i];selectedMasks[count++]=masks[i];
     }
     if(!ioShape(io,selectedLocations,selectedBases,selectedMasks,count))return NO;
@@ -133,10 +139,10 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     if(!A5MaliShaderCompilePipelinePayload(d,vf.compileRequestPayload,ff.compileRequestPayload,error))return nil;
     const A5MaliCompiledProfile *vp=vs?NULL:A5MaliCompiledProfileForID(vf.specializationProfileID);
     const A5MaliCompiledProfile *fp=fs?NULL:A5MaliCompiledProfileForID(ff.specializationProfileID);
-    BOOL color=NO,fetch=NO,position=NO;
+    BOOL color=NO,fetch=NO,position=NO,noInputs=NO;
     if((vs?!vertexABI(vs):(!vp||vp->profileID<603||vp->profileID>606))||
-       (fs?!fragmentABI(fs,&color,&fetch,&position):(!fp||fp->profileID<603||fp->profileID>606))){
-        if(error)*error=unsupported(@"compiled stage IO is outside the implemented QC textured runtime ABI");return nil;
+       (fs?!fragmentABI(fs,&color,&fetch,&position,&noInputs):(!fp||fp->profileID<603||fp->profileID>606))){
+        if(error)*error=unsupported(@"compiled stage IO is outside the implemented QC runtime ABI");return nil;
     }
     if(!fs)color=fp->profileID==604;
     A5MaliDynamicPipelineEntry *e=[A5MaliDynamicPipelineEntry new];
@@ -170,7 +176,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     e->_profile=(A5MaliCompiledProfile){.profileID=A5MaliDynamicProfileID,.name="dynamic-reflected-QC",
         .vertexName=e->_vertexName.UTF8String,.fragmentName=e->_fragmentName.UTF8String,
         .colorFormats={80},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
-            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0),.passes=&e->_pass,.passCount=1,
+            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0),.passes=&e->_pass,.passCount=1,
         .resources=e->_resources,.resourceCount=resourceCount,.pushFields=e->_pushes,.pushFieldCount=pushCount,
         .attributes=e->_attributes,.attributeCount=4,.layouts=&e->_layout,.layoutCount=1,
         .attachmentContracts=e->_attachments,.attachmentContractCount=2,.immutableSamplers=e->_samplers,.immutableSamplerCount=immutableCount};

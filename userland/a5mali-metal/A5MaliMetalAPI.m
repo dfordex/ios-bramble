@@ -52,8 +52,8 @@ static atomic_uint copyRejectionDiagnosticCount;
 static atomic_uint protectionDiagnosticCount;
 static atomic_uint callbackDiagnosticCount,waitDiagnosticCount;
 static atomic_uint queueConfigDiagnosticCount;
-#if A5_MALI_NATIVE_RENDER
 static atomic_uint indexedDrawDiagnosticCount;
+#if A5_MALI_NATIVE_RENDER
 static atomic_uint inputImageDiagnosticCount,inputVertexDiagnosticCount,inputUVDiagnosticCount;
 #endif
 static void logQueuePhase(const char *phase,unsigned bufferID,BOOL created,atomic_uint *counter,unsigned limit)
@@ -65,6 +65,18 @@ static __attribute__((unused)) void logNativePhase(unsigned bufferID,const char 
 {
     if(diagnosticTake(&nativePhaseDiagnosticCount,128))fprintf(stderr,
         "A5XELTE Metal native phase: cb=%u phase=%s profile=%u result=%x\n",bufferID,phase,profile,(unsigned)result);
+}
+
+static void logIndexedRejection(unsigned bufferID,uint32_t profile,const char *reason,
+    MTLPrimitiveType primitive,NSUInteger count,MTLIndexType indexType,id buffer,NSUInteger offset)
+{
+    if(!diagnosticTake(&indexedDrawDiagnosticCount,64))return;
+    BOOL valid=[buffer isKindOfClass:[A5MaliPrivateBuffer class]];
+    A5MaliPrivateBuffer *b=valid?buffer:nil;
+    fprintf(stderr,"A5XELTE Metal indexed rejected: cb=%u profile=%u primitive=%lu type=%lu count=%lu offset=%lu buffer_length=%lu width=%u ready=%u reason=%s\n",
+        bufferID,profile,(unsigned long)primitive,(unsigned long)indexType,(unsigned long)count,
+        (unsigned long)offset,(unsigned long)b.length,
+        indexType==MTLIndexTypeUInt16?2:indexType==MTLIndexTypeUInt32?4:0,valid&&b.readyForRead,reason);
 }
 
 static NSError *metalError(kern_return_t code)
@@ -302,6 +314,9 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 - (instancetype)initWithBuffer:(A5MaliMetalBuffer *)buffer
                    attachments:(NSDictionary<NSNumber *,A5MaliMetalTexture *> *)attachments;
 - (BOOL)encodeCompiledDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count;
+- (BOOL)encodeCompiledDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count
+    indexBinding:(nullable A5MaliBufferBinding *)indexBinding indexCount:(NSUInteger)indexCount
+    indexSize:(NSUInteger)indexSize;
 - (BOOL)encodeCompiledMiscDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count;
 - (BOOL)encodeCompiledMiscDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count
     indexBinding:(nullable A5MaliBufferBinding *)indexBinding indexCount:(NSUInteger)indexCount
@@ -1162,15 +1177,30 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 
 - (BOOL)encodeCompiledDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count
 {
+    return [self encodeCompiledDraw:primitiveType vertexCount:count
+        indexBinding:nil indexCount:0 indexSize:0];
+}
+- (BOOL)encodeCompiledDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count
+    indexBinding:(A5MaliBufferBinding *)indexBinding indexCount:(NSUInteger)indexCount
+    indexSize:(NSUInteger)indexSize
+{
 #if !A5_MALI_NATIVE_RENDER
-    (void)primitiveType; (void)count; return NO;
+    (void)primitiveType; (void)count; (void)indexBinding; (void)indexCount; (void)indexSize; return NO;
 #else
     A5MaliCompiledPipeline *pipeline=(id)_pipeline;
     const A5MaliCompiledProfile *profile=pipeline.profile;
-    if (profile && profile->profileID>=200) return [self encodeCompiledMiscDraw:primitiveType vertexCount:count];
-    if (!profile || count<3 || count>A5RuntimeMaxVertices ||
+    if (profile && profile->profileID>=200) return [self encodeCompiledMiscDraw:primitiveType vertexCount:count
+        indexBinding:indexBinding indexCount:indexCount indexSize:indexSize];
+    BOOL indexed=indexBinding!=nil;
+    NSUInteger drawCount=indexed?indexCount:count;
+    if (!profile || profile->profileID<99 || profile->profileID>108 || drawCount<3 ||
+        (!indexed && count>A5RuntimeMaxVertices) ||
+        (indexed && (indexBinding.device!=_buffer.device || !indexBinding.buffer ||
+            !indexBinding.buffer.readyForRead || (indexSize!=2 && indexSize!=4) ||
+            indexCount>A5RuntimeMaxIndices || indexBinding.offset%indexSize ||
+            indexBinding.length!=indexCount*indexSize)) ||
         (primitiveType!=MTLPrimitiveTypeTriangle && primitiveType!=MTLPrimitiveTypeTriangleStrip) ||
-        (primitiveType==MTLPrimitiveTypeTriangle && count%3)) return NO;
+        (primitiveType==MTLPrimitiveTypeTriangle && drawCount%3)) return NO;
     A5MaliMetalTexture *source=_textures[@3], *destination=_attachments[@0];
     A5MaliSamplerState *sampler=_samplers[@0];
     MTLSamplerDescriptor *sd=sampler.descriptor;
@@ -1221,7 +1251,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         @[[ _vertexBindings copy ],[ _fragmentBindings copy ]];
     NSMutableArray<NSMutableDictionary<NSNumber *,NSNumber *> *> *windows=
         [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
-    windows[0][@1]=@(count*48);
+    windows[0][@1]=@((indexed?1:count)*48);
     for (uint32_t i=0;i<profile->resourceCount;++i) {
         const A5MaliCompiledResource *r=profile->resources+i;
         if (r->kind!=A5MaliResourceBuffer) continue;
@@ -1244,6 +1274,41 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     return [[_buffer privateBuffer] encodeNativeWork:^kern_return_t(A5MaliClient *client,A5MaliFence *fence) {
         __attribute__((objc_precise_lifetime)) A5MaliCompiledPipeline *retainedPipeline=pipeline;
         (void)retainedPipeline; /* Own cached native code until its terminal fence. */
+        NSUInteger submittedVertexCount=count;
+        __attribute__((objc_precise_lifetime)) NSMutableData *indices=nil;
+        if(indexed){
+            indices=[NSMutableData dataWithLength:indexBinding.length];
+            if(!indices)return kIOReturnNoMemory;
+            kern_return_t kr=[indexBinding.buffer readBytesForSubmission:indices.mutableBytes
+                offset:indexBinding.offset length:indexBinding.length client:client];
+            if(kr){
+                logIndexedRejection(diagnosticID,profile->profileID,"commit-index-read",primitiveType,
+                    indexCount,indexSize==2?MTLIndexTypeUInt16:MTLIndexTypeUInt32,indexBinding.buffer,indexBinding.offset);
+                logNativePhase(diagnosticID,"blur-index-snapshot",profile->profileID,kr);return kr;
+            }
+            uint32_t maximum=0;
+            for(NSUInteger i=0;i<indexCount;++i){
+                uint32_t value=0;memcpy(&value,(const uint8_t *)indices.bytes+i*indexSize,indexSize);
+                if(value>=A5RuntimeMaxVertices){
+                    logIndexedRejection(diagnosticID,profile->profileID,"referenced-index-limit",primitiveType,
+                        indexCount,indexSize==2?MTLIndexTypeUInt16:MTLIndexTypeUInt32,indexBinding.buffer,indexBinding.offset);
+                    logNativePhase(diagnosticID,"blur-index-limit",profile->profileID,kIOReturnBadArgument);
+                    return kIOReturnBadArgument;
+                }
+                maximum=MAX(maximum,value);
+            }
+            submittedVertexCount=(NSUInteger)maximum+1;
+            if(bindings[0][@1].length<submittedVertexCount*48){
+                logIndexedRejection(diagnosticID,profile->profileID,"referenced-vertex-span",primitiveType,
+                    indexCount,indexSize==2?MTLIndexTypeUInt16:MTLIndexTypeUInt32,indexBinding.buffer,indexBinding.offset);
+                logNativePhase(diagnosticID,"blur-index-vertex-bounds",profile->profileID,kIOReturnBadArgument);
+                return kIOReturnBadArgument;
+            }
+            if(diagnosticTake(&indexedDrawDiagnosticCount,32))fprintf(stderr,
+                "A5XELTE Metal indexed: cb=%u profile=%u indices=%lu width=%lu offset=%lu vertices=%lu\n",
+                diagnosticID,profile->profileID,(unsigned long)indexCount,(unsigned long)indexSize,
+                (unsigned long)indexBinding.offset,(unsigned long)submittedVertexCount);
+        }
         A5NativeQueryRequest query={.header={1,sizeof(query),0,0}};
         query.surfaces[0]=source.privateSurface.resource.token;
         query.surfaces[1]=destination.privateSurface.resource.token;
@@ -1267,13 +1332,17 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(result)return result;
         A5MaliMetalTexture *images[2]={source,destination};
         A5RuntimeDraw draw={.profile=profile,.descriptorGPUVA=mapped.jobVA,
-            .vertexCount=(uint32_t)count,
+            .vertexCount=(uint32_t)submittedVertexCount,
             .primitive=primitiveType==MTLPrimitiveTypeTriangle?A5RuntimeTriangle:A5RuntimeTriangleStrip,
             .blend=sourceOver?A5RuntimeBlendPremultipliedSourceOver:A5RuntimeBlendCopy,
             .scissorX=(uint32_t)scissor.x,.scissorY=(uint32_t)scissor.y,
             .scissorWidth=(uint32_t)scissor.width,.scissorHeight=(uint32_t)scissor.height,
             .viewportX=viewport.originX,.viewportY=viewport.originY,.viewportWidth=viewport.width,
             .viewportHeight=viewport.height,.viewportNear=viewport.znear,.viewportFar=viewport.zfar};
+        if(indexed){
+            draw.indexBuffer=(A5RuntimeBuffer){0,(uint32_t)indices.length,0,indices.bytes};
+            draw.indexCount=(uint32_t)indexCount;draw.indexSize=(uint32_t)indexSize;
+        }
         for(unsigned i=0;i<2;++i){
             A5NativeSpan s=mapped.surfaces[i]; A5MaliMetalTexture *t=images[i];
             A5RuntimeImage image={0};
@@ -1298,7 +1367,10 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                         b.offset>UINT32_MAX || b.buffer.length>UINT32_MAX)return kIOReturnBadArgument;
                     native=(A5RuntimeBuffer){mapped.buffers[i].gpuVA,(uint32_t)b.buffer.length,(uint32_t)b.offset,NULL};
                 }else{
-                    NSData *data=[b capturePrefixBytesForSubmission:windows[stage][slot].unsignedIntegerValue error:NULL];
+                    NSUInteger required=windows[stage][slot].unsignedIntegerValue;
+                    if(indexed && !stage && slot.unsignedIntegerValue==1)
+                        required=MAX(required,submittedVertexCount*48);
+                    NSData *data=[b capturePrefixBytesForSubmission:required error:NULL];
                     if(!data)return kIOReturnBadArgument;
                     [snapshots addObject:data];
                     native=(A5RuntimeBuffer){0,(uint32_t)data.length,0,data.bytes};
@@ -1722,28 +1794,45 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     vertexCount:(NSUInteger)count instanceCount:(NSUInteger)instances
 { if(instances!=1){[_buffer noteDrawCall];[_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];}else[self drawPrimitives:type vertexStart:start vertexCount:count]; }
 
+/* Bounded metadata only: a nearby pipeline log does not identify this draw.
+ * Record the actual retained pipeline and arguments at every rejection. */
+- (void)logIndexedRejection:(const char *)reason primitive:(MTLPrimitiveType)primitive
+    count:(NSUInteger)count indexType:(MTLIndexType)indexType buffer:(id)buffer
+    offset:(NSUInteger)offset
+{
+    const A5MaliCompiledProfile *profile=[_pipeline isKindOfClass:[A5MaliCompiledPipeline class]]?
+        ((A5MaliCompiledPipeline *)_pipeline).profile:NULL;
+    logIndexedRejection(_buffer.diagnosticID,profile?profile->profileID:0,reason,
+        primitive,count,indexType,buffer,offset);
+}
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)type indexCount:(NSUInteger)count
     indexType:(MTLIndexType)indexType indexBuffer:(A5MaliPrivateBuffer *)indexBuffer
     indexBufferOffset:(NSUInteger)offset
 {
     [_buffer noteDrawCall];
     NSUInteger width=indexType==MTLIndexTypeUInt16?2:indexType==MTLIndexTypeUInt32?4:0;
-    if(_ended || !width || offset%width || count>A5RuntimeMaxIndices ||
-        ![indexBuffer isKindOfClass:[A5MaliPrivateBuffer class]] ||
-        indexBuffer.device!=_buffer.device || !indexBuffer.readyForRead ||
-        offset>indexBuffer.length || count>(indexBuffer.length-offset)/width){
+    const char *reason=_ended?"ended":!width?"index-type":
+        offset%width?"index-alignment":count>A5RuntimeMaxIndices?"index-count":
+        ![indexBuffer isKindOfClass:[A5MaliPrivateBuffer class]]?"index-object":
+        indexBuffer.device!=_buffer.device?"index-device":!indexBuffer.readyForRead?"index-not-ready":
+        offset>indexBuffer.length || count>(indexBuffer.length-offset)/width?"index-span":NULL;
+    if(reason){
+        [self logIndexedRejection:reason primitive:type count:count indexType:indexType buffer:indexBuffer offset:offset];
         [_buffer markEncodingError:kIOReturnBadArgument selector:_cmd];return;
     }
     if(!count)return; /* Metal zero-count draw has no work or synthetic fence. */
     if(![_pipeline isKindOfClass:[A5MaliCompiledPipeline class]]){
+        [self logIndexedRejection:"pipeline-class" primitive:type count:count indexType:indexType buffer:indexBuffer offset:offset];
         [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];return;
     }
     A5MaliBufferBinding *binding=[A5MaliBufferBinding bindingWithBuffer:indexBuffer
         offset:offset length:count*width device:_buffer.device error:NULL];
-    if(!binding || ![self encodeCompiledMiscDraw:type vertexCount:0
-        indexBinding:binding indexCount:count indexSize:width])
+    if(!binding || ![self encodeCompiledDraw:type vertexCount:0
+        indexBinding:binding indexCount:count indexSize:width]){
+        [self logIndexedRejection:binding?"pipeline-or-resource-contract":"index-binding" primitive:type
+            count:count indexType:indexType buffer:indexBuffer offset:offset];
         [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];
-    else { _hasDraw=YES;[_buffer noteQueuedDraw]; }
+    }else { _hasDraw=YES;[_buffer noteQueuedDraw]; }
 }
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)type indexCount:(NSUInteger)count
     indexType:(MTLIndexType)indexType indexBuffer:(A5MaliPrivateBuffer *)indexBuffer
@@ -1758,6 +1847,8 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     baseVertex:(NSInteger)baseVertex baseInstance:(NSUInteger)baseInstance
 {
     if(instances!=1 || baseVertex || baseInstance){
+        [self logIndexedRejection:instances!=1?"instances":baseVertex?"base-vertex":"base-instance"
+            primitive:type count:count indexType:indexType buffer:indexBuffer offset:offset];
         [_buffer noteDrawCall];[_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];return;
     }
     [self drawIndexedPrimitives:type indexCount:count indexType:indexType

@@ -15,6 +15,7 @@ enum { FB=0x300,VRS=0x500,FRS=0x540,TEX=0x600,TT=0x660,SAMP=0x680,
  VCODE=0x2000,FCODE=0x4000,ARENA=0xc000,ARENA_END=0x10000,
  POLY=0x10000,POLY_END=0x18000,HEAP=0x18000,HEAP_END=0x28000,
  TLS=0x28000,TLS_END=0x38000,POS=0x38000,PSIZ=0x39000,UV=0x39400,
+ INDEX=0x3a000,INDEX_END=A5RuntimeJobBytes,
  RG=MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9),
  R=MALI_CHANNEL_R|(MALI_CHANNEL_0<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9) };
 _Static_assert(MALI_ATTRIBUTE_BUFFER_LENGTH==16,"released v4 table stride");
@@ -51,6 +52,28 @@ static int binding(const A5RuntimeDraw*r,uint8_t*d,unsigned*arena,
     overlaps(b->gpuVA,b->bytes,r->descriptorGPUVA,A5RuntimeJobBytes)||
     overlaps(b->gpuVA,b->bytes,r->destination.gpuVA,r->destination.bytes))return 0;
  *address=b->gpuVA+(b->offset&~15u);*push=b->offset&15u;return 1;
+}
+/* JM indexes the actual VS output arrays. Indices are a caller snapshot,
+ * never read through an untrusted GPUVA or converted to a different width.
+ * The dedicated index arena cannot overlap code, TLS, uniforms or varyings. */
+static int index_data(const A5RuntimeDraw*r,uint8_t*d,uint64_t*gpuVA){
+ *gpuVA=0;
+ if(!r->indexCount)return r->indexSize?A5RuntimeUnsupported:A5RuntimeOK;
+ if((r->indexSize!=2&&r->indexSize!=4)||r->indexCount<3||
+    r->indexCount>A5RuntimeMaxIndices)return A5RuntimeUnsupported;
+ const A5RuntimeBuffer*b=&r->indexBuffer;
+ unsigned need=r->indexCount*r->indexSize;
+ if(!b->cpuBytes||b->offset>b->bytes||need>b->bytes-b->offset||
+    (b->offset&(r->indexSize-1))||need>INDEX_END-INDEX)return A5RuntimeBounds;
+ uint32_t maximum=0;
+ for(unsigned i=0;i<r->indexCount;++i){
+  uint32_t value=0;memcpy(&value,b->cpuBytes+b->offset+i*r->indexSize,r->indexSize);
+  if(value>=r->vertexCount)return A5RuntimeBounds;
+  if(value>maximum)maximum=value;
+ }
+ if(maximum+1!=r->vertexCount)return A5RuntimeUnsupported;
+ memcpy(d+INDEX,b->cpuBytes+b->offset,need);*gpuVA=r->descriptorGPUVA+INDEX;
+ return A5RuntimeOK;
 }
 static int encode(const A5RuntimeDraw*r,uint8_t*d){
  const A5MaliCompiledProfile*p=r->profile;
@@ -91,14 +114,17 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
     !isfinite(r->viewportNear)||!isfinite(r->viewportFar)||r->viewportX<0||r->viewportY<0||
     r->viewportWidth<=0||r->viewportHeight<=0||r->viewportWidth>4096-r->viewportX||
     r->viewportHeight>4096-r->viewportY||r->viewportNear<0||r->viewportFar>1||
-    r->viewportNear>r->viewportFar||r->vertexStart||r->vertexCount<3||
+    r->viewportNear>r->viewportFar||r->vertexStart||!r->vertexCount||
+    (!r->indexCount&&r->vertexCount<3)||
     r->vertexCount>A5RuntimeMaxVertices||
     (r->primitive!=A5RuntimeTriangle&&r->primitive!=A5RuntimeTriangleStrip)||
-    (r->primitive==A5RuntimeTriangle&&r->vertexCount%3)||r->blend>A5RuntimeBlendPremultipliedSourceOver||
+    (r->primitive==A5RuntimeTriangle&&(r->indexCount?r->indexCount:r->vertexCount)%3)||r->blend>A5RuntimeBlendPremultipliedSourceOver||
     (r->blend&&(!(p->flags&A5MaliProfileSourceOverBlend)||r->destination.metalPixelFormat==115)))return A5RuntimeUnsupported;
  if(!r->scissorWidth||!r->scissorHeight||r->scissorX>=r->destination.width||
     r->scissorY>=r->destination.height||r->scissorWidth>r->destination.width-r->scissorX||
     r->scissorHeight>r->destination.height-r->scissorY)return A5RuntimeBounds;
+ uint64_t indexVA=0;int indexResult=index_data(r,d,&indexVA);
+ if(indexResult)return indexResult;
  unsigned arena=ARENA;uint64_t va=r->descriptorGPUVA;
  /* UBO0 is stage-local: released Panfrost viewport sysval values, not an
   * altered caller MVP. 576 bytes keep both vec3 records padded/aligned. */
@@ -206,7 +232,9 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
  pan_pack((struct mali_draw_packed*)(d+64),DRAW,c){c.state=va+VRS;c.attributes=va+ATTR;c.attribute_buffers=va+ABUF;c.uniform_buffers=va+VUBO;c.varyings=va+VV;c.varying_buffers=va+VB;c.thread_storage=va+FB;}
  pan_pack((struct mali_job_header_packed*)(d+0x100),JOB_HEADER,c){c.type=MALI_JOB_TYPE_TILER;c.index=2;c.dependency_1=1;c.enable_texture_mapper=true;}
  pan_pack((struct mali_invocation_packed*)(d+0x120),INVOCATION,c){c.invocations=r->vertexCount-1;c.workgroups_z_shift=32;c.thread_group_split=2;}
- pan_pack((struct mali_primitive_packed*)(d+0x128),PRIMITIVE,c){c.draw_mode=r->primitive==A5RuntimeTriangle?MALI_DRAW_MODE_TRIANGLES:MALI_DRAW_MODE_TRIANGLE_STRIP;c.index_count=r->vertexCount;c.job_task_split=6;}
+ pan_pack((struct mali_primitive_packed*)(d+0x128),PRIMITIVE,c){c.draw_mode=r->primitive==A5RuntimeTriangle?MALI_DRAW_MODE_TRIANGLES:MALI_DRAW_MODE_TRIANGLE_STRIP;c.index_count=r->indexCount?r->indexCount:r->vertexCount;
+  c.index_type=r->indexCount?(r->indexSize==2?MALI_INDEX_TYPE_UINT16:MALI_INDEX_TYPE_UINT32):MALI_INDEX_TYPE_NONE;
+  c.indices=indexVA;c.job_task_split=6;}
  pan_pack((struct mali_draw_packed*)(d+0x140),DRAW,c){c.position=va+POS;c.viewport=va+VP;c.varyings=va+FV;c.varying_buffers=va+FVB;c.uniform_buffers=va+FUBO;c.textures=va+TT;c.samplers=va+SAMP;c.state=va+FRS;c.fbd=va+FB;}
  pan_pack((struct mali_primitive_size_packed*)(d+0x1b8),PRIMITIVE_SIZE,c){c.fixed_sized=1;}
  pan_pack((struct mali_viewport_packed*)(d+VP),VIEWPORT,c){c.scissor_minimum_x=r->scissorX;c.scissor_minimum_y=r->scissorY;c.scissor_maximum_x=r->scissorX+r->scissorWidth-1;c.scissor_maximum_y=r->scissorY+r->scissorHeight-1;}
