@@ -40,3 +40,10 @@ The next capture should confirm intact `SMP`/`SBT` lines and show both sides
 of SpringBoard's startup RPCs across several rounds. A responsive server,
 changing RPC, or later process crash must be distinguished from a persistent
 wait before changing the service itself.
+
+## Installation receipt
+
+Source `f5937fa` is pushed. Exact ADB recovery/model/TWRP, BOOT p10 mapping
+and partition capacity checks pass. The direct write acknowledges 30,343,184
+bytes, followed by sync and reboot request. No backup, post-write hash/readback,
+formatting or whole root transfer was performed. Runtime result is pending.
