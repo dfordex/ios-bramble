@@ -78,3 +78,20 @@ The BGRA8Unorm ColorWriteRule push is at byte
 `0x48`. Fragment Buffer 1 and SyntheticConstantBlob are declared but dead in
 the optimized native shader. The host result is 2192 vertex bytes and 880
 fragment bytes; it does not establish phone execution or visual correctness.
+
+## 0198 texture function 3 and image function 29
+
+`compile_0200.py` validates the two distinct, device-captured 58-constant
+fragment requests against the stock QuartzCore library. It compiles the
+captured texture-function 3 specialization as profile 604 (1120 fragment
+bytes) and the image-function 29 specialization as profile 605 (896 fragment
+bytes). Both use the 2192-byte vertex program and the same declared resource
+layout as profile 603. Their optimized fragment programs differ: profile 604
+multiplies sampled RGBA by the interpolated vertex color; profile 605 maps
+sample R to RGB and sample G to alpha. The source texture format was not
+captured and is not inferred from the shader.
+
+The recipe pins each capture, SPIR-V, final native program, reflected ABI and
+live NIR interface. Normalized SamplerState words 0, 2, 4 and 6 compile to
+identical native bytes for each specialization. The iOS worker accepts only
+these exact known requests; arbitrary QuartzCore shaders remain unsupported.

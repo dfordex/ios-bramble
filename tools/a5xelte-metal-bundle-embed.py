@@ -238,8 +238,10 @@ def main() -> None:
             'compiler-launchdaemon.plist'}
         if (args.compiler_dir / 'a5shader/midgard-generic602').is_file():
             compiler_members.update({'a5shader/midgard-generic602','a5shader/generic602.json'})
-            if (args.compiler_dir / 'a5shader/generic603.json').is_file():
-                compiler_members.add('a5shader/generic603.json')
+            for profile_id in (603,604,605):
+                name = f'a5shader/generic{profile_id}.json'
+                if (args.compiler_dir / name).is_file():
+                    compiler_members.add(name)
             if not args.installer_source:
                 parser.error('automatic compiler requires --installer-source to check the real kernel preflight')
         actual = {str(p.relative_to(args.compiler_dir)) for p in args.compiler_dir.rglob('*') if not p.is_dir()}

@@ -28,6 +28,13 @@
 #define A5_MALI_NATIVE_RENDER 0
 #endif
 
+/* Exact compiled textured families. Admission still requires the registry's
+ * actual typed stage constants, native hashes and complete pipeline state. */
+static BOOL compiledTexturedProfile(uint32_t profileID)
+{
+    return profileID>=603 && profileID<=605;
+}
+
 /* Independent bounded receipt budgets: resource metadata only, never payloads. */
 static BOOL diagnosticTake(atomic_uint *counter,unsigned limit)
 {
@@ -178,7 +185,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 {
     if ((self = [super initWithDevice:device])) {
         _profile=profile;_sourceOver=sourceOver;
-        _compileRequestID=(profile->profileID==602 || profile->profileID==603)?[requestID copy]:nil;
+        _compileRequestID=(profile->profileID==602 || compiledTexturedProfile(profile->profileID))?[requestID copy]:nil;
         _compiledCacheLock=[NSLock new];
     }
     return self;
@@ -346,7 +353,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     BOOL executable=profile && ((profile->profileID>=99 && profile->profileID<=108) ||
         profile->profileID==200 || profile->profileID==202 || profile->profileID==204 ||
         profile->profileID==206 || profile->profileID==207 ||
-        profile->profileID==600 || profile->profileID==601 || profile->profileID==602 || profile->profileID==603 ||
+        (profile->profileID>=600 && profile->profileID<=605) ||
         (profile->profileID>=300 && profile->profileID<=302));
     if(executable && [[self privateDevice]supportsNativePrograms]){
         if(error)*error=nil;
@@ -1268,16 +1275,17 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     NSUInteger primitiveCount=indexed?indexCount:count;
     if(!profile || !(profile->profileID==200 || profile->profileID==202 ||
         profile->profileID==204 || profile->profileID==206 || profile->profileID==207 ||
-        profile->profileID==600 || profile->profileID==601 || profile->profileID==602 || profile->profileID==603 ||
+        (profile->profileID>=600 && profile->profileID<=605) ||
         (profile->profileID>=300 && profile->profileID<=302)) ||
         !profile->passCount || profile->passCount>2 || primitiveCount<3 ||
         (!indexed && count>A5RuntimeMaxVertices) ||
-        (indexed && ((profile->profileID!=602 && profile->profileID!=603) || indexCount>A5RuntimeMaxIndices ||
+        (indexed && ((profile->profileID!=602 && !compiledTexturedProfile(profile->profileID)) || indexCount>A5RuntimeMaxIndices ||
             (indexSize!=2 && indexSize!=4) || indexBinding.device!=_buffer.device ||
             indexBinding.length!=indexCount*indexSize || !indexBinding.buffer.readyForRead)) ||
         (primitiveType!=MTLPrimitiveTypeTriangle && primitiveType!=MTLPrimitiveTypeTriangleStrip) ||
         (primitiveType==MTLPrimitiveTypeTriangle && primitiveCount%3))return NO;
     BOOL path=profile->profileID>=300 && profile->profileID<=302;
+    BOOL textured=compiledTexturedProfile(profile->profileID);
     if(path && (count!=4 || primitiveType!=MTLPrimitiveTypeTriangleStrip))return NO;
     NSDictionary<NSNumber *,A5MaliMetalTexture *> *attachments=[_attachments copy];
     NSDictionary<NSNumber *,A5MaliMetalTexture *> *textures=[_textures copy];
@@ -1300,7 +1308,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(r->kind==A5MaliResourceSampler){
             if(r->flags&A5MaliResourceImmutableSampler)continue;
             A5MaliSamplerState *sampler=_samplers[@(r->metalIndex)];
-            if(profile->profileID!=603 || r->stage!=A5MaliStageFragment || r->metalIndex ||
+            if(!textured || r->stage!=A5MaliStageFragment || r->metalIndex ||
                 ![sampler isKindOfClass:[A5MaliSamplerState class]] || sampler.device!=_buffer.device)return NO;
             MTLSamplerDescriptor *sd=sampler.descriptor;
             /* The compiled FS uses normalized coordinates, matching this
@@ -1325,8 +1333,10 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(r->kind!=A5MaliResourceTexture)continue;
         if(r->stage!=A5MaliStageFragment || r->metalIndex>=31)return NO;
         A5MaliMetalTexture *image=textures[@(r->metalIndex)];
-        if(!image || image.pixelFormat!=MTLPixelFormatBGRA8Unorm || !(image.usage&MTLTextureUsageShaderRead))return NO;
-        if(profile->profileID==603 && (r->metalIndex!=3 || image.mipmapLevelCount!=1 ||
+        if(!image || !(image.usage&MTLTextureUsageShaderRead) ||
+            (image.pixelFormat!=MTLPixelFormatBGRA8Unorm && (profile->profileID<604 || profile->profileID>605 ||
+             (image.pixelFormat!=MTLPixelFormatR8Unorm && image.pixelFormat!=MTLPixelFormatRG8Unorm))))return NO;
+        if(textured && (r->metalIndex!=3 || image.mipmapLevelCount!=1 ||
             image.textureType!=MTLTextureType2D || image.sampleCount!=1))return NO;
         if(image.buffer && (image.buffer.device!=_buffer.device ||
             image.buffer.storageMode!=MTLStorageModeShared || !image.buffer.readyForRead ||
@@ -1343,7 +1353,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
     NSMutableArray<NSMutableSet<NSNumber *> *> *storageSlots=
         [NSMutableArray arrayWithObjects:[NSMutableSet new],[NSMutableSet new],nil];
-    if(profile->profileID==206 || profile->profileID==600 || profile->profileID==601 || profile->profileID==602 || profile->profileID==603)
+    if(profile->profileID==206 || (profile->profileID>=600 && profile->profileID<=605))
         windows[0][@1]=@((indexed?1:count)*48);
     for(uint32_t i=0;i<profile->resourceCount;++i){const A5MaliCompiledResource*r=profile->resources+i;
         if(r->kind!=A5MaliResourceBuffer)continue;
@@ -1402,7 +1412,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 .scissorWidth=(uint32_t)scissor.width,.scissorHeight=(uint32_t)scissor.height,
                 .viewportX=viewport.originX,.viewportY=viewport.originY,.viewportWidth=viewport.width,
                 .viewportHeight=viewport.height,.viewportNear=viewport.znear,.viewportFar=viewport.zfar}};
-            if(profile->profileID==603)command.fragmentSamplers[0]=samplerSnapshot;
+            if(textured)command.fragmentSamplers[0]=samplerSnapshot;
             if(indexed){
                 command.draw.indexBuffer=(A5RuntimeBuffer){0,(uint32_t)indices.length,0,indices.bytes};
                 command.draw.indexCount=(uint32_t)indexCount;command.draw.indexSize=(uint32_t)indexSize;
@@ -1429,7 +1439,10 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 kern_return_t kr=[backing readBytesForSubmission:bytes.mutableBytes offset:0
                     length:bytes.length client:client];
                 if(kr)return kr;
-                if(profile->profileID==603 && diagnosticTake(&inputImageDiagnosticCount,8)){
+                if(textured && diagnosticTake(&inputImageDiagnosticCount,8)){
+                    fprintf(stderr,"A5XELTE Metal source format: cb=%u profile=%u format=%lu width=%lu height=%lu row=%lu\n",
+                        diagnosticID,profile->profileID,(unsigned long)image.pixelFormat,
+                        (unsigned long)image.width,(unsigned long)image.height,(unsigned long)image.bufferBytesPerRow);
                     A5MaliTextureLevelLayout l={0};
                     if([image getLevelLayout:&l level:0] && image.pixelFormat==80 &&
                        l.width && l.height && l.byteOffset<=bytes.length &&
@@ -1441,8 +1454,8 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                             uint32_t pixel=0;memcpy(&pixel,base+y*l.rowBytes+x*4,4);
                             nonblack+=(pixel&0xffffff)!=0;alpha+=(pixel>>24)!=0;
                         }
-                        fprintf(stderr,"A5XELTE Metal input image: cb=%u profile=603 width=%u height=%u row=%u pixels=%llu rgb_nonzero=%llu alpha_nonzero=%llu\n",
-                            diagnosticID,l.width,l.height,l.rowBytes,(unsigned long long)l.width*l.height,
+                        fprintf(stderr,"A5XELTE Metal input image: cb=%u profile=%u width=%u height=%u row=%u pixels=%llu rgb_nonzero=%llu alpha_nonzero=%llu\n",
+                            diagnosticID,profile->profileID,l.width,l.height,l.rowBytes,(unsigned long long)l.width*l.height,
                             (unsigned long long)nonblack,(unsigned long long)alpha);
                     }
                 }
@@ -1467,7 +1480,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                         NSData *data=[binding capturePrefixBytesForSubmission:required error:NULL];
                         if(!data)return kIOReturnBadArgument;
                         if(!stage && slot.unsignedIntegerValue==1 &&
-                           (profile->profileID==602 || profile->profileID==603) &&
+                           (profile->profileID==602 || textured) &&
                            diagnosticTake(&inputVertexDiagnosticCount,8)){
                             NSUInteger rgb=0,alpha=0,finite=0,zeroW=0;
                             float minUV[2]={INFINITY,INFINITY},maxUV[2]={-INFINITY,-INFINITY};
@@ -1505,7 +1518,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                     else command.draw.vertexBuffers[slot.unsignedIntegerValue]=native;
                 }
             __attribute__((objc_precise_lifetime)) NSArray *retainSnapshots=snapshots;(void)retainSnapshots;
-            if(profile->profileID==603 && diagnosticTake(&inputUVDiagnosticCount,8)){
+            if(textured && diagnosticTake(&inputUVDiagnosticCount,8)){
                 const A5RuntimeBuffer *v=&command.draw.vertexBuffers[1],*t=&command.draw.vertexBuffers[3];
                 if(v->cpuBytes && t->cpuBytes && v->offset<=v->bytes && t->offset<=t->bytes &&
                    (uint64_t)submittedVertexCount*48<=v->bytes-v->offset && 16<=t->bytes-t->offset){

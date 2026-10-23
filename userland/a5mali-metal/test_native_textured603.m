@@ -7,6 +7,18 @@
 #import "A5MaliMetalTexture.h"
 #import "A5MaliNative.h"
 #import "A5MaliCompiledRegistry.h"
+#ifndef A5_TEST_TEXTURED_PROFILE
+#define A5_TEST_TEXTURED_PROFILE 603
+#endif
+#if A5_TEST_TEXTURED_PROFILE == 603
+#define A5_TEST_FRAGMENT_BYTES 880
+#elif A5_TEST_TEXTURED_PROFILE == 604
+#define A5_TEST_FRAGMENT_BYTES 1120
+#elif A5_TEST_TEXTURED_PROFILE == 605
+#define A5_TEST_FRAGMENT_BYTES 896
+#else
+#error "expected a real textured603/604/605 profile"
+#endif
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,10 +79,10 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
   memcpy(output,&r,sizeof(r));*outBytes=sizeof(r);++s->queries;return KERN_SUCCESS;
  }
  assert(selector==A5NativeSubmitSelector);const A5NativeSubmitRequest*q=input;
- assert(bytes==sizeof(*q)+A5NativeJobBytes&&q->profileID==603&&q->mappingEpoch==107);
+ assert(bytes==sizeof(*q)+A5NativeJobBytes&&q->profileID==A5_TEST_TEXTURED_PROFILE&&q->mappingEpoch==107);
  assert(q->readSurfaces==3&&q->writeSurfaces==1&&!q->readBuffers);
  const uint8_t*j=(const uint8_t*)input+sizeof(*q);const A5MaliCompiledPass*p=s->profile->passes;
- assert(p->vertex.byteCount==2192&&p->fragment.byteCount==880);
+ assert(p->vertex.byteCount==2192&&p->fragment.byteCount==A5_TEST_FRAGMENT_BYTES);
  /* Nonzero origin and unequal dimensions distinguish a clip-space Y
   * correction from flipping texture UV or translating the whole image. */
  float sx,sy,ox,oy;
@@ -103,7 +115,7 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
 static MTLFunctionConstantValues *constants(BOOL vertex)
 {
     size_t count=0;const A5MaliCompiledFunctionConstant *c=vertex?
-        A5MaliCompiledVertexConstantsForProfile(603,&count):A5MaliCompiledConstantsForProfile(603,&count);
+        A5MaliCompiledVertexConstantsForProfile(A5_TEST_TEXTURED_PROFILE,&count):A5MaliCompiledConstantsForProfile(A5_TEST_TEXTURED_PROFILE,&count);
     assert(c&&count==(vertex?4u:58u));MTLFunctionConstantValues *result=[MTLFunctionConstantValues new];
     for(size_t i=0;i<count;++i)[result setConstantValue:c[i].raw type:c[i].dataType
         withName:[NSString stringWithUTF8String:c[i].name]];
@@ -191,7 +203,7 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,A5MaliRestrictedDevice
 int main(void)
 {
  @autoreleasepool{
- State s={0};s.profile=A5MaliCompiledProfileForID(603);assert(s.profile);
+ State s={0};s.profile=A5MaliCompiledProfileForID(A5_TEST_TEXTURED_PROFILE);assert(s.profile);
  for(unsigned i=0;i<6;++i){s.vertices[i].position[0]=i+.25f;s.vertices[i].position[1]=i*.75f;
   s.vertices[i].position[3]=1;s.vertices[i].uv[0]=i*3+.5f;s.vertices[i].uv[1]=i+.125f;
   s.vertices[i].color[0]=0x3800;s.vertices[i].color[1]=0x3400;s.vertices[i].color[2]=0x3a00;s.vertices[i].color[3]=0x3c00;

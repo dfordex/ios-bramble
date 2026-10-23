@@ -64,6 +64,8 @@ def main():
         p.add_argument('--' + name, type=Path, required=True)
     p.add_argument('--vertex-capture', type=Path)
     p.add_argument('--other-known', type=Path, required=True)
+    p.add_argument('--additional-known', type=Path, action='append', default=[],
+                   help='remaining installed exact generic contracts')
     p.add_argument('--stale-fragment', type=Path,
                    help='old 976-byte pixel-coordinate profile 603 shader')
     a = p.parse_args()
@@ -78,7 +80,9 @@ def main():
                      (a.validator, 'spirv-val'),
                      (a.profile, 'profile.json'),
                      (a.known, f'generic{json.loads(a.known.read_text())["profile_id"]}.json'),
-                     (a.other_known, f'generic{json.loads(a.other_known.read_text())["profile_id"]}.json')):
+                     (a.other_known, f'generic{json.loads(a.other_known.read_text())["profile_id"]}.json'),
+                     *[(item, f'generic{json.loads(item.read_text())["profile_id"]}.json')
+                       for item in a.additional_known]):
         shutil.copy2(src, tools / dst)
     # A Homebrew validator may need real @rpath libraries. Its original lib
     # directory is copied to the relative path the bottle records.

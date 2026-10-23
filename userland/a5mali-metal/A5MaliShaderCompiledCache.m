@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT
- * Known602/603 native stage cache. Root publication authenticates provenance;
+ * Known602..605 native stage cache. Root publication authenticates provenance;
  * code/metadata pins and the caller's independent exact pipeline selection
  * preserve the already reviewed executable ABI. No arbitrary code admission.
  */
@@ -20,7 +20,10 @@ static uid_t ownerUID(void){return 0;}
 #error "Host compiled-cache tests require an explicit private root"
 #endif
 static const char *const cacheRoot=A5_SHADER_COMPILED_CACHE_TEST_ROOT;
-static uid_t ownerUID(void){return geteuid();}
+/* Test hook alters only the independently expected UID, never filesystem
+ * metadata; production always requires actual root ownership. */
+extern uid_t A5MaliShaderCacheExpectedTestUID(void);
+static uid_t ownerUID(void){return A5MaliShaderCacheExpectedTestUID();}
 #endif
 static NSString *const librarySHA=@"11c74cc42ce5137b73d44d427f75764f886656d4ddb374422d56b609ed2762d9";
 /* SHA256 of the complete sorted named-constant JSON arrays. Indexed arrays
@@ -36,15 +39,24 @@ static const CacheContract contracts[]={
         "e66041333f6452510cda4d0ee1f1c1edf443a12007a989871a1546791deb0834",
         "d8b11a43b5075c7c8f179f6da7849edc5c5534f161590552da6b177007c8595f",
         "5e1fae69edcd5f51efdf3a4adbca80e9c7901844f942404208c0b2dc89bb7c7f"},
-    /* Both stage specializations were accepted on the phone. This corrected
-     * normalized-UV fragment is host-compiled; its device pixels still need
-     * verification. The caller independently matches the exact stage
-     * constants and full pipeline state before replacing profile 603. */
+    /* The normalized-UV 603 route displayed the correct logo in 0199.
+     * Each additional specialization below is independently host-compiled;
+     * the caller must match its complete constants and pipeline state. */
     {603,2192,880,8,5,"quartzcore-generic-603",
         "e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96",
         "e4cf4d31a87bde096cc7cc57a12818f79296e3998d22d9c6c5139a9887f30047",
         "57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112",
         "1314cb292bea03fb85537fdebb3919e65b76db1e99f72b12f7fb1abcd7c8d50d"},
+    {604,2192,1120,8,6,"quartzcore-generic-604",
+        "e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96",
+        "90d93347ca8bb50eef500ac2296e71dfb8298a58bd24d903f913295560798424",
+        "57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112",
+        "a01468c5c10e1b8eb6a513674f8629dbe1952d75a4ce03aee4e2a41937c9e6c2"},
+    {605,2192,896,8,5,"quartzcore-generic-605",
+        "e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96",
+        "48bccbbdd2b788137ff228c7677e87a574ccfcd29f324a7bc44015bc15f3e2ce",
+        "57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112",
+        "70685547d87b105adac2768caae67169b97615568328283337aaec4b4bd66019"},
 };
 static const CacheContract *contractForID(uint32_t profileID)
 {
@@ -144,7 +156,7 @@ static BOOL expectedShader(const A5MaliCompiledShader *shader,const CacheContrac
         shader->sha256&&[pin isEqualToString:[NSString stringWithUTF8String:shader->sha256]]&&
         [digest(shader->bytes,shader->byteCount) isEqual:pin];
 }
-static BOOL exact603Attachments(const A5MaliCompiledProfile *profile)
+static BOOL exactTexturedAttachments(const A5MaliCompiledProfile *profile)
 {
     static const A5MaliCompiledAttachmentState copy={15,0,0,0,1,0,1,0};
     static const A5MaliCompiledAttachmentState sourceOver={15,1,0,0,1,5,1,5};
@@ -191,8 +203,8 @@ A5MaliShaderCompiledCacheEntry *A5MaliLoadShaderCompiledCache(NSString *requestI
         expected->passes[0].logicalTarget||!expected->vertexName||!expected->fragmentName||
         strcmp(expected->vertexName,"fixed_vert_lph_spc")||strcmp(expected->fragmentName,"fixed_frag_lph_cph")||
         !expectedShader(&expected->passes[0].vertex,contract,YES)||!expectedShader(&expected->passes[0].fragment,contract,NO)||
-        (expected->profileID==603&&!exact603Attachments(expected)))
-        return failure(error,EINVAL,@"compiled cache requires an exact authenticated602/603 stage contract");
+        (expected->profileID>=603&&!exactTexturedAttachments(expected)))
+        return failure(error,EINVAL,@"compiled cache requires an exact authenticated602..605 stage contract");
     int root=open(cacheRoot,O_RDONLY|O_DIRECTORY|O_NOFOLLOW),dir=-1;
     if(root<0)return failure(error,errno==ENOENT?ENOENT:EIO,@"compiled cache not published");
     if(!directory(root)){close(root);return failure(error,EINVAL,@"compiled cache root ownership/mode rejected");}

@@ -8,6 +8,18 @@
 #import "A5MaliMetalTexture.h"
 #import "A5MaliNative.h"
 #import "A5MaliCompiledRegistry.h"
+#ifndef A5_TEST_TEXTURED_PROFILE
+#define A5_TEST_TEXTURED_PROFILE 603
+#endif
+#if A5_TEST_TEXTURED_PROFILE == 603
+#define A5_TEST_FRAGMENT_BYTES 880
+#elif A5_TEST_TEXTURED_PROFILE == 604
+#define A5_TEST_FRAGMENT_BYTES 1120
+#elif A5_TEST_TEXTURED_PROFILE == 605
+#define A5_TEST_FRAGMENT_BYTES 896
+#else
+#error "expected a real textured603/604/605 profile"
+#endif
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,7 +89,7 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
     }
     assert(selector==A5NativeSubmitSelector);
     const A5NativeSubmitRequest*q=input;
-    assert(bytes==sizeof(*q)+A5NativeJobBytes&&q->profileID==603&&q->mappingEpoch==107);
+    assert(bytes==sizeof(*q)+A5NativeJobBytes&&q->profileID==A5_TEST_TEXTURED_PROFILE&&q->mappingEpoch==107);
     assert(q->readSurfaces==1&&q->writeSurfaces==1&&q->readBuffers==1);
     assert(q->surfaces[0]==UINT64_C(0x100000001)&&!q->surfaces[1]&&q->buffers[0]==s->handle);
     assert(s->uploaded==s->length&&!memcmp(s->actual,s->expected,s->length));
@@ -100,7 +112,7 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
 static MTLFunctionConstantValues *constants(BOOL vertex)
 {
     size_t count=0;const A5MaliCompiledFunctionConstant *c=vertex?
-        A5MaliCompiledVertexConstantsForProfile(603,&count):A5MaliCompiledConstantsForProfile(603,&count);
+        A5MaliCompiledVertexConstantsForProfile(A5_TEST_TEXTURED_PROFILE,&count):A5MaliCompiledConstantsForProfile(A5_TEST_TEXTURED_PROFILE,&count);
     assert(c&&count==(vertex?4u:58u));MTLFunctionConstantValues *result=[MTLFunctionConstantValues new];
     for(size_t i=0;i<count;++i)[result setConstantValue:c[i].raw type:c[i].dataType
         withName:[NSString stringWithUTF8String:c[i].name]];
@@ -171,10 +183,10 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,id pipelineState,
     memcpy((uint8_t*)lod.contents+16,s->lod,sizeof(s->lod));
     assert(!b.privateBuffer.completedFence.fragmentFence);return b;
 }
-static void runCase(Fault fault,BOOL useSPI,BOOL blend)
+static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sourceFormat)
 {
     State s={.fault=fault,.blend=blend,.length=0x101000};
-    s.profile=A5MaliCompiledProfileForID(603);assert(s.profile);
+    s.profile=A5MaliCompiledProfileForID(A5_TEST_TEXTURED_PROFILE);assert(s.profile);
     s.expected=malloc(s.length);s.actual=calloc(1,s.length);
     assert(s.expected&&s.actual);
     for(size_t i=0;i<s.length;++i)s.expected[i]=(uint8_t)(i*29u+7u);
@@ -201,7 +213,7 @@ static void runCase(Fault fault,BOOL useSPI,BOOL blend)
             }];
         assert(buffer&&buffer.contents==s.host&&buffer.privateKernelHandle==0);
         MTLTextureDescriptor*desc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
-            MTLPixelFormatBGRA8Unorm width:32 height:16 mipmapped:NO];
+            sourceFormat width:32 height:16 mipmapped:NO];
         desc.usage=MTLTextureUsageShaderRead;desc.storageMode=MTLStorageModeShared;
         A5MaliMetalTexture*source=(id)(useSPI?
             [buffer newLinearTextureWithDescriptor:desc offset:128 bytesPerRow:256 bytesPerImage:4160]:
@@ -232,10 +244,18 @@ static void runCase(Fault fault,BOOL useSPI,BOOL blend)
     assert(s.deallocations==1);
     free(s.expected);free(s.actual);
 }
+static void runCase(Fault fault,BOOL useSPI,BOOL blend)
+{
+    runCaseFormat(fault,useSPI,blend,MTLPixelFormatBGRA8Unorm);
+}
 int main(void)
 {
     runCase(Good,NO,NO);runCase(Good,YES,NO);
     runCase(Good,NO,YES);runCase(Good,YES,YES);
+#if A5_TEST_TEXTURED_PROFILE >= 604
+    runCaseFormat(Good,NO,NO,MTLPixelFormatRG8Unorm);
+    runCaseFormat(Good,YES,YES,MTLPixelFormatR8Unorm);
+#endif
     runCase(FailBulk,NO,YES);runCase(FailQuery,NO,YES);runCase(FailSubmit,NO,YES);
     puts("buffer-backed native603: copy/source-over pipelines, real no-copy Shared alias, commit snapshot, full bulk upload, bufferVA+offset, fences and cleanup PASS (mock transport; no GPU pixels)");
     return 0;

@@ -440,7 +440,7 @@ static void a5HandleRequest(NSString *self, NSDictionary *request,
         [publishedRoot stringByAppendingPathComponent:key]]) return;
     if (!known) {
         a5WriteStatus(key,@"unsupported",
-            @"Only exact captured 602 or candidate 603 fixed_vert_lph_spc/fixed_frag_lph_cph typed pairs compile; other requests remain unsupported.");
+            @"Only exact captured 602 or candidate 603/604/605 fixed_vert_lph_spc/fixed_frag_lph_cph typed pairs compile; other requests remain unsupported.");
         fprintf(stderr,"A5XELTE shader compiler: UNSUPPORTED request=%s\n",key.UTF8String);
         return;
     }
@@ -507,7 +507,7 @@ static void a5Serve(NSString *self)
     a5PrepareRequestRoots();
     NSMutableArray<NSDictionary *> *knownProfiles = [NSMutableArray array];
     NSString *sourceSHA = digest(regularData(sourceLibrary,64*1024*1024));
-    for (NSNumber *profile in @[@602,@603]) {
+    for (NSNumber *profile in @[@602,@603,@604,@605]) {
         NSString *name = [NSString stringWithFormat:@"generic%@.json",profile];
         NSDictionary *known = readJSON([installed stringByAppendingPathComponent:name]);
         if (![known[@"profile_id"] isEqual:profile] ||

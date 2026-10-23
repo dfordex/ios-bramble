@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Root-cache loader ownership/hash/ABI/lifetime regression. Operator supplies
- * actual private pinned602/603 native bytes; no shader bytes are in this source.
+ * actual private pinned602..605 native bytes; no shader bytes are in this source.
  */
 #import "A5MaliShaderCompiledCache.h"
 #include <assert.h>
@@ -29,9 +29,25 @@ static NSString *const fs=@"e4cf4d31a87bde096cc7cc57a12818f79296e3998d22d9c6c513
 static NSString *const vertexConstants=@"57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112";
 static NSString *const fragmentConstants=@"1314cb292bea03fb85537fdebb3919e65b76db1e99f72b12f7fb1abcd7c8d50d";
 static NSString *const otherConstants=@"d8b11a43b5075c7c8f179f6da7849edc5c5534f161590552da6b177007c8595f";
+#elif A5_CACHE_TEST_PROFILE == 604
+enum {testProfile=604,vertexLength=2192,fragmentLength=1120,fragmentRegisters=6};
+static NSString *const vs=@"e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96";
+static NSString *const fs=@"90d93347ca8bb50eef500ac2296e71dfb8298a58bd24d903f913295560798424";
+static NSString *const vertexConstants=@"57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112";
+static NSString *const fragmentConstants=@"a01468c5c10e1b8eb6a513674f8629dbe1952d75a4ce03aee4e2a41937c9e6c2";
+static NSString *const otherConstants=@"70685547d87b105adac2768caae67169b97615568328283337aaec4b4bd66019";
+#elif A5_CACHE_TEST_PROFILE == 605
+enum {testProfile=605,vertexLength=2192,fragmentLength=896,fragmentRegisters=5};
+static NSString *const vs=@"e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96";
+static NSString *const fs=@"48bccbbdd2b788137ff228c7677e87a574ccfcd29f324a7bc44015bc15f3e2ce";
+static NSString *const vertexConstants=@"57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112";
+static NSString *const fragmentConstants=@"70685547d87b105adac2768caae67169b97615568328283337aaec4b4bd66019";
+static NSString *const otherConstants=@"a01468c5c10e1b8eb6a513674f8629dbe1952d75a4ce03aee4e2a41937c9e6c2";
 #else
-#error "only known602/603 cache tests exist"
+#error "only known602..605 cache tests exist"
 #endif
+static uid_t expectedTestUID;
+uid_t A5MaliShaderCacheExpectedTestUID(void){return expectedTestUID;}
 static NSString *entryPath(void){return [root stringByAppendingPathComponent:key];}
 static NSString *filePath(NSString *name){return [entryPath() stringByAppendingPathComponent:name];}
 static NSDictionary *stage(NSString *name,NSString *sha,NSUInteger bytes,NSUInteger registers)
@@ -70,14 +86,14 @@ static void expectRejected(const A5MaliCompiledProfile *profile)
 int main(int argc,const char **argv)
 {
     @autoreleasepool {
-        assert(argc==3&&[root hasPrefix:@"/private/tmp/"]);
+        assert(argc==3&&[root hasPrefix:@"/private/tmp/"]);expectedTestUID=geteuid();
         NSData *vertex=[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[1]]];
         NSData *fragment=[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[2]]];
         assert(vertex.length==vertexLength&&fragment.length==fragmentLength);
         A5MaliCompiledPass pass={.passID=testProfile,.logicalTarget=0,
             .vertex={vertex.bytes,vertexLength,5,8,0,0,vs.UTF8String},
             .fragment={fragment.bytes,fragmentLength,5,fragmentRegisters,0,0,fs.UTF8String}};
-#if A5_CACHE_TEST_PROFILE == 603
+#if A5_CACHE_TEST_PROFILE >= 603
         A5MaliCompiledAttachmentContract contracts[2]={0};
         for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i)
             contracts[c].attachments[i]=(A5MaliCompiledAttachmentState){15,0,0,0,1,0,1,0};
@@ -85,7 +101,7 @@ int main(int argc,const char **argv)
 #endif
         A5MaliCompiledProfile profile={.profileID=testProfile,.name="generic-cache-test",.vertexName="fixed_vert_lph_spc",
             .fragmentName="fixed_frag_lph_cph",.passes=&pass,.passCount=1,.colorFormats={80}
-#if A5_CACHE_TEST_PROFILE == 603
+#if A5_CACHE_TEST_PROFILE >= 603
             ,.flags=A5MaliProfileSourceOverBlend,.attachmentContracts=contracts,.attachmentContractCount=2
 #endif
         };
@@ -100,7 +116,7 @@ int main(int argc,const char **argv)
         assert(!memcmp(loaded.profile->passes[0].vertex.bytes,vertex.bytes,vertex.length));
         assert(!memcmp(loaded.profile->passes[0].fragment.bytes,fragment.bytes,fragment.length));
         assert(loaded.profile->passes[0].passID==testProfile&&loaded.profile->colorFormats[0]==80&&[loaded.requestID isEqual:key]);
-#if A5_CACHE_TEST_PROFILE == 603
+#if A5_CACHE_TEST_PROFILE >= 603
         assert(loaded.profile->attachmentContractCount==2&&
             loaded.profile->attachmentContracts!=profile.attachmentContracts&&
             loaded.profile->attachmentContracts[1].attachments[0].destinationRGB==5);
@@ -116,6 +132,13 @@ int main(int argc,const char **argv)
         profile.attachmentContractCount=2;
 #endif
 
+        /* Independent expected-owner mismatch must fail before reading any
+         * stages, using the exact same fstat UID comparison as production. */
+        expectedTestUID=geteuid()==(uid_t)-2?0:geteuid()+1;
+        expectRejected(&profile);expectedTestUID=geteuid();
+        /* Swapped stage files must not be admitted as a valid pair. */
+        writeFile(@"vertex.midgard",fragment);writeFile(@"fragment.midgard",vertex);
+        expectRejected(&profile);writeFile(@"vertex.midgard",vertex);writeFile(@"fragment.midgard",fragment);
         NSMutableData *changed=[vertex mutableCopy];((uint8_t *)changed.mutableBytes)[37]^=1;
         writeFile(@"vertex.midgard",changed);expectRejected(&profile);writeFile(@"vertex.midgard",vertex);
         changed=[fragment mutableCopy];((uint8_t *)changed.mutableBytes)[83]^=1;
@@ -156,6 +179,10 @@ int main(int argc,const char **argv)
         assert(!unlink(filePath(@"vertex.midgard").fileSystemRepresentation));assert(!unlink(outside.fileSystemRepresentation));
         writeFile(@"vertex.midgard",vertex);
         pass.vertex.workRegisters=7;expectRejected(&profile);pass.vertex.workRegisters=8;
+        pass.fragment.workRegisters=fragmentRegisters+1;expectRejected(&profile);
+        pass.fragment.workRegisters=fragmentRegisters;
+        pass.fragment.tlsBytes=16;expectRejected(&profile);pass.fragment.tlsBytes=0;
+        pass.fragment.wlsBytes=16;expectRejected(&profile);pass.fragment.wlsBytes=0;
         profile.profileID=601;expectRejected(&profile);profile.profileID=testProfile;
         profile.profileID=testProfile==602?603:602;pass.passID=profile.profileID;
         expectRejected(&profile);profile.profileID=testProfile;pass.passID=testProfile;

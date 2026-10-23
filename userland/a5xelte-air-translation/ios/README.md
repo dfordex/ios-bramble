@@ -30,10 +30,10 @@ are fsynced before publication. These bounds still need measurement on the A53.
 The launch job runs `--serve` and scans the bounded request spool immediately;
 the baseline pairs remain available through the separate `--selftest` action.
 The exact captured QuartzCore `fixed_vert_lph_spc` +
-`fixed_frag_lph_cph` profile 602 and the 0189 textured fragment with a
-UV-capable vertex function (profile 603) have source-pinned translation and
-Midgard recipes. Profile 603 is restricted to the captured 58 typed fragment
-constants, four candidate vertex constants, and a ClampToEdge S/T/R sampler.
+`fixed_frag_lph_cph` profile 602 and the three captured textured fragment
+specializations (profiles 603–605) have source-pinned translation and Midgard
+recipes. Textured profiles require their own exact 58 typed fragment constants,
+four vertex constants, and a ClampToEdge S/T/R sampler.
 The phone accepted the textured vertex function and pipeline in 0197, but the
 new normalized-coordinate fragment's output pixels await device verification.
 Unknown functions and pipeline contracts receive
@@ -60,12 +60,16 @@ python3 prepare_package.py PATCHED_AIR_IOS MIDGARD_IOS SPIRV_VAL_IOS \
   --vertex-capture602 PRIVATE_0187_VERTEX_CAPTURE_JSON \
   --receipt603 VERIFIED_PRIVATE_603_RECEIPT_JSON \
   --fragment-capture603 PRIVATE_0189_FRAGMENT_CAPTURE_JSON \
+  --receipt604 VERIFIED_PRIVATE_604_RECEIPT_JSON \
+  --fragment-capture604 PRIVATE_0198_TEXTURE_FUNCTION_CAPTURE_JSON \
+  --receipt605 VERIFIED_PRIVATE_605_RECEIPT_JSON \
+  --fragment-capture605 PRIVATE_0198_IMAGE_FUNCTION_CAPTURE_JSON \
   --metallib PRIVATE_QUARTZCORE_METALLIB
 python3 test_package_air_gate.py PATCHED_TRANSLATOR_BUILD_DIR \
   --old-translator OLD_OPTIMIZED_TRANSLATOR_IOS
 ```
 
-The package contains only the runner, launchd plist, four tools and four JSON
+The package contains only the runner, launchd plist, four tools and five JSON
 resources. The host-only provenance manifest is written beside it as
 `OUTPUT_DIR-package-manifest.json`, outside the embedder's exact member list.
 
@@ -77,8 +81,9 @@ formats a partition nor copies a whole root image. Patch0173 restricts the
 extra platform authorization to the signed identities/paths with compiler
 entitlements and the explicit `a5compiler=1` boot option.
 
-**Current evidence:** the 0198 package passed signed iOS Mach-O checks and
-host request-to-publication tests for both 602 and 603, including retirement
+**Current evidence:** the 0200 package passed signed iOS Mach-O checks and
+host request-to-publication tests for both 604 and 605; earlier tests covered
+602 and 603, including retirement
 and recompilation of the previous 976-byte profile 603 cache entry. The 0197 phone run
 accepted the textured vertex and fragment pair but produced black output.
 The corrected profile 603 host output is a 2192-byte vertex shader and
