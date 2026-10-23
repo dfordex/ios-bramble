@@ -50,3 +50,11 @@ XNU DEVELOPMENT ARM64 A5XELTE build passes. BOOT0204 is30,359,568 bytes and
 retains `a5emmc_blocks=32`, existing provider/compiler payload and23 GPU cases.
 Physical root mount, batch acceptance, data correctness and speed remain
 pending. No successful storage repair is claimed from the build alone.
+
+## Installation
+
+After the cable reconnection, exact recovery/model/TWRP and BOOT p10 mapping/
+capacity checks pass. Source `a443eca`; direct BOOT write acknowledges
+30,359,568 bytes, sync completes and reboot is requested. No BOOT backup,
+post-write hash/readback, formatting or whole root transfer. The next screen
+and recovered hardware completion records must verify the fix.
