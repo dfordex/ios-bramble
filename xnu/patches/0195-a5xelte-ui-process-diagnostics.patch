@@ -1,0 +1,251 @@
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -1,4 +1,4 @@
+-#if defined(ARM64_BOARD_CONFIG_SWEET)
++#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_A5XELTE)
+ /*
+  * SWEET process sampler: where is a daemon stuck?
+  *
+@@ -11,7 +11,9 @@
+  * with tools/sweet-crash.py). A thread blocked in a syscall shows the
+  * syscall stub in pc and its caller in lr/bt.
+  *
+- * First sample 90 s after start, then every 120 s, 40 samples at most.
++ * A5XELTE requires a5uidiag=1: first sample after 90 s, then every 60 s,
++ * 32 samples at most, four named UI processes and at most 32 threads each.
++ * User register/stack snapshots are best-effort, not stop-the-world samples.
+  */
+ #include <sys/param.h>
+ #include <sys/systm.h>
+@@ -23,6 +25,9 @@
+ 
+ extern task_t proc_task(proc_t);
+ extern int hz;
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++extern void thread_terminate_self(void);
++#endif
+ extern void sweet_sample_start(void);
+ 
+ static char sweet_sample_names[128];
+@@ -66,23 +71,45 @@
+ {
+ 	static int chan;
+ 	if (!PE_parse_boot_argn("sweetsample", sweet_sample_names, sizeof(sweet_sample_names))) {
++		#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++		strlcpy(sweet_sample_names, "SpringBoard,backboardd,PosterBoard,assetsd", sizeof(sweet_sample_names));
++#else
+ 		strlcpy(sweet_sample_names, "SpringBoard,backboardd", sizeof(sweet_sample_names));
++#endif
+ 	}
+ 	if (sweet_sample_names[0] == '-') {
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++		thread_terminate_self();
++#endif
+ 		return;
+ 	}
+ 	(void)tsleep(&chan, PZERO, "sweetsmp", 90 * hz);
+-	for (int i = 0; i < 40; i++) {
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++	const int rounds = 32, interval = 60;
++#else
++	const int rounds = 40, interval = 120;
++#endif
++	for (int i = 0; i < rounds; i++) {
+ 		printf("SMP --- sample %d\n", i);
+ 		proc_iterate(PROC_ALLPROCLIST, sweet_sample_proc, NULL, NULL, NULL);
+-		(void)tsleep(&chan, PZERO, "sweetsmp", 120 * hz);
++		(void)tsleep(&chan, PZERO, "sweetsmp", interval * hz);
+ 	}
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++	printf("A5XELTE UI diag: sampler complete rounds=32\n");
++	thread_terminate_self();
++#endif
+ }
+ 
+ void
+ sweet_sample_start(void)
+ {
+ 	thread_t thread;
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++	int enabled = 0;
++	PE_parse_boot_argn("a5uidiag", &enabled, sizeof(enabled));
++	if (!enabled) return;
++	printf("A5XELTE UI diag: sampler enabled; delay=90 interval=60 rounds=32 threads=32 best_effort=1\n");
++#endif
+ 	if (kernel_thread_start(sweet_sample_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
+--- a/bsd/dev/a5xelte_emmc.c
++++ b/bsd/dev/a5xelte_emmc.c
+@@ -29,6 +29,7 @@
+ extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
+ extern void thread_deallocate(thread_t);
+ extern int hz;
++extern void sweet_sample_start(void);
+ 
+ #define A5_LOG_SIZE   (4u << 20)
+ #define A5_LOG_SECTORS (1u + A5_LOG_SIZE / 512u)
+@@ -738,6 +739,7 @@
+ 		printf("A5XELTE eMMC: /dev/emmcroot0 ready, GPT %s %s\n",
+ 		    emmc_partition_name, emmc_writable ? "writable" : "read-only");
+ 		emmc_log_start();
++		sweet_sample_start();
+ 	}
+ 	*dev = emmc_bdev;
+ 	return 0;
+--- a/bsd/dev/mem.c
++++ b/bsd/dev/mem.c
+@@ -174,6 +174,10 @@
+ static volatile UInt32 a5_null_chunks;
+ static volatile UInt32 a5_probe_null_chunks;
+ static volatile UInt32 a5_compiler_null_chunks;
++static volatile UInt32 a5_springboard_null_chunks;
++static volatile UInt32 a5_poster_null_chunks;
++static volatile UInt32 a5_assets_null_chunks;
++static int a5_ui_diag;
+ #endif
+ 
+ static bool
+@@ -187,6 +191,12 @@
+ 			strlcpy(sweet_null_names, "backboardd,SpringBoard", sizeof(sweet_null_names));
+ #endif
+ 		}
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++		PE_parse_boot_argn("a5uidiag", &a5_ui_diag, sizeof(a5_ui_diag));
++		if (a5_ui_diag) strlcpy(sweet_null_names,
++		    "backboardd,SpringBoard,PosterBoard,assetsd,a5mali-metal-probe,a5shader-compile",
++		    sizeof(sweet_null_names));
++#endif
+ 		sweet_null_parsed = 1;
+ 	}
+ 	proc_selfname(name, (int)len);
+@@ -202,6 +212,15 @@
+ 			/* Preserve the first real frame and callback/wait evidence past
+ 			 * routine startup output; keep the producer budget bounded. */
+ 			if (!strcmp(name, "backboardd")) limit = 1024;
++			if (a5_ui_diag && !strcmp(name, "SpringBoard")) {
++				chunks = &a5_springboard_null_chunks; limit = 1024;
++			}
++			if (a5_ui_diag && !strcmp(name, "PosterBoard")) {
++				chunks = &a5_poster_null_chunks; limit = 512;
++			}
++			if (a5_ui_diag && !strcmp(name, "assetsd")) {
++				chunks = &a5_assets_null_chunks; limit = 512;
++			}
+ 			if (!strcmp(name, "a5mali-metal-probe")) {
+ 				chunks = &a5_probe_null_chunks;
+ 				limit = 64;
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -910,7 +910,7 @@
+ {
+ 	static char names[128];
+ 	#if defined(ARM64_BOARD_CONFIG_A5XELTE)
+-	static int a5_scans;
++	static int a5_scans, a5_poster_scans, a5_assets_scans;
+ 	#endif
+ 	char *buf;
+ 	vm_map_t map = current_map();
+@@ -919,6 +919,13 @@
+ 	int lines = 0;
+ 	char last[96] = "";
+ 
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++	int ui_diag = 0;
++	PE_parse_boot_argn("a5uidiag", &ui_diag, sizeof(ui_diag));
++	if (ui_diag) {
++		strlcpy(names, "backboardd,SpringBoard,PosterBoard,assetsd", sizeof(names));
++	} else
++#endif
+ 	if (!PE_parse_boot_argn("sweetscan", names, sizeof(names))) {
+ 		strlcpy(names, "backboardd,SpringBoard", sizeof(names));
+ 	}
+@@ -940,7 +947,10 @@
+ 	}
+ 	#if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ 	/* Keep repeated service crashes from flooding a single-core boot. */
+-	if (a5_scans++ >= 4) {
++	int *scans = &a5_scans, limit = 4;
++	if (ui_diag && !strcmp(name, "PosterBoard")) { scans = &a5_poster_scans; limit = 2; }
++	if (ui_diag && !strcmp(name, "assetsd")) { scans = &a5_assets_scans; limit = 2; }
++	if ((*scans)++ >= limit) {
+ 		return;
+ 	}
+ 	#endif
+@@ -1008,6 +1018,68 @@
+ void
+ sweet_sample_task(const char *name, int pid, task_t task)
+ {
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++	vm_map_t map = get_task_map(task);
++	if (map == VM_MAP_NULL) return;
++	uint64_t slide = 0, mh;
++	thread_t refs[32], thread;
++	unsigned count = 0, total = 0;
++	vm_shared_region_t sr = vm_shared_region_get(task);
++	if (sr != NULL) {
++		slide = sr->sr_slide;
++		vm_shared_region_deallocate(sr);
++	}
++	/* Retain bounded thread references under the task lock. Never read user
++	 * memory or print while holding this lock: stack reads may fault/sleep. */
++	vm_map_reference(map);
++	task_lock(task);
++	mh = task->mach_header_vm_address;
++	queue_iterate(&task->threads, thread, thread_t, task_threads) {
++		total++;
++		if (count < 32) { thread_reference(thread); refs[count++] = thread; }
++	}
++	task_unlock(task);
++	printf("SMP %s[%d] slide 0x%llx mh 0x%llx threads=%u captured=%u approximate=1\n",
++	    name, pid, slide, mh, total, count);
++	for (unsigned tn = 0; tn < count; tn++) {
++		thread = refs[tn];
++		uint64_t pc = 0, lr = 0, sp = 0, fp = 0, tid, event;
++		int state, result, priority;
++		bool valid = false;
++		/* A live CPU may subsequently change its saved user registers. These
++		 * are explicitly best-effort samples; do not stop/suspend UI threads. */
++		spl_t spl = splsched();
++		thread_lock(thread);
++		tid = thread->thread_id; event = thread->wait_event;
++		state = thread->state; result = thread->wait_result;
++		priority = thread->sched_pri;
++		arm_saved_state_t *ss = find_user_regs(thread);
++		if (ss != NULL && is_saved_state64(ss)) {
++			pc = get_saved_state_pc(ss); lr = get_saved_state_lr(ss);
++			sp = get_saved_state_sp(ss); fp = get_saved_state_fp(ss);
++			valid = true;
++		}
++		thread_unlock(thread);
++		splx(spl);
++		char line[400];
++		int n = snprintf(line, sizeof(line),
++		    "SMP %s t%u tid=%llu state=0x%x wait=0x%llx result=%d pri=%d regs=%u pc 0x%llx lr 0x%llx sp 0x%llx bt",
++		    name, tn, tid, state, event, result, priority, valid, pc, lr, sp);
++		/* Bound reads to an ascending, aligned 8 MiB window above user SP. */
++		for (int i = 0; valid && i < 12 && sp && fp >= sp &&
++		    fp - sp <= (8ull << 20) && !(fp & 15) &&
++		    n < (int)sizeof(line) - 24; i++) {
++			uint64_t frame[2];
++			if (vm_map_read_user(map, fp, frame, sizeof(frame)) != KERN_SUCCESS) break;
++			n += snprintf(line + n, sizeof(line) - n, " 0x%llx", frame[1]);
++			if (frame[0] <= fp) break;
++			fp = frame[0];
++		}
++		printf("%s\n", line);
++		thread_deallocate(thread);
++	}
++	vm_map_deallocate(map);
++#else
+ 	vm_map_t map = get_task_map(task);
+ 	uint64_t slide = 0;
+ 	int tn = 0;
+@@ -1047,6 +1119,7 @@
+ 		printf("%s\n", line);
+ 	}
+ 	task_unlock(task);
++#endif
+ }
+ 
+ #endif /* ARM64_BOARD_CONFIG_SWEET || ARM64_BOARD_CONFIG_A5XELTE */

@@ -31,6 +31,8 @@ def main():
                     help='enable the privileged local Metal native queue; requires a compiled registry bundle')
     ap.add_argument('--restore-display-apps', action='store_true',
                     help='restore the exact six embedded display UI bundles through HFS VFS')
+    ap.add_argument('--ui-diagnostics', action='store_true',
+                    help='enable bounded UI thread samples and independent exception-output budgets')
     args = ap.parse_args()
     if args.output_boot.exists():
         ap.error('output exists; choose a new private output path')
@@ -94,6 +96,10 @@ def main():
             ap.error('kernel lacks the native compiler installation/authorization')
         required.update(a5compiler='1',
                         sweetnull='backboardd,a5mali-metal-probe,a5shader-compile')
+    if args.ui_diagnostics:
+        if b'A5XELTE UI diag: sampler enabled;' not in args.kernel.read_bytes():
+            ap.error('kernel lacks the opt-in A5XELTE UI diagnostics')
+        required['a5uidiag'] = '1'
     words = [w for w in words if w.split('=', 1)[0] not in required]
     words += [f'{k}={v}' for k, v in required.items()]
     cmdline = ' '.join(words)
