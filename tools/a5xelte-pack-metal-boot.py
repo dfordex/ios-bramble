@@ -97,8 +97,10 @@ def main():
         required.update(a5compiler='1',
                         sweetnull='backboardd,a5mali-metal-probe,a5shader-compile')
     if args.ui_diagnostics:
-        if b'A5XELTE UI diag: sampler enabled;' not in args.kernel.read_bytes():
-            ap.error('kernel lacks the opt-in A5XELTE UI diagnostics')
+        if not all(marker in args.kernel.read_bytes() for marker in (
+                b'A5XELTE UI diag: sampler enabled;', b'SBT %s tid=',
+                b'server_threads=16 split_stack=1')):
+            ap.error('kernel lacks the bounded split-stack UI/server diagnostics')
         required['a5uidiag'] = '1'
     words = [w for w in words if w.split('=', 1)[0] not in required]
     words += [f'{k}={v}' for k, v in required.items()]

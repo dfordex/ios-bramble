@@ -59,7 +59,7 @@ static int vm_map_read_user(vm_map_t m,u64 p,void *out,size_t n){
 }
 static int capture_printf(const char *fmt,...){
  assert(!tl&&!thl);char b[600];va_list a;va_start(a,fmt);int n=vsnprintf(b,sizeof(b),fmt,a);va_end(a);
- assert(n>=0&&n<(int)sizeof(b));lines++;if(strstr(b,"captured="))strcpy(header,b);return n;
+ assert(n>0&&n<224&&b[n-1]=='\n');lines++;if(strstr(b,"captured="))strcpy(header,b);return n;
 }
 #define printf capture_printf
 '''
@@ -68,7 +68,7 @@ main=r'''
 int main(void){
  struct thread threads[64];arm_saved_state_t regs={1,2,0x1000,0x2000,true};
  struct task task={0};int cases=0;
- for(int c=0;c<10;c++){
+ for(int c=0;c<14;c++){
   memset(threads,0,sizeof(threads));memset(header,0,sizeof(header));
   for(int i=0;i<64;i++){threads[i].next=i<63?&threads[i+1]:NULL;threads[i].thread_id=i+1;threads[i].regs=&regs;}
   task.threads=threads;task.no_map=false;mode=0;reads=lines=0;regs.fp=0x2000;regs.sp=0x1000;regs.valid=true;
@@ -81,12 +81,25 @@ int main(void){
   if(c==7)mode=3;
   if(c==8)mode=4;
   if(c==9)task.no_map=true;
-  sweet_sample_task("PosterBoard",42,&task);
+  const char *name=c==10?"deleted":"PosterBoard";
+  if(c==11){
+   for(int i=0;i<64;i++)threads[i].thread_id=~0ull;
+   regs.pc=regs.lr=regs.sp=regs.fp=~0ull;
+  }else{regs.pc=1;regs.lr=2;}
+  if(c==12)regs.fp=regs.sp+(8ull<<20);
+  if(c==13)for(int i=0;i<64;i++)threads[i].regs=NULL;
+  sweet_sample_task(name,42,&task);
   assert(!tl&&!thl&&!refs);for(int i=0;i<64;i++)assert(!threads[i].refs);
   if(c==9){assert(!lines&&!reads);}
-  else {assert(lines==33&&strstr(header,"threads=64 captured=32 approximate=1"));}
-  if(c==2||c==3||c==4||c==5)assert(!reads);
-  if(c==0||c==1||c==6||c==8)assert(reads==32);
+  else {
+   int selected=c==10?16:32;
+   assert(strstr(header,c==10?"threads=64 captured=16 approximate=1":"threads=64 captured=32 approximate=1"));
+   int batches=(c==2||c==3||c==4||c==5||c==11||c==13||c==1)?0:(c==7?2:1);
+   assert(lines==1+selected*(1+batches));
+  }
+  if(c==2||c==3||c==4||c==5||c==11||c==13)assert(!reads);
+  if(c==0||c==1||c==6||c==8||c==12)assert(reads==32);
+  if(c==10)assert(reads==16);
   if(c==7)assert(reads==32*12);
   cases++;
  }
