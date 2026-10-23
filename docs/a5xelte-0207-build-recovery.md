@@ -47,14 +47,26 @@ exits0. These checks establish reproducible build placement, not device behavior
 
 ## Pixel-test reconstruction
 
-The deleted private27-case payload hashes are unavailable. The prior27 cases are
-therefore reconstructed, rather than claimed byte-identical to their old
-payloads: nine real blur translations, nine miscellaneous cases, three path
-cases, two604/605 cases, two606 A8 cases and two real worker-published unknown
-A8-stage cases. Their independent pixel oracles, poisoned initial outputs,
-immutable guards and terminal-fence requirements remain. Four new fetch/noise
-cases produce31 embedded cases in total. Host embedding validates all31 payload
-and oracle contracts; physical results await the next boot.
+The deleted private 27-case payload hashes are unavailable. The prior 27 cases
+are reconstructed with their original fixture generators, rather than claimed
+byte-identical to the deleted payloads. The first 27 embedded case names and
+their order match the actual 0206 device log exactly: three path blend cases,
+one runtime blur case, three runtime RAW204/R8/RG8 cases, fourteen resource
+copy/mipmap cases, two 604/605 cases, two 606 A8 cases and two real
+worker-published unknown A8-stage cases. Their independent pixel oracles,
+poisoned initial outputs, immutable guards and terminal-fence requirements
+remain. Four new fetch/noise cases produce 31 embedded cases in total. Host
+embedding validates all 31 payload and oracle contracts; physical results await
+the next boot.
+
+An earlier reconstruction selected an older legacy blur/miscellaneous suite
+instead of the actual 0206 runtime/resource cases. The case-name comparison
+identified the mismatch and the final suite was regenerated. The first BOOT
+installation attempt also stopped on its byte-count guard after a partial
+write, before sync or reboot. The installer had passed a buffered file handle
+whose underlying offset was advanced; it must use a fresh unbuffered handle.
+The phone remains in TWRP until the corrected 31-case kernel is linked,
+repacked and the complete replacement BOOT is written successfully.
 
 ## Samsung packaging
 
