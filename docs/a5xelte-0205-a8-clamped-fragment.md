@@ -69,3 +69,11 @@ silently substituted. Final cache receipts validate602–606 independently.
 The next recovered device log must establish25/25 pixels, real606/A8 pipeline
 acceptance, successful GPU jobs and any remaining backboardd failure. Visible
 home-screen progress requires physical observation.
+
+## Installation
+
+Source `c49357f` was pushed before flashing. Exact recovery, model, TWRP,
+BOOT p10 mapping and33,554,432-byte capacity checks passed. Direct streaming
+acknowledged30,375,952 bytes, sync completed and reboot was requested. No
+BOOT backup, post-write hash/readback, formatting or whole USERDATA transfer
+was performed. Runtime results remain pending the next recovered capture.
