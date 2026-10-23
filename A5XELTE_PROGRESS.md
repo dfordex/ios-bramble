@@ -589,3 +589,5 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 
 - **Readout:** A5XNU002 status5, all10segments/phase4, entry0x81e02488/bootargs0x83283000prepared, displaystate3/resultabsent; noXNUentrymarker. WTCONbefore/afterboth0x8021; priorstopisnotverified. S-Bootstillreportswatchdogresets. Copyimprovementpassedtheoldcheckpoint; exactDSIMoperationunknown.
 - **0207c candidate:** FollowdownstreamWTCNTreloadfromexistingWTDATduringcopy/zero/cacheclean,pollingandframebufferclear. Retainconfiguration,logtimerdata/countandDSIM/DCSsubsteps. Actualhelpers12,800ASanUBSanchecksplus65,536reloadcasespass; ARMv8-Aloadercompile/linkpass. BOOT31,420,432bytes; entirekernel/ADT/argumentsandDTBHremainidenticalto0207. Hardwaretimerreload/DSIM/XNUentrypending. See[0207c](docs/a5xelte-0207c-loader-keepalive.md).
+
+- **0207c installed:** Source8ba5b86pushed; exactrecovery/model/TWRP/BOOTp10/capacityguards pass. Full31,420,432bytewriteacknowledged,synccomplete,rebootrequested. NoBOOTbackup/newreadback/hash/fullroottransfer. TimerreloadandDSIM/XNUcheckpointpendingphysicalfeedback.
