@@ -662,3 +662,5 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 
 - **Code:** Replace downsample8/profile100 name/ID special case with authenticated blur99..108 inactive-target metadata. Preserve full selector and no-write conditions. Actual format80/115 and destination dimensions flow through auxiliary allocation and independent emitter validation.
 - **Local verification:** All18 native wrapper binaries/final iOS compile pass; all ten profiles exercise absent/caller RT1, real auxiliary IOSurfaces, mapping/fence/bounds/alias failures. Structural u16/u32 tests pass for all ten. Signed bundle/payload preflight and full XNU pass. BOOT31,709,200bytes, unchanged loader/ADT, exact signed provider embedded;41 GPU cases. Hardware results pending. See[0211](docs/a5xelte-0211-inactive-blur-targets.md).
+
+- **0211 installed:** Source649de3bpushed. Guarded direct BOOTp10 write acknowledges31,709,200bytes; synccomplete/rebootrequested. NoBOOTbackup/readback/hash/fullroottransfer. Physical41-case results andbackboardd progressionpending.

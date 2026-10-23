@@ -36,3 +36,11 @@ The automatic compiler may still mark the captured blur pipeline request
 unsupported: its binary is already compiled in the registry, and this repair
 admits the corrected descriptor directly. No new shader compilation or ignored
 pipeline error is used to mask this mismatch. Phone results follow installation.
+
+## Installed0211
+
+Source649de3b was pushed before installation. Exact recovery/model/TWRP,
+BOOT p10 mapping and32MiB capacity guards pass. Direct offset-zero streaming
+acknowledges all31,709,200 bytes; sync completes and reboot is requested.
+No BOOT backup, device readback/hash or whole USERDATA transfer occurs.
+Physical41-case results, live profile104 submission and UI progression are pending.
