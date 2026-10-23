@@ -33,6 +33,8 @@ def main():
                     help='restore the exact six embedded display UI bundles through HFS VFS')
     ap.add_argument('--ui-diagnostics', action='store_true',
                     help='enable bounded UI thread samples and independent exception-output budgets')
+    ap.add_argument('--storage-multiblock', action='store_true',
+                    help='enable bounded 32-sector eMMC read/write batches')
     args = ap.parse_args()
     if args.output_boot.exists():
         ap.error('output exists; choose a new private output path')
@@ -102,6 +104,10 @@ def main():
                 b'server_threads=16 split_stack=1')):
             ap.error('kernel lacks the bounded split-stack UI/server diagnostics')
         required['a5uidiag'] = '1'
+    if args.storage_multiblock:
+        if b'A5XELTE eMMC: bounded CMD23/CMD18/CMD25 blocks=' not in args.kernel.read_bytes():
+            ap.error('kernel lacks bounded eMMC multi-block transfers')
+        required['a5emmc_blocks'] = '32'
     words = [w for w in words if w.split('=', 1)[0] not in required]
     words += [f'{k}={v}' for k, v in required.items()]
     cmdline = ' '.join(words)
