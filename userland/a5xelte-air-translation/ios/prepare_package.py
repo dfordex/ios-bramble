@@ -48,6 +48,33 @@ def verified_no_timeout_air(path, src):
             'no_timeout_cli_verified': True}
 
 
+def verified_generic_backend(path, src):
+    """Bind the device backend to all admitted modules, including606."""
+    record = json.loads((path.parent / 'build-manifest.json').read_text())
+    family = src.parent / 'families'
+    code = (family / 'misc_backend.c').read_text()
+    anchor = '   pan_preprocess_nir(nir,inputs.gpu_id);'
+    if code.count(anchor) != 1:
+        raise ValueError('generic backend initializer insertion point changed')
+    code = code.replace(anchor,
+        '   NIR_PASS(_,nir,nir_lower_variable_initializers,\n'
+        '            nir_var_function_temp|nir_var_shader_temp);\n' + anchor)
+    if (record.get('mesa_version') != '26.2.4' or
+            record.get('mesa_archive_sha256') !=
+            'bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9' or
+            record.get('target') != 'arm64-apple-ios16.0' or
+            record.get('nir_validation') is not True or
+            record.get('generic_602_source_sha256') !=
+            hashlib.sha256(code.encode()).hexdigest() or
+            record.get('generic_profile_sha256') !=
+            sha(src.parent / 'generic' / 'ios_602_profile.h') or
+            record.get('generic_602_executable_sha256') != sha(path)):
+        raise ValueError('generic backend does not bind the current authenticated module whitelist')
+    return {key: record[key] for key in ('mesa_version', 'mesa_archive_sha256',
+        'target', 'nir_validation', 'generic_602_source_sha256',
+        'generic_profile_sha256', 'generic_602_executable_sha256')}
+
+
 def load(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -103,10 +130,13 @@ def main():
     ap.add_argument('--fragment-capture604', type=Path, required=True)
     ap.add_argument('--receipt605', type=Path, required=True)
     ap.add_argument('--fragment-capture605', type=Path, required=True)
+    ap.add_argument('--receipt606', type=Path, required=True)
+    ap.add_argument('--fragment-capture606', type=Path, required=True)
     ap.add_argument('--metallib', type=Path, required=True)
     args = ap.parse_args()
     src = Path(__file__).resolve().parent
     air_proof = verified_no_timeout_air(args.air, src)
+    backend_proof = verified_generic_backend(args.generic602, src)
     out = args.output.resolve()
     if out == src or src in out.parents:
         ap.error('generated files must stay outside source')
@@ -131,6 +161,11 @@ def main():
         if candidate['profile_id'] != profile or candidate['vertex_candidate'] is not True:
             raise ValueError(f'exact 0198 profile {profile} receipt required')
         new_textured[profile] = candidate
+    recipe606 = load(src.parent / 'generic' / 'compile_0205.py', 'recipe606')
+    candidate606 = recipe606.validate_receipt(args.receipt606,
+        args.fragment_capture606, args.metallib)
+    if candidate606['profile_id'] != 606 or candidate606['vertex_candidate'] is not True:
+        raise ValueError('exact 0204 profile 606 receipt required')
     for name, path in [('metal2vulkan', args.air), ('midgard-compile', args.midgard),
                        ('midgard-generic602', args.generic602),
                        ('spirv-val', args.validator)]:
@@ -186,7 +221,7 @@ def main():
     }
     (resources / 'generic602.json').write_text(json.dumps(known602, indent=2)+'\n')
     for profile, verified in ((603, textured), (604, new_textured[604]),
-                              (605, new_textured[605])):
+                              (605, new_textured[605]), (606, candidate606)):
         captured = json.loads(getattr(args, f'fragment_capture{profile}').read_text())
         receipt_path = getattr(args, f'receipt{profile}')
         known = {
@@ -218,13 +253,14 @@ def main():
     # Keep provenance beside the payload. The device embedder has an exact
     # member allowlist and must not gain a new installed file by accident.
     (out.parent / (out.name + '-package-manifest.json')).write_text(json.dumps({
-        'schema': 1, 'translator': air_proof,
+        'schema': 1, 'translator': air_proof, 'generic_backend': backend_proof,
         'runner_sha256': sha(runner),
         'generic602_midgard_sha256': sha(resources / 'midgard-generic602'),
         'generic602_contract_sha256': sha(resources / 'generic602.json'),
         'generic603_contract_sha256': sha(resources / 'generic603.json'),
         'generic604_contract_sha256': sha(resources / 'generic604.json'),
         'generic605_contract_sha256': sha(resources / 'generic605.json'),
+        'generic606_contract_sha256': sha(resources / 'generic606.json'),
         'device_runtime_verified': False,
     }, indent=2) + '\n')
     print(json.dumps({'output':str(out),'device_runtime_verified':False,

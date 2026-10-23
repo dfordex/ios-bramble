@@ -189,10 +189,10 @@ static void testShared1DAndMipBytes(void)
 
 int main(void)
 {
- testFormat(MTLPixelFormatBGRA8Unorm,0x42475241,4);testFormat(MTLPixelFormatR8Unorm,0x4c303038,1);
+ testFormat(MTLPixelFormatA8Unorm,0x41303038,1);testFormat(MTLPixelFormatBGRA8Unorm,0x42475241,4);testFormat(MTLPixelFormatR8Unorm,0x4c303038,1);
  testFormat(MTLPixelFormatRG8Unorm,0x32433038,2);testFormat(MTLPixelFormatR32Float,0x4c303066,4);
  testFormat(MTLPixelFormatRGBA16Float,0x52476841,8);
  testFormat(MTLPixelFormatR16Uint,0x52313655,2);testFormat(MTLPixelFormatR16Float,0x4c303068,2);
  testFormat(MTLPixelFormatBGR5A1Unorm,0x42354131,2);testFormat(MTLPixelFormatRG32Float,0x32433066,8);testLargeHalf();testShared1DAndMipBytes();
- puts("private textures: nine real formats, fullHDhalf and32MiB bounds, real mip views, ephemeral memoryless leases, CPU denial and cleanup passed");return 0;
+ puts("private textures: ten real formats, fullHDhalf and32MiB bounds, real mip views, ephemeral memoryless leases, CPU denial and cleanup passed");return 0;
 }

@@ -21,6 +21,7 @@ enum { SIZE=0x40000, W=32,H=32, FB=0x300,VS_RSD=0x500,FS_RSD=0x540,
  HEAP=0x10000,HEAP_SIZE=0x10000,SOURCE=0x20000,LUT=0x22000,
  DEST=0x24000,GUARDS=0x28000 };
 enum { RG_SWIZZLE=MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9),
+ A_SWIZZLE=MALI_CHANNEL_0|(MALI_CHANNEL_0<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_R<<9),
  R_SWIZZLE=MALI_CHANNEL_R|(MALI_CHANNEL_0<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9) };
 enum { ARENA=0x20000,ARENA_END=0x30000 };
 _Static_assert(MALI_ATTRIBUTE_BUFFER_LENGTH == 16, "v4 attribute table stride");
@@ -94,7 +95,7 @@ static void renderer(uint8_t*d,uint64_t VA,int home,int clear,int generic_color,
 }
 static int span(uint64_t a,uint64_t n){return a&&n&&a<(UINT64_C(1)<<40)&&n<=(UINT64_C(1)<<40)-a;}
 static int overlap(uint64_t a,uint64_t n,uint64_t b,uint64_t m){return a<b+m&&b<a+n;}
-static unsigned bpp(unsigned f){return f==80?4:f==115?8:f==10?1:f==30?2:0;}
+static unsigned bpp(unsigned f){return f==80?4:f==115?8:(f==1||f==10)?1:f==30?2:0;}
 static int valid_image(const A5RuntimeImage*i){unsigned n=bpp(i->metalPixelFormat);
  return n&&span(i->gpuVA,i->bytes)&&!(i->gpuVA&63)&&i->width&&i->width<=2048&&i->height&&i->height<=2048&&
  i->rowBytes>=i->width*n&&!(i->rowBytes&15)&&(uint64_t)i->rowBytes*i->height<=i->bytes;
@@ -117,8 +118,9 @@ static int textured_image(uint8_t*d,const A5RuntimeMiscDraw*m){
  const A5RuntimeImage*im=&m->fragmentTextures[3];const A5RuntimeSampler*s=&m->fragmentSamplers[0];
  uint64_t VA=m->draw.descriptorGPUVA;
  if(!textured_sampler(s)||!valid_image(im)||
-    (im->metalPixelFormat!=80&&im->metalPixelFormat!=30&&im->metalPixelFormat!=10)||
+    (im->metalPixelFormat!=80&&im->metalPixelFormat!=30&&im->metalPixelFormat!=10&&im->metalPixelFormat!=1)||
     (m->draw.profile->profileID==603&&im->metalPixelFormat!=80)||
+    (m->draw.profile->profileID==606&&im->metalPixelFormat!=1)||
     (uint64_t)im->rowBytes*im->height>INT32_MAX||
     overlap(im->gpuVA,im->bytes,VA,SIZE))return A5RuntimeUnsupported;
  for(unsigned i=0;i<m->draw.profile->passCount;++i){
@@ -128,7 +130,7 @@ static int textured_image(uint8_t*d,const A5RuntimeMiscDraw*m){
  const unsigned format=im->metalPixelFormat==80?MALI_RGBA8_UNORM:
   im->metalPixelFormat==30?MALI_RG8_UNORM:MALI_R8_UNORM;
  const unsigned swizzle=im->metalPixelFormat==80?0x60a:
-  im->metalPixelFormat==30?RG_SWIZZLE:R_SWIZZLE;
+  im->metalPixelFormat==30?RG_SWIZZLE:im->metalPixelFormat==1?A_SWIZZLE:R_SWIZZLE;
  pan_pack((struct mali_texture_packed*)(d+TEX0),TEXTURE,c){
   c.width=im->width;c.height=im->height;c.array_size=1;c.levels=1;
   c.format=(format<<12)|swizzle;c.dimension=MALI_TEXTURE_DIMENSION_2D;
@@ -201,17 +203,19 @@ static int generic_color_contract(const A5MaliCompiledProfile*p){
 }
 /* This is a separate, actually compiled texture specialization. Its vertex
  * reads original Metal attr0/attr1/attr3, exports UV in VAR0 and colour in
- * VAR1. The fragment samples Texture3/Sampler0 with bias from FB2; FB1 and
- * the translator's synthetic blob are dead in this pinned native pair. */
+ * VAR1. Texture3/Sampler0 uses FB2 bias. Profile606 additionally reads
+ * FragmentBuffer1.float4@112 to clamp UV; prior603..605 leave FB1 dead.
+ * The translator's synthetic blob remains dead in all pinned native pairs. */
 static int generic_textured_contract(const A5MaliCompiledProfile*p){
- if((p->profileID!=603&&p->profileID!=604&&p->profileID!=605)||
+ const int coord5=p->profileID==606;
+ if((p->profileID!=603&&p->profileID!=604&&p->profileID!=605&&!coord5)||
     p->flags!=A5MaliProfileSourceOverBlend||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||strcmp(p->vertexName,"fixed_vert_lph_spc")||
     !p->fragmentName||strcmp(p->fragmentName,"fixed_frag_lph_cph")||
     p->colorFormats[0]!=80||p->attributeCount!=4||!p->attributes||
-    p->layoutCount!=1||!p->layouts||p->resourceCount!=5||!p->resources||
-    p->pushFieldCount!=4||!p->pushFields||p->attachmentContractCount!=2||
+    p->layoutCount!=1||!p->layouts||p->resourceCount!=(coord5?6u:5u)||!p->resources||
+    p->pushFieldCount!=(coord5?5u:4u)||!p->pushFields||p->attachmentContractCount!=2||
     !p->attachmentContracts)return 0;
  for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return 0;
  static const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
@@ -223,11 +227,12 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
  static const A5MaliCompiledResource expected[]={
   {1,1,2,0,1,1,0,64,0,0},
   {1,1,3,1,2,1,0,16,0,4},
+  {2,1,1,2,3,1,0,128,0,64},
   {2,1,2,3,4,1,0,8,0,68},
   {2,2,3,5,0,1,0,0,0,0},
   {2,3,0,5,0,1,0,0,0,0}
  };
- for(unsigned i=0;i<5;++i){const A5MaliCompiledResource*a=&p->resources[i],*b=&expected[i];
+ for(unsigned i=0;i<p->resourceCount;++i){const A5MaliCompiledResource*a=&p->resources[i],*b=&expected[i+(!coord5&&i>=2)];
   if(a->stage!=b->stage||a->kind!=b->kind||a->metalIndex!=b->metalIndex||
      a->bindingIndex!=b->bindingIndex||a->nativeIndex!=b->nativeIndex||
      a->flags!=b->flags||a->windowOffset!=b->windowOffset||
@@ -235,9 +240,10 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
      a->pushOffset!=b->pushOffset)return 0;
  }
  static const A5MaliCompiledPushField pushes[]={
-  {1,1,2,0,4,0},{1,1,3,4,4,0},{2,1,2,68,4,0},{2,2,0,72,4,0x2222}
+  {1,1,2,0,4,0},{1,1,3,4,4,0},{2,1,1,64,4,0},
+  {2,1,2,68,4,0},{2,2,0,72,4,0x2222}
  };
- for(unsigned i=0;i<4;++i){const A5MaliCompiledPushField*a=&p->pushFields[i],*b=&pushes[i];
+ for(unsigned i=0;i<p->pushFieldCount;++i){const A5MaliCompiledPushField*a=&p->pushFields[i],*b=&pushes[i+(!coord5&&i>=2)];
   if(a->stage!=b->stage||a->kind!=b->kind||a->metalIndex!=b->metalIndex||
      a->offset!=b->offset||a->bytes!=b->bytes||a->value!=b->value)return 0;
  }
@@ -255,7 +261,9 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
   "e4cf4d31a87bde096cc7cc57a12818f79296e3998d22d9c6c5139a9887f30047":
   p->profileID==604?
   "90d93347ca8bb50eef500ac2296e71dfb8298a58bd24d903f913295560798424":
-  "48bccbbdd2b788137ff228c7677e87a574ccfcd29f324a7bc44015bc15f3e2ce";
+  p->profileID==605?
+  "48bccbbdd2b788137ff228c7677e87a574ccfcd29f324a7bc44015bc15f3e2ce":
+  "5f1a9b4a037cb93f756bd3259f717d45c1a6622ee15d6504917c1582bf630e36";
  const unsigned fragmentBytes=p->profileID==603?880:p->profileID==604?1120:896;
  const unsigned fragmentRegs=p->profileID==604?6:5;
  return pass->vertex.sha256&&pass->fragment.sha256&&
@@ -431,11 +439,11 @@ static void jobs(uint8_t*d,uint64_t VA,const A5RuntimeDraw*r,uint64_t indexVA){
 }
 static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  const A5RuntimeDraw*r=&m->draw;const A5MaliCompiledProfile*p=r->profile;
- if(!p||!(p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601||p->profileID==602||p->profileID==603||p->profileID==604||p->profileID==605)||
+ if(!p||!(p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601||p->profileID==602||p->profileID==603||p->profileID==604||p->profileID==605||p->profileID==606)||
   p->passCount<1||p->passCount>2||!p->passes||m->passIndex>=p->passCount||p->resourceCount>16||p->pushFieldCount>16)return A5RuntimeUnsupported;
  const A5MaliCompiledPass*pass=p->passes+m->passIndex;
  int home=p->profileID==206,clear=p->profileID==207,generic_color=p->profileID==600||p->profileID==601||p->profileID==602;
- int generic_textured=p->profileID==603||p->profileID==604||p->profileID==605;
+ int generic_textured=p->profileID==603||p->profileID==604||p->profileID==605||p->profileID==606;
  if(generic_color&&!generic_color_contract(p))return A5RuntimeUnsupported;
  if(generic_textured&&!generic_textured_contract(p))return A5RuntimeUnsupported;
  if(pass->logicalTarget>=2||p->passCount!=1||pass->logicalTarget!=(clear?1u:0u))return A5RuntimeUnsupported;

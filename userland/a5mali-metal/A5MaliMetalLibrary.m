@@ -120,7 +120,13 @@ const A5MaliCompiledFunctionConstant *A5MaliCompiledConstantsForProfile(uint32_t
         return kA5MaliProfile605Constants;
     }
 #endif
-#if !defined(A5_MALI_HAS_GENERIC_600) && !defined(A5_MALI_HAS_GENERIC_601) && !defined(A5_MALI_HAS_GENERIC_602) && !defined(A5_MALI_HAS_GENERIC_603) && !defined(A5_MALI_HAS_GENERIC_604) && !defined(A5_MALI_HAS_GENERIC_605)
+#ifdef A5_MALI_HAS_GENERIC_606
+    if(profileID==606 && A5MaliCompiledProfileForID(606)) {
+        if(count)*count=sizeof(kA5MaliProfile606Constants)/sizeof(kA5MaliProfile606Constants[0]);
+        return kA5MaliProfile606Constants;
+    }
+#endif
+#if !defined(A5_MALI_HAS_GENERIC_600) && !defined(A5_MALI_HAS_GENERIC_601) && !defined(A5_MALI_HAS_GENERIC_602) && !defined(A5_MALI_HAS_GENERIC_603) && !defined(A5_MALI_HAS_GENERIC_604) && !defined(A5_MALI_HAS_GENERIC_605) && !defined(A5_MALI_HAS_GENERIC_606)
     (void)profileID;
 #endif
     return NULL;
@@ -156,7 +162,13 @@ const A5MaliCompiledFunctionConstant *A5MaliCompiledVertexConstantsForProfile(ui
         return kA5MaliProfile605VertexConstants;
     }
 #endif
-#if !defined(A5_MALI_HAS_GENERIC_602) && !defined(A5_MALI_HAS_GENERIC_603) && !defined(A5_MALI_HAS_GENERIC_604) && !defined(A5_MALI_HAS_GENERIC_605)
+#ifdef A5_MALI_HAS_GENERIC_606
+    if(profileID==606 && A5MaliCompiledProfileForID(606)) {
+        if(count)*count=sizeof(kA5MaliProfile606VertexConstants)/sizeof(kA5MaliProfile606VertexConstants[0]);
+        return kA5MaliProfile606VertexConstants;
+    }
+#endif
+#if !defined(A5_MALI_HAS_GENERIC_602) && !defined(A5_MALI_HAS_GENERIC_603) && !defined(A5_MALI_HAS_GENERIC_604) && !defined(A5_MALI_HAS_GENERIC_605) && !defined(A5_MALI_HAS_GENERIC_606)
     (void)profileID;
 #endif
     return NULL;

@@ -72,8 +72,8 @@ static void run(unsigned id,const uint8_t*vs,const uint8_t*fs){
   A5RuntimeSamplerNearest,A5RuntimeSamplerMipNone,
   A5RuntimeSamplerClampEdge,A5RuntimeSamplerClampEdge,
   A5RuntimeSamplerClampEdge,1,1,0,0,1000};
- const unsigned formats[]={80,30,10},bpp[]={4,2,1};
- for(unsigned i=0;i<3;++i){
+ const unsigned formats[]={80,30,10,1},bpp[]={4,2,1,1};
+ for(unsigned i=0;i<4;++i){
   unsigned stride=16*bpp[i];
   m.fragmentTextures[3]=(A5RuntimeImage){0x23000000,stride*16,16,16,stride,formats[i]};
   assert(A5MaliEncodeRuntimeMiscPass(&m,d,sizeof(d))==A5RuntimeOK);
@@ -82,10 +82,22 @@ static void run(unsigned id,const uint8_t*vs,const uint8_t*fs){
   pan_unpack((struct mali_surface_with_stride_packed*)(d+0x620),SURFACE_WITH_STRIDE,surf);
   unsigned native=i==0?MALI_RGBA8_UNORM:i==1?MALI_RG8_UNORM:MALI_R8_UNORM;
   unsigned sw=i==0?0x60a:
+   i==3?(MALI_CHANNEL_0|(MALI_CHANNEL_0<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_R<<9)):
    i==1?(MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9)):
         (MALI_CHANNEL_R|(MALI_CHANNEL_0<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9));
   assert(tex.format==((native<<12)|sw)&&surf.row_stride==stride&&
          surf.pointer==m.fragmentTextures[3].gpuVA);
+  if(formats[i]==1){
+   /* ReleasedPanfrost v4 A8=R8_UNORM/000R, not R001. Decode the actual
+    * emitter bits and evaluate all possible stored alpha byte values. */
+   assert((tex.format&0xfff)==(MALI_CHANNEL_0|(MALI_CHANNEL_0<<3)|
+     (MALI_CHANNEL_0<<6)|(MALI_CHANNEL_R<<9)));
+   for(unsigned a=0;a<256;++a){
+    float channels[6]={a/255.0f,0,0,0,0,1},rgba[4];
+    for(unsigned c=0;c<4;++c)rgba[c]=channels[((tex.format&0xfff)>>(3*c))&7];
+    assert(rgba[0]==0&&rgba[1]==0&&rgba[2]==0&&rgba[3]==a/255.0f);
+   }
+  }
   pan_unpack((struct mali_renderer_state_packed*)(d+0x540),RENDERER_STATE,rs);
   assert(rs.shader.texture_count==1&&rs.shader.sampler_count==1&&
          rs.shader.varying_count==(t?1:2)&&rs.properties.work_register_count==fs_regs);

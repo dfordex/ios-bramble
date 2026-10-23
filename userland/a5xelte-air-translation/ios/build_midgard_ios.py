@@ -145,6 +145,7 @@ def main() -> int:
         "executable_sha256": hashlib.sha256(
             executable.read_bytes()).hexdigest(), "dependencies": dependency_paths,
         "generic_602_source_sha256": hashlib.sha256(generic_source.read_bytes()).hexdigest(),
+        "generic_profile_sha256": hashlib.sha256(generic_profile.read_bytes()).hexdigest(),
         "generic_602_executable_sha256": hashlib.sha256(generic_executable.read_bytes()).hexdigest(),
     }, indent=2) + "\n")
     print(executable)

@@ -128,10 +128,10 @@ static void testBytesAndIdentity(void)
  @catch(NSException*e){denied=[e.name isEqualToString:NSInvalidArgumentException];}assert(denied&&unchanged==0x55abcdef);
  }assert(s.imports==s.releases);
 }
-static void testPartialCopy(void)
+static void testPartialCopy(MTLPixelFormat format)
 {
  State s={.epoch=1,.expectedProfile=500};@autoreleasepool{A5MaliRestrictedDevice*d=device(&s);
- A5MaliMetalTexture*a=texture(d,43,63,31,NO,MTLStorageModePrivate),*b=texture(d,43,63,31,NO,MTLStorageModePrivate);
+ A5MaliMetalTexture*a=texture(d,format,63,31,NO,MTLStorageModePrivate),*b=texture(d,format,63,31,NO,MTLStorageModePrivate);
  s.expectedSource=gpuVA(0);s.expectedDestination=gpuVA(1);
  A5MaliMetalBuffer*cb=[[d newCommandQueue]commandBuffer];A5MaliMetalBlitEncoder*e=[cb blitCommandEncoder];
  [e copyFromTexture:a sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(2,3,0)sourceSize:MTLSizeMake(17,11,1)
@@ -225,5 +225,5 @@ static void testMemoryless(BOOL badFence)
  assert(cb.privateBuffer.completedFence.fragmentFence==(badFence?0:1003));s.lease=nil;
  }assert(s.imports==s.releases);
 }
-int main(void){testBytesAndIdentity();testPartialCopy();testSameLevelScratchCopy(0);testSameLevelScratchCopy(1);testSameLevelScratchCopy(2);testSameLevelRejectedOrNoop(YES);testSameLevelRejectedOrNoop(NO);testMipChain();testLevelClear();testMemoryless(NO);testMemoryless(YES);
+int main(void){testBytesAndIdentity();testPartialCopy(MTLPixelFormatBGR5A1Unorm);testPartialCopy(MTLPixelFormatA8Unorm);testSameLevelScratchCopy(0);testSameLevelScratchCopy(1);testSameLevelScratchCopy(2);testSameLevelRejectedOrNoop(YES);testSameLevelRejectedOrNoop(NO);testMipChain();testLevelClear();testMemoryless(NO);testMemoryless(YES);
  puts("native texture ops: real typed1D storage, subresource bounds/identity, queued partialcopy+samelevel scratchcopy+9mips, epochs/fences and memoryless completion cleanup passed; kernel transport mocked, no GPU pixels claimed");return 0;}

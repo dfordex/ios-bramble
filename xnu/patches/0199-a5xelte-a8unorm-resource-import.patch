@@ -1,0 +1,10 @@
+--- a/iokit/Kernel/arm/A5XELTEGPUResources.h
++++ b/iokit/Kernel/arm/A5XELTEGPUResources.h
+@@ -29,6 +29,7 @@
+     switch (code) {
+     case 0x42475241: return 4; /* BGRA8Unorm */
+     case 0x52476841: return 8; /* RGBA16Float */
++    case 0x41303038: return 1; /* A8Unorm, private A008 alpha identity */
+     case 0x4c303038: return 1; /* R8Unorm */
+     case 0x32433038: return 2; /* RG8Unorm */
+     case 0x4c303066: return 4; /* R32Float */

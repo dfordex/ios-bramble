@@ -15,8 +15,8 @@ int main(void)
 {
  @autoreleasepool{
  unsigned context=0;A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:transport context:&context commandCapabilities:63 operationCapabilities:0x7ffff];
- const MTLPixelFormat formats[]={80,115,10,30,55,23,25,43,105};
- for(unsigned f=0;f<9;++f)for(unsigned one=0;one<2;++one){
+ const MTLPixelFormat formats[]={80,115,1,10,30,55,23,25,43,105};
+ for(unsigned f=0;f<10;++f)for(unsigned one=0;one<2;++one){
   A5MaliPrivateBuffer*b=[d newBufferWithLength:4096 options:0];assert(b&&b.contents);memset(b.contents,0xa5,b.length);
   MTLTextureDescriptor*desc=descriptor(formats[f],one);NSUInteger pixel=A5MaliTexturePixelBytes(formats[f]);
   A5MaliMetalTexture*t=(id)[b newLinearTextureWithDescriptor:desc offset:64 bytesPerRow:128 bytesPerImage:1024];assert(t);
@@ -64,6 +64,19 @@ int main(void)
  assert(![shortBuffer newLinearTextureWithDescriptor:live offset:0 bytesPerRow:832 bytesPerImage:active]);
  assert(![liveBuffer newLinearTextureWithDescriptor:live offset:0 bytesPerRow:832 bytesPerImage:NSUIntegerMax]);
  assert(![liveBuffer newLinearTextureWithDescriptor:live offset:NSUIntegerMax-63 bytesPerRow:832 bytesPerImage:active]);
+ /* Exact0204 alpha-only upload: retain byteOffset64 and final alpha byte. */
+ MTLTextureDescriptor*alpha=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatA8Unorm width:576 height:301 mipmapped:NO];
+ alpha.storageMode=MTLStorageModeShared;alpha.usage=MTLTextureUsageShaderRead;
+ A5MaliPrivateBuffer*alphaBuffer=[d newBufferWithLength:176128 options:0];
+ A5MaliMetalTexture*alphaTexture=(id)[alphaBuffer newLinearTextureWithDescriptor:alpha offset:64 bytesPerRow:576 bytesPerImage:173376];
+ A5MaliTextureLevelLayout alphaLayout;assert(alphaTexture&&alphaTexture.pixelFormat==MTLPixelFormatA8Unorm&&
+  [alphaTexture getLevelLayout:&alphaLayout level:0]&&alphaLayout.byteOffset==64&&alphaLayout.byteLength==173376&&alphaLayout.rowBytes==576);
+ assert(A5MaliTexturePixelCode(MTLPixelFormatA8Unorm)==0x41303038&&
+  A5MaliTexturePixelCode(MTLPixelFormatA8Unorm)!=A5MaliTexturePixelCode(MTLPixelFormatR8Unorm));
+ uint8_t alphaByte=0x93,alphaRead=0;[alphaTexture replaceRegion:MTLRegionMake2D(575,300,1,1) mipmapLevel:0 withBytes:&alphaByte bytesPerRow:1];
+ assert(((uint8_t*)alphaBuffer.contents)[64+173376-1]==alphaByte);
+ [alphaTexture getBytes:&alphaRead bytesPerRow:1 fromRegion:MTLRegionMake2D(575,300,1,1) mipmapLevel:0];assert(alphaRead==alphaByte);
+ assert(![alphaBuffer newLinearTextureWithDescriptor:alpha offset:64 bytesPerRow:576 bytesPerImage:173375]);
  for(unsigned fault=0;fault<15;++fault){MTLTextureDescriptor*bad=[good copy];NSUInteger off=64,row=128,image=512;
   switch(fault){case 0:off=1;break;case 1:row=65;break;case 2:row=0;break;case 3:row=32769;break;
    case 4:row=64;bad.width=17;break;case 5:off=4096;break;case 6:off=NSUIntegerMax-63;break;
@@ -81,6 +94,6 @@ int main(void)
   assert(!memcmp((uint8_t*)pages+64,in,8));
  }
  assert(weak&&!releases);held=nil;assert(!weak&&releases==1);
- puts("linear buffer textures: public+SPI real alias, nine formats,1D/2D paddedstrides/offsets, latewrites, CPU ranges, descriptor/lifetime and invalid bounds PASS (CPU/mock transport; no GPU pixels)");
+ puts("linear buffer textures: public+SPI real alias, ten formats,1D/2D paddedstrides/offsets, latewrites, CPU ranges, descriptor/lifetime and invalid bounds PASS (CPU/mock transport; no GPU pixels)");
  }return 0;
 }

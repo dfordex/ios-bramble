@@ -44,7 +44,7 @@
 NSUInteger A5MaliTexturePixelBytes(MTLPixelFormat f)
 {
     switch(f){
-    case MTLPixelFormatR8Unorm:return 1;
+    case MTLPixelFormatA8Unorm:case MTLPixelFormatR8Unorm:return 1;
     case MTLPixelFormatRG8Unorm:case MTLPixelFormatR16Uint:case MTLPixelFormatR16Float:
     case MTLPixelFormatBGR5A1Unorm:return 2;
     case MTLPixelFormatBGRA8Unorm:case MTLPixelFormatR32Float:return 4;
@@ -56,6 +56,8 @@ uint32_t A5MaliTexturePixelCode(MTLPixelFormat f)
     switch(f){
     case MTLPixelFormatBGRA8Unorm:return 0x42475241;
     case MTLPixelFormatRGBA16Float:return 0x52476841;
+    /* Private alpha identity: one byte, sampled as (0,0,0,A), never R8. */
+    case MTLPixelFormatA8Unorm:return 0x41303038;
     case MTLPixelFormatR8Unorm:return 0x4c303038;
     case MTLPixelFormatRG8Unorm:return 0x32433038;
     case MTLPixelFormatR32Float:return 0x4c303066;
@@ -69,7 +71,7 @@ uint32_t A5MaliTexturePixelCode(MTLPixelFormat f)
 }
 static MTLPixelFormat formatForCode(uint32_t code)
 {
-    const MTLPixelFormat formats[]={80,115,10,30,55,23,25,43,105};
+    const MTLPixelFormat formats[]={80,115,1,10,30,55,23,25,43,105};
     for(unsigned i=0;i<sizeof(formats)/sizeof(formats[0]);++i)
         if(A5MaliTexturePixelCode(formats[i])==code)return formats[i];
     return MTLPixelFormatInvalid;

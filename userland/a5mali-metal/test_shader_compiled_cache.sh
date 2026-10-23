@@ -1,8 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 set -eu
-if [ "$#" -ne 2 ] && [ "$#" -ne 4 ] && [ "$#" -ne 6 ] && [ "$#" -ne 8 ]; then
-    printf 'usage: %s PRIVATE_602_VERTEX PRIVATE_602_FRAGMENT [PRIVATE_603_VERTEX PRIVATE_603_FRAGMENT [PRIVATE_604_VERTEX PRIVATE_604_FRAGMENT [PRIVATE_605_VERTEX PRIVATE_605_FRAGMENT]]]\n' "$0" >&2
+if [ "$#" -ne 2 ] && [ "$#" -ne 4 ] && [ "$#" -ne 6 ] && [ "$#" -ne 8 ] && [ "$#" -ne 10 ]; then
+    printf 'usage: %s PRIVATE_602_VERTEX PRIVATE_602_FRAGMENT [PRIVATE_603_VERTEX PRIVATE_603_FRAGMENT [PRIVATE_604_VERTEX PRIVATE_604_FRAGMENT [PRIVATE_605_VERTEX PRIVATE_605_FRAGMENT [PRIVATE_606_VERTEX PRIVATE_606_FRAGMENT]]]]\n' "$0" >&2
     exit 2
 fi
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

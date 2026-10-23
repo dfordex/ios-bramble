@@ -424,23 +424,67 @@ static BOOL a5PublishedCurrentOrRetire603(NSString *key, NSDictionary *known)
     return NO;
 }
 
+/* A previously unsupported request may become executable after a recipe
+ * upgrade. Retry only the newly added, exact 606 function pair. Status files
+ * remain root-private, bounded and non-linkable; failed/other statuses remain
+ * terminal. No arbitrary provider request can erase another status. */
+static BOOL a5HasTerminalRequestStatus(NSString *key, NSDictionary *known)
+{
+    NSString *folder=[cacheRoot stringByAppendingPathComponent:@"request-status"];
+    int directory=open(folder.fileSystemRepresentation,
+        O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(directory<0){if(errno==ENOENT)return NO;
+        fail(@"untrusted request status directory");}
+    struct stat st;
+    if(fstat(directory,&st)||!S_ISDIR(st.st_mode)||st.st_uid!=geteuid()||
+        (st.st_mode&07777)!=0700)fail(@"untrusted request status directory");
+    NSString *name=[key stringByAppendingString:@".json"];
+    int fd=openat(directory,name.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0){if(errno==ENOENT){close(directory);return NO;}
+        fail(@"untrusted existing request status");}
+    if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_uid!=geteuid()||
+        st.st_nlink!=1||(st.st_mode&07777)!=0600||st.st_size<=0||st.st_size>16384)
+        fail(@"untrusted existing request status");
+    if(![known[@"profile_id"] isEqual:@606]){close(fd);close(directory);return YES;}
+    NSMutableData *bytes=[NSMutableData dataWithLength:(NSUInteger)st.st_size];
+    uint8_t *cursor=bytes.mutableBytes;size_t left=bytes.length;
+    while(left){ssize_t n=read(fd,cursor,left);if(n<0&&errno==EINTR)continue;
+        if(n<=0)fail(@"short existing request status read");cursor+=n;left-=(size_t)n;}
+    uint8_t extra;if(read(fd,&extra,1)!=0||close(fd))
+        fail(@"existing request status size changed");
+    NSDictionary *record=[NSJSONSerialization JSONObjectWithData:bytes options:0 error:NULL];
+    if(!a5ExactKeys(record,@[@"schema",@"request_id",@"status",@"reason"])||
+        ![record[@"schema"] isEqual:@1]||![record[@"request_id"] isEqual:key]||
+        ![record[@"status"] isKindOfClass:NSString.class]||
+        ![record[@"reason"] isKindOfClass:NSString.class])
+        fail(@"untrusted existing request status identity");
+    if(![record[@"status"] isEqual:@"unsupported"]){close(directory);return YES;}
+    struct stat current;
+    if(fstatat(directory,name.fileSystemRepresentation,&current,AT_SYMLINK_NOFOLLOW)||
+        current.st_dev!=st.st_dev||current.st_ino!=st.st_ino||
+        current.st_uid!=st.st_uid||current.st_mode!=st.st_mode||current.st_nlink!=1||
+        current.st_size!=st.st_size||
+        unlinkat(directory,name.fileSystemRepresentation,0)||fsync(directory)||close(directory))
+        fail(@"cannot retire unsupported 606 request status");
+    fprintf(stderr,"A5XELTE shader compiler: RETRY newly supported profile=606 request=%s\n",key.UTF8String);
+    return NO;
+}
+
 static void a5HandleRequest(NSString *self, NSDictionary *request,
                             NSArray<NSDictionary *> *knownProfiles, NSString *key)
 {
-    NSString *status = [[cacheRoot stringByAppendingPathComponent:@"request-status"]
-        stringByAppendingPathComponent:[key stringByAppendingString:@".json"]];
     NSDictionary *known = nil;
     for (NSDictionary *candidate in knownProfiles) {
         if (a5KnownProfile(request,candidate)) { known = candidate; break; }
     }
-    if ([NSFileManager.defaultManager fileExistsAtPath:status]) return;
+    if (a5HasTerminalRequestStatus(key,known)) return;
     if ([known[@"profile_id"] isEqual:@603]) {
         if(a5PublishedCurrentOrRetire603(key,known))return;
     } else if ([NSFileManager.defaultManager fileExistsAtPath:
         [publishedRoot stringByAppendingPathComponent:key]]) return;
     if (!known) {
         a5WriteStatus(key,@"unsupported",
-            @"Only exact captured 602 or candidate 603/604/605 fixed_vert_lph_spc/fixed_frag_lph_cph typed pairs compile; other requests remain unsupported.");
+            @"Only exact captured 602 or candidate 603/604/605/606 fixed_vert_lph_spc/fixed_frag_lph_cph typed pairs compile; other requests remain unsupported.");
         fprintf(stderr,"A5XELTE shader compiler: UNSUPPORTED request=%s\n",key.UTF8String);
         return;
     }
@@ -507,7 +551,7 @@ static void a5Serve(NSString *self)
     a5PrepareRequestRoots();
     NSMutableArray<NSDictionary *> *knownProfiles = [NSMutableArray array];
     NSString *sourceSHA = digest(regularData(sourceLibrary,64*1024*1024));
-    for (NSNumber *profile in @[@602,@603,@604,@605]) {
+    for (NSNumber *profile in @[@602,@603,@604,@605,@606]) {
         NSString *name = [NSString stringWithFormat:@"generic%@.json",profile];
         NSDictionary *known = readJSON([installed stringByAppendingPathComponent:name]);
         if (![known[@"profile_id"] isEqual:profile] ||

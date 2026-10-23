@@ -17,8 +17,10 @@
 #define A5_TEST_FRAGMENT_BYTES 1120
 #elif A5_TEST_TEXTURED_PROFILE == 605
 #define A5_TEST_FRAGMENT_BYTES 896
+#elif A5_TEST_TEXTURED_PROFILE == 606
+#define A5_TEST_FRAGMENT_BYTES 896
 #else
-#error "expected a real textured603/604/605 profile"
+#error "expected a real textured603/604/605/606 profile"
 #endif
 #include <assert.h>
 #include <stdlib.h>
@@ -29,7 +31,7 @@
 @end
 typedef struct {float position[4],uv[2],unused[2];uint16_t color[4];uint8_t pad[8];} Vertex;
 _Static_assert(sizeof(Vertex)==48,"actual stock packing0");
-typedef enum {Good,FailBulk,FailQuery,FailSubmit} Fault;
+typedef enum {Good,FailBulk,FailQuery,FailSubmit,FailMissingClamp,FailShortClamp} Fault;
 typedef struct {
     Fault fault;
     BOOL blend;
@@ -39,6 +41,9 @@ typedef struct {
     uint64_t handle;
     Vertex vertices[6];
     float matrix[16],transform[4],lod[2];
+#if A5_TEST_TEXTURED_PROFILE == 606
+    uint8_t clamp[128];
+#endif
     const A5MaliCompiledProfile *profile;
 } State;
 typedef struct {A5MaliHeader header;uint32_t bytes,usage;} Create;
@@ -101,6 +106,21 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
     assert(contains(j+0x20000,0x10000,s->matrix,sizeof(s->matrix)));
     assert(contains(j+0x20000,0x10000,s->transform,sizeof(s->transform)));
     assert(contains(j+0x20000,0x10000,s->lod,sizeof(s->lod)));
+#if A5_TEST_TEXTURED_PROFILE == 606
+    assert(p->vertex.byteCount==2192&&p->fragment.byteCount==A5_TEST_FRAGMENT_BYTES);
+    /* CPU Shared bindings are captured from their public offset at COMMIT.
+     * The private arena holds the 128-byte prefix with offset folded to zero. */
+    uint64_t descriptor=u64(j+0x740+3*8);
+    uint64_t pointer=(descriptor>>12)<<4;
+    assert((descriptor&0xfff)==7&&pointer>=A5NativeJobVA+0x20000);
+    assert(pointer-A5NativeJobVA<=A5NativeJobBytes-sizeof(s->clamp));
+    assert(!memcmp(j+(size_t)(pointer-A5NativeJobVA),s->clamp,sizeof(s->clamp)));
+    assert(u32(j+0x1400+64)==0&&u32(j+0x1400+68)==0);
+    assert(u32(j+0x1400+72)==0x2222);
+    /* Released v4 R8_UNORM(163) with channel swizzle 000R: stored R is
+     * alpha for A8; ordinary R8's implicit alpha one would render opaque. */
+    assert((u32(j+0x608)&0x3fffff)==((163u<<12)|0x124u));
+#endif
     assert(u32(j+0x600)==((16u-1)<<16|31u));
     assert(u64(j+0x620)==UINT64_C(0x13000080)&&u32(j+0x628)==256&&u32(j+0x62c)==4096);
     assert(u64(j+0x680)==A5NativeJobVA+0x600);
@@ -170,6 +190,12 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,id pipelineState,
     assert(vb.contents&&matrix.contents&&uv.contents&&lod.contents);
     [r setVertexBuffer:vb offset:16 atIndex:1];[r setVertexBuffer:matrix offset:16 atIndex:2];
     [r setVertexBuffer:uv offset:16 atIndex:3];[r setFragmentBuffer:lod offset:16 atIndex:2];
+#if A5_TEST_TEXTURED_PROFILE == 606
+    NSUInteger clampBytes=s->fault==FailShortClamp?127:128;
+    A5MaliPrivateBuffer*clamp=[d newBufferWithLength:clampBytes+16 options:MTLResourceStorageModeShared];
+    assert(clamp.contents);memset(clamp.contents,0xd3,clampBytes+16);
+    if(s->fault!=FailMissingClamp)[r setFragmentBuffer:clamp offset:16 atIndex:1];
+#endif
     MTLSamplerDescriptor*sd=[MTLSamplerDescriptor new];
     sd.minFilter=MTLSamplerMinMagFilterNearest;sd.magFilter=sd.minFilter;
     sd.mipFilter=MTLSamplerMipFilterLinear;sd.lodMinClamp=.25f;sd.lodMaxClamp=4;
@@ -181,6 +207,11 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,id pipelineState,
     memcpy((uint8_t*)matrix.contents+16,s->matrix,sizeof(s->matrix));
     memcpy((uint8_t*)uv.contents+16,s->transform,sizeof(s->transform));
     memcpy((uint8_t*)lod.contents+16,s->lod,sizeof(s->lod));
+#if A5_TEST_TEXTURED_PROFILE == 606
+    /* This write follows both draw encoding and endEncoding. The uniform
+     * snapshot must retain these bytes rather than the earlier 0xd3 values. */
+    memcpy((uint8_t*)clamp.contents+16,s->clamp,clampBytes);
+#endif
     assert(!b.privateBuffer.completedFence.fragmentFence);return b;
 }
 static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sourceFormat)
@@ -198,6 +229,10 @@ static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sour
     s.matrix[0]=1.25f;s.matrix[5]=1.75f;s.matrix[10]=2;s.matrix[15]=1;
     s.transform[0]=.03125f;s.transform[1]=.0625f;
     s.lod[0]=.375f;s.lod[1]=.625f;
+#if A5_TEST_TEXTURED_PROFILE == 606
+    for(unsigned i=0;i<sizeof(s.clamp);++i)s.clamp[i]=(uint8_t)(0x57+i*13);
+    const float limits[4]={.125f,.25f,.75f,.875f};memcpy(s.clamp+112,limits,sizeof(limits));
+#endif
     @autoreleasepool{
         A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:transport
             context:&s commandCapabilities:63 operationCapabilities:0x7ffff];
@@ -227,10 +262,28 @@ static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sour
         assert(![buffer newTextureWithDescriptor:desc offset:s.length-128 bytesPerRow:256]);
         A5MaliMetalBuffer*b=encode(d,p,target,source,&s);
         buffer=nil;source=nil;
-        assert(!s.creates&&!s.bulkCalls&&!s.queries&&!s.submits&&!s.deallocations);
+        assert(!s.creates&&!s.bulkCalls&&!s.queries&&!s.submits);
         /* Shared and no-copy bytes change after encoding but before COMMIT. */
+#if A5_TEST_TEXTURED_PROFILE == 606
+        if(fault==FailMissingClamp||fault==FailShortClamp){
+            /* Rejected draws retain no image: releasing the public source
+             * already calls its deallocator, so there is no late CPU write. */
+            assert(s.deallocations==1);
+        }else
+#endif
+        {
+        assert(!s.deallocations);
         s.host[128]=0xa5;s.expected[128]=0xa5;
+        }
         [b commit];[b waitUntilCompleted];
+#if A5_TEST_TEXTURED_PROFILE == 606
+        if(fault==FailMissingClamp||fault==FailShortClamp){
+            assert(b.status==MTLCommandBufferStatusError&&b.error);
+            assert(!s.creates&&!s.bulkCalls&&!s.queries&&!s.submits&&!s.releases);
+            assert(!b.privateBuffer.completedFence.tilerFence&&!b.privateBuffer.completedFence.fragmentFence);
+            b=nil;
+        }else{
+#endif
         assert(s.creates==1&&s.releases==1);
         if(fault==FailBulk){assert(s.bulkCalls==2&&!s.queries&&!s.submits);}
         else if(fault==FailQuery){assert(s.bulkCalls==2&&s.queries==1&&!s.submits);}
@@ -240,23 +293,33 @@ static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sour
         else {assert(b.status==MTLCommandBufferStatusError&&b.error);
             assert(!b.privateBuffer.completedFence.tilerFence&&!b.privateBuffer.completedFence.fragmentFence);}
         b=nil;
+#if A5_TEST_TEXTURED_PROFILE == 606
+        }
+#endif
     }
     assert(s.deallocations==1);
     free(s.expected);free(s.actual);
 }
 static void runCase(Fault fault,BOOL useSPI,BOOL blend)
 {
+#if A5_TEST_TEXTURED_PROFILE == 606
+    runCaseFormat(fault,useSPI,blend,MTLPixelFormatA8Unorm);
+#else
     runCaseFormat(fault,useSPI,blend,MTLPixelFormatBGRA8Unorm);
+#endif
 }
 int main(void)
 {
     runCase(Good,NO,NO);runCase(Good,YES,NO);
     runCase(Good,NO,YES);runCase(Good,YES,YES);
-#if A5_TEST_TEXTURED_PROFILE >= 604
+#if A5_TEST_TEXTURED_PROFILE == 604 || A5_TEST_TEXTURED_PROFILE == 605
     runCaseFormat(Good,NO,NO,MTLPixelFormatRG8Unorm);
     runCaseFormat(Good,YES,YES,MTLPixelFormatR8Unorm);
 #endif
+#if A5_TEST_TEXTURED_PROFILE == 606
+    runCase(FailMissingClamp,NO,NO);runCase(FailShortClamp,NO,NO);
+#endif
     runCase(FailBulk,NO,YES);runCase(FailQuery,NO,YES);runCase(FailSubmit,NO,YES);
-    puts("buffer-backed native603: copy/source-over pipelines, real no-copy Shared alias, commit snapshot, full bulk upload, bufferVA+offset, fences and cleanup PASS (mock transport; no GPU pixels)");
+    printf("buffer-backed native%d: copy/source-over pipelines, real no-copy Shared alias, commit snapshot, full bulk upload, bufferVA+offset, fences and cleanup PASS (mock transport; no GPU pixels)\n",A5_TEST_TEXTURED_PROFILE);
     return 0;
 }

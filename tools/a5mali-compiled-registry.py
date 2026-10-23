@@ -335,8 +335,9 @@ def generic_profile(receipt_path, capture_path, metallib_path, vertex_capture_pa
 
 
 def textured_profile(receipt_path, capture_path, metallib_path, profile_id=603):
-    recipe_name='compile_0189.py' if profile_id==603 else 'compile_0200.py'
-    if profile_id not in (603,604,605):fail('unreviewed textured specialization')
+    recipe_name=('compile_0189.py' if profile_id==603 else
+                 'compile_0205.py' if profile_id==606 else 'compile_0200.py')
+    if profile_id not in (603,604,605,606):fail('unreviewed textured specialization')
     recipe=Path(__file__).resolve().parents[1]/'userland/a5xelte-air-translation/generic'/recipe_name
     spec=importlib.util.spec_from_file_location('textured_recipe',recipe)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
@@ -376,6 +377,8 @@ def textured_profile(receipt_path, capture_path, metallib_path, profile_id=603):
             for v in j['vertex_candidate_constants']}),
         'proof':('Observed 0191 typed vertex/fragment pair; native GPU pixels require device validation'
                  if profile_id==603 else
+                 '0204 coord5/image17 fragment constants observed; vertex/render state remain strict host candidates'
+                 if profile_id==606 else
                  '0198 fragment function constants observed; vertex and render state are strict host candidates')}
 
 
@@ -409,7 +412,7 @@ def emit(profiles,output):
         for field,suffix,expected in [('function_constants','Constants',58),('vertex_function_constants','VertexConstants',4)]:
             constants=p.get(field)
             if not constants:continue
-            if p['id'] not in (600,601,602,603,604,605) or (field=='vertex_function_constants' and p['id'] not in (602,603,604,605)) or len(constants)!=expected:fail('unreviewed specialized function profile')
+            if p['id'] not in (600,601,602,603,604,605,606) or (field=='vertex_function_constants' and p['id'] not in (602,603,604,605,606)) or len(constants)!=expected:fail('unreviewed specialized function profile')
             values=[]
             for key,item in sorted(constants.items()):
                 raw=list(bytes.fromhex(item['raw']))
@@ -444,6 +447,8 @@ def main():
     p.add_argument('--generic-texture3-capture',type=Path)
     p.add_argument('--generic-image29-receipt',type=Path)
     p.add_argument('--generic-image29-capture',type=Path)
+    p.add_argument('--generic-coord5-receipt',type=Path)
+    p.add_argument('--generic-coord5-capture',type=Path)
     p.add_argument('--ds4-vertex',type=Path);p.add_argument('--ds4-fragment',type=Path)
     p.add_argument('--quartzcore-image',type=Path,required=True)
     p.add_argument('--output-dir',type=Path,required=True)
@@ -479,7 +484,8 @@ def main():
             fail('textured recipe needs receipt, capture and actual library')
         profiles.append(textured_profile(a.generic_textured_receipt.resolve(),a.generic_textured_capture.resolve(),a.generic_metallib.resolve()))
     for identifier,receipt,capture in ((604,a.generic_texture3_receipt,a.generic_texture3_capture),
-                                       (605,a.generic_image29_receipt,a.generic_image29_capture)):
+                                       (605,a.generic_image29_receipt,a.generic_image29_capture),
+                                       (606,a.generic_coord5_receipt,a.generic_coord5_capture)):
         if receipt or capture:
             if not all((receipt,capture,a.generic_metallib)):
                 fail('new textured recipe needs receipt, capture and actual library')
@@ -488,7 +494,7 @@ def main():
     out.mkdir(parents=True,exist_ok=True);include=out/'A5MaliCompiledRegistryData.inc';emit(profiles,include)
     receipt={'schema':2,'quartzcore_attachment_audit':qc,'metallib_sha256':METALLIB_SHA,'include_sha256':sha(include.read_bytes()),
              'generator_sha256':sha(Path(__file__).read_bytes()),
-             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest,a.raw204_runtime_manifest,a.generic_receipt,a.generic_capture,a.generic_cph_receipt,a.generic_cph_capture,a.generic_fixed_receipt,a.generic_fixed_fragment_capture,a.generic_fixed_vertex_capture,a.generic_textured_receipt,a.generic_textured_capture,a.generic_texture3_receipt,a.generic_texture3_capture,a.generic_image29_receipt,a.generic_image29_capture) if path},'profiles':profiles,
+             'input_manifests':{str(path.resolve()):sha(path.read_bytes()) for path in (a.blur_manifest,a.blur_runtime_manifest,a.misc_manifest,a.path_manifest,a.path_runtime_manifest,a.raw204_runtime_manifest,a.generic_receipt,a.generic_capture,a.generic_cph_receipt,a.generic_cph_capture,a.generic_fixed_receipt,a.generic_fixed_fragment_capture,a.generic_fixed_vertex_capture,a.generic_textured_receipt,a.generic_textured_capture,a.generic_texture3_receipt,a.generic_texture3_capture,a.generic_image29_receipt,a.generic_image29_capture,a.generic_coord5_receipt,a.generic_coord5_capture) if path},'profiles':profiles,
              'claim':'Authenticated native program and binding registry; pipeline/runtime acceptance is separately gated.'}
     (out/'compiled-registry.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps({'profiles':len(profiles),'native_passes':sum(len(x['passes']) for x in profiles),'include':str(include),'sha256':receipt['include_sha256']}))

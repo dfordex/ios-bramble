@@ -238,7 +238,7 @@ def main() -> None:
             'compiler-launchdaemon.plist'}
         if (args.compiler_dir / 'a5shader/midgard-generic602').is_file():
             compiler_members.update({'a5shader/midgard-generic602','a5shader/generic602.json'})
-            for profile_id in (603,604,605):
+            for profile_id in (603,604,605,606):
                 name = f'a5shader/generic{profile_id}.json'
                 if (args.compiler_dir / name).is_file():
                     compiler_members.add(name)

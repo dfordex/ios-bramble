@@ -22,7 +22,7 @@ compile_runtime(Path(sys.argv[2]).resolve(),Path(sys.argv[3]).resolve(),'host',P
 PYBUILD
 python3 "$src_dir/../a5xelte-air-translation/families/build_runtime_encoder.py" \
     --mesa-build "$mesa_build" --target host --family resource --output "$out_dir/runtime_resource.o"
-for test_case in test_native_render test_native_misc test_native_clear test_native_path test_phase_diagnostics test_metal_api_selectors test_native_generic600 test_native_indexed602 test_native_textured603 test_native_buffer_texture603 test_native_textured603:604 test_native_textured603:605 test_native_buffer_texture603:604 test_native_buffer_texture603:605; do
+for test_case in test_native_render test_native_misc test_native_clear test_native_path test_phase_diagnostics test_metal_api_selectors test_native_generic600 test_native_indexed602 test_native_textured603 test_native_buffer_texture603 test_native_textured603:604 test_native_textured603:605 test_native_buffer_texture603:604 test_native_buffer_texture603:605 test_native_buffer_texture603:606; do
   test_name=${test_case%%:*}
   test_profile=603
   test_output=$test_name

@@ -32,7 +32,7 @@ static void p32(uint8_t*d,unsigned p,uint32_t n){memcpy(d+p,&n,4);}
 static void p64(uint8_t*d,unsigned p,uint64_t n){memcpy(d+p,&n,8);}
 static int span(uint64_t a,uint64_t n){return a&&n&&a<(UINT64_C(1)<<40)&&n<=(UINT64_C(1)<<40)-a;}
 static int overlap(uint64_t a,uint64_t n,uint64_t b,uint64_t m){return a<b+m&&b<a+n;}
-static unsigned bpp(unsigned fmt){switch(fmt){case 10:return 1;case 30:case 43:case 23:case 25:return 2;case 80:case 55:return 4;case 105:case 115:return 8;default:return 0;}}
+static unsigned bpp(unsigned fmt){switch(fmt){case 1:case 10:return 1;case 30:case 43:case 23:case 25:return 2;case 80:case 55:return 4;case 105:case 115:return 8;default:return 0;}}
 static int image(const A5RuntimeImage*i,unsigned type,unsigned n){return n&&span(i->gpuVA,i->bytes)&&!(i->gpuVA&63)&&i->width&&i->width<=4096&&i->height&&i->height<=4096&&
  (type==A5ResourceTexture2D||(type==A5ResourceTexture1D&&i->height==1))&&
  i->rowBytes>=i->width*n&&!(i->rowBytes&15)&&(uint64_t)i->rowBytes*i->height<=i->bytes&&i->bytes<=32u*1024*1024;}
@@ -45,6 +45,8 @@ static void attrib(uint8_t*d,unsigned p,unsigned buffer,unsigned fmt,unsigned sw
  pan_pack((struct mali_attribute_packed*)(d+p),ATTRIBUTE,c){c.buffer_index=buffer;c.offset_enable=true;c.format=(fmt<<12)|sw;c.offset=off;}}
 static void buf(uint8_t*d,unsigned p,uint64_t va,unsigned stride,unsigned bytes){
  pan_pack((struct mali_attribute_buffer_packed*)(d+p),ATTRIBUTE_BUFFER,c){c.pointer=va;c.stride=stride;c.size=bytes;}}
+/* Copy shaders move storage bits, so A8 intentionally uses raw R8 here.
+ * Shader sampling uses runtime_misc's distinct 000R alpha swizzle instead. */
 static void tex(uint8_t*d,unsigned p,unsigned table,uint64_t va,const A5RuntimeImage*im,unsigned type,unsigned bits,int mip){
  unsigned fmt=mip?MALI_RGBA8_UNORM:bits==8?MALI_R8_UNORM:bits==16?MALI_R16UI:bits==32?MALI_R32UI:MALI_RG32UI;
  pan_pack((struct mali_texture_packed*)(d+p),TEXTURE,c){c.width=im->width;c.height=im->height;c.array_size=1;c.levels=1;

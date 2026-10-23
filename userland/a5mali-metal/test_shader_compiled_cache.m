@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Root-cache loader ownership/hash/ABI/lifetime regression. Operator supplies
- * actual private pinned602..605 native bytes; no shader bytes are in this source.
+ * actual private pinned602..606 native bytes; no shader bytes are in this source.
  */
 #import "A5MaliShaderCompiledCache.h"
 #include <assert.h>
@@ -43,8 +43,15 @@ static NSString *const fs=@"48bccbbdd2b788137ff228c7677e87a574ccfcd29f324a7bc440
 static NSString *const vertexConstants=@"57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112";
 static NSString *const fragmentConstants=@"70685547d87b105adac2768caae67169b97615568328283337aaec4b4bd66019";
 static NSString *const otherConstants=@"a01468c5c10e1b8eb6a513674f8629dbe1952d75a4ce03aee4e2a41937c9e6c2";
+#elif A5_CACHE_TEST_PROFILE == 606
+enum {testProfile=606,vertexLength=2192,fragmentLength=896,fragmentRegisters=5};
+static NSString *const vs=@"e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96";
+static NSString *const fs=@"5f1a9b4a037cb93f756bd3259f717d45c1a6622ee15d6504917c1582bf630e36";
+static NSString *const vertexConstants=@"57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112";
+static NSString *const fragmentConstants=@"55a8a2ed9608a1910abfbee503b4a7c33f2842cc93d78c4ed3e131bb59d134fa";
+static NSString *const otherConstants=@"70685547d87b105adac2768caae67169b97615568328283337aaec4b4bd66019";
 #else
-#error "only known602..605 cache tests exist"
+#error "only known602..606 cache tests exist"
 #endif
 static uid_t expectedTestUID;
 uid_t A5MaliShaderCacheExpectedTestUID(void){return expectedTestUID;}

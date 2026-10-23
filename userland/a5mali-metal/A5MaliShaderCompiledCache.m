@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT
- * Known602..605 native stage cache. Root publication authenticates provenance;
+ * Known602..606 native stage cache. Root publication authenticates provenance;
  * code/metadata pins and the caller's independent exact pipeline selection
  * preserve the already reviewed executable ABI. No arbitrary code admission.
  */
@@ -57,6 +57,11 @@ static const CacheContract contracts[]={
         "48bccbbdd2b788137ff228c7677e87a574ccfcd29f324a7bc44015bc15f3e2ce",
         "57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112",
         "70685547d87b105adac2768caae67169b97615568328283337aaec4b4bd66019"},
+    {606,2192,896,8,5,"quartzcore-generic-606",
+        "e0c51d2171b28c891677cdb1f1c98032bee0f03bb64af694a8321d711159fc96",
+        "5f1a9b4a037cb93f756bd3259f717d45c1a6622ee15d6504917c1582bf630e36",
+        "57f61f4161d206f26026807dd822e5fae8713e3b9f183f381d116cddd6d40112",
+        "55a8a2ed9608a1910abfbee503b4a7c33f2842cc93d78c4ed3e131bb59d134fa"},
 };
 static const CacheContract *contractForID(uint32_t profileID)
 {
@@ -204,7 +209,7 @@ A5MaliShaderCompiledCacheEntry *A5MaliLoadShaderCompiledCache(NSString *requestI
         strcmp(expected->vertexName,"fixed_vert_lph_spc")||strcmp(expected->fragmentName,"fixed_frag_lph_cph")||
         !expectedShader(&expected->passes[0].vertex,contract,YES)||!expectedShader(&expected->passes[0].fragment,contract,NO)||
         (expected->profileID>=603&&!exactTexturedAttachments(expected)))
-        return failure(error,EINVAL,@"compiled cache requires an exact authenticated602..605 stage contract");
+        return failure(error,EINVAL,@"compiled cache requires an exact authenticated602..606 stage contract");
     int root=open(cacheRoot,O_RDONLY|O_DIRECTORY|O_NOFOLLOW),dir=-1;
     if(root<0)return failure(error,errno==ENOENT?ENOENT:EIO,@"compiled cache not published");
     if(!directory(root)){close(root);return failure(error,EINVAL,@"compiled cache root ownership/mode rejected");}

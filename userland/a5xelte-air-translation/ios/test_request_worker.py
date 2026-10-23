@@ -148,7 +148,24 @@ def main():
                 raise AssertionError('unsupported status differs')
         if service.poll() is not None:
             raise AssertionError('worker died while recording multiple statuses')
-        request_id = enqueue(uid_dir, body)
+        # Reuse the same request identity that an older package rejected.
+        # Only the newly recognized606 pair may retire this root-private status.
+        request_id = sha(canonical(body))
+        previous_status = status_dir / f'{request_id}.json'
+        failed_key = None
+        if known['profile_id'] == 606:
+            previous_status.write_bytes(canonical({'schema': 1,
+                'request_id': request_id, 'status': 'unsupported',
+                'reason': 'previous package has no exact606 recipe'}))
+            previous_status.chmod(0o600)
+            failed_body = dict(body, descriptor={'host_test_failed_terminal': 1})
+            failed_key = sha(canonical(failed_body))
+            failed_status = status_dir / f'{failed_key}.json'
+            failed_status.write_bytes(canonical({'schema': 1,
+                'request_id': failed_key, 'status': 'failed', 'reason': 'terminal failure'}))
+            failed_status.chmod(0o600)
+            enqueue(uid_dir, failed_body)
+        assert enqueue(uid_dir, body) == request_id
         result = published / request_id
         wait_for(result / 'receipt.json', service)
         receipt = json.loads(result.joinpath('receipt.json').read_text())
@@ -165,7 +182,13 @@ def main():
             pin = known['midgard']['vert' if stage == 'vertex' else 'frag']
             if info['bytes'] != pin['bytes'] or info['sha256'] != pin['sha256']:
                 raise AssertionError(f'{stage} does not match pinned native code')
+        if known['profile_id'] == 606:
+            if previous_status.exists() or 'RETRY newly supported profile=606' not in (work / 'service.log').read_text():
+                raise AssertionError('old unsupported606 status was not safely retired')
+            if (published / failed_key).exists() or json.loads(failed_status.read_text())['status'] != 'failed':
+                raise AssertionError('terminal failed status was retried')
         print(json.dumps({'host_end_to_end': True, 'device_verified': False,
+                          'unsupported606_migration': known['profile_id'] == 606,
                           'multiple_unsupported_statuses': True,
                           'request_id': request_id, 'receipt': str(result / 'receipt.json'),
                           'vertex_sha256': receipt['vertex']['sha256'],
@@ -235,6 +258,43 @@ def main():
                 raise AssertionError('worker restart did not retain status/cache')
         finally:
             stop(service)
+    if known['profile_id'] == 606:
+        # A recipe upgrade must not turn status retirement into a symlink,
+        # hardlink, mode or identity bypass. All outputs stay private.
+        for index, kind in enumerate(('symlink', 'hardlink', 'mode', 'identity')):
+            invalid_body = dict(body, descriptor={'host_invalid_status': index})
+            invalid_key = sha(canonical(invalid_body))
+            invalid_status = cache / 'request-status' / f'{invalid_key}.json'
+            decoy = work / f'status-file-decoy-{index}'
+            decoy.write_bytes(canonical({'schema': 1, 'request_id': invalid_key,
+                'status': 'unsupported', 'reason': 'old unsupported'}))
+            decoy.chmod(0o600)
+            if kind == 'symlink':
+                invalid_status.symlink_to(decoy)
+            elif kind == 'hardlink':
+                os.link(decoy, invalid_status)
+            else:
+                shutil.copy2(decoy, invalid_status)
+                if kind == 'mode':
+                    invalid_status.chmod(0o644)
+                else:
+                    invalid_status.write_bytes(canonical({'schema': 1,
+                        'request_id': '0' * 64, 'status': 'unsupported', 'reason': 'wrong identity'}))
+            enqueue(uid_dir, invalid_body)
+            with (work / f'reject-status-{kind}.log').open('w') as log:
+                service = subprocess.Popen([str(runner), '--serve'], stdout=log,
+                                           stderr=subprocess.STDOUT)
+                try:
+                    code = service.wait(timeout=15)
+                    if code == 0 or 'untrusted existing request status' not in (work / f'reject-status-{kind}.log').read_text():
+                        raise AssertionError(f'untrusted {kind} status accepted')
+                    if (published / invalid_key).exists() or not decoy.exists():
+                        raise AssertionError(f'{kind} status rejection changed publication/decoy')
+                finally:
+                    if service.poll() is None:
+                        stop(service)
+            invalid_status.unlink()
+            (uid_dir / f'{invalid_key}.request.json').unlink()
     # Existing symlink, non-directory and wrong-mode objects must fail closed.
     for name in ('symlink', 'file', 'mode'):
         status_dir = cache / 'request-status'

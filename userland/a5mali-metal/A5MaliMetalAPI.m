@@ -32,7 +32,7 @@
  * actual typed stage constants, native hashes and complete pipeline state. */
 static BOOL compiledTexturedProfile(uint32_t profileID)
 {
-    return profileID>=603 && profileID<=605;
+    return profileID>=603 && profileID<=606;
 }
 
 /* Independent bounded receipt budgets: resource metadata only, never payloads. */
@@ -353,7 +353,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     BOOL executable=profile && ((profile->profileID>=99 && profile->profileID<=108) ||
         profile->profileID==200 || profile->profileID==202 || profile->profileID==204 ||
         profile->profileID==206 || profile->profileID==207 ||
-        (profile->profileID>=600 && profile->profileID<=605) ||
+        (profile->profileID>=600 && profile->profileID<=606) ||
         (profile->profileID>=300 && profile->profileID<=302));
     if(executable && [[self privateDevice]supportsNativePrograms]){
         if(error)*error=nil;
@@ -1275,7 +1275,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     NSUInteger primitiveCount=indexed?indexCount:count;
     if(!profile || !(profile->profileID==200 || profile->profileID==202 ||
         profile->profileID==204 || profile->profileID==206 || profile->profileID==207 ||
-        (profile->profileID>=600 && profile->profileID<=605) ||
+        (profile->profileID>=600 && profile->profileID<=606) ||
         (profile->profileID>=300 && profile->profileID<=302)) ||
         !profile->passCount || profile->passCount>2 || primitiveCount<3 ||
         (!indexed && count>A5RuntimeMaxVertices) ||
@@ -1333,9 +1333,13 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(r->kind!=A5MaliResourceTexture)continue;
         if(r->stage!=A5MaliStageFragment || r->metalIndex>=31)return NO;
         A5MaliMetalTexture *image=textures[@(r->metalIndex)];
-        if(!image || !(image.usage&MTLTextureUsageShaderRead) ||
-            (image.pixelFormat!=MTLPixelFormatBGRA8Unorm && (profile->profileID<604 || profile->profileID>605 ||
-             (image.pixelFormat!=MTLPixelFormatR8Unorm && image.pixelFormat!=MTLPixelFormatRG8Unorm))))return NO;
+        BOOL sourceFormat=image.pixelFormat==MTLPixelFormatBGRA8Unorm;
+        if(profile->profileID==604 || profile->profileID==605)
+            sourceFormat|=image.pixelFormat==MTLPixelFormatR8Unorm || image.pixelFormat==MTLPixelFormatRG8Unorm;
+        /* The coord5/image17 contract is validated with real alpha-only
+         * textures. Other source formats need their own pixel proof. */
+        if(profile->profileID==606)sourceFormat=image.pixelFormat==MTLPixelFormatA8Unorm;
+        if(!image || !(image.usage&MTLTextureUsageShaderRead) || !sourceFormat)return NO;
         if(textured && (r->metalIndex!=3 || image.mipmapLevelCount!=1 ||
             image.textureType!=MTLTextureType2D || image.sampleCount!=1))return NO;
         if(image.buffer && (image.buffer.device!=_buffer.device ||
@@ -1353,7 +1357,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
     NSMutableArray<NSMutableSet<NSNumber *> *> *storageSlots=
         [NSMutableArray arrayWithObjects:[NSMutableSet new],[NSMutableSet new],nil];
-    if(profile->profileID==206 || (profile->profileID>=600 && profile->profileID<=605))
+    if(profile->profileID==206 || (profile->profileID>=600 && profile->profileID<=606))
         windows[0][@1]=@((indexed?1:count)*48);
     for(uint32_t i=0;i<profile->resourceCount;++i){const A5MaliCompiledResource*r=profile->resources+i;
         if(r->kind!=A5MaliResourceBuffer)continue;

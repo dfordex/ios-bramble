@@ -15,8 +15,8 @@ static A5RuntimeResourceOp request(unsigned format,unsigned n,unsigned type){
  .sourceX=3,.sourceY=0,.destinationX=5,.destinationY=0,.width=48,.height=type==0?1:8};return r;
 }
 int main(void){
- unsigned formats[]={10,30,43,23,25,55,80,105,115},sizes[]={1,2,2,2,2,4,4,8,8};
- for(unsigned i=0;i<9;i++)for(unsigned dim=0;dim<=2;dim+=2){
+ unsigned formats[]={1,10,30,43,23,25,55,80,105,115},sizes[]={1,1,2,2,2,2,4,4,8,8};
+ for(unsigned i=0;i<10;i++)for(unsigned dim=0;dim<=2;dim+=2){
  A5RuntimeResourceOp r=request(formats[i],sizes[i],dim);
  assert(A5MaliEncodeRuntimeResourceOp(&r,out,sizeof(out))==A5RuntimeOK);
  pan_unpack((struct mali_job_header_packed*)out,JOB_HEADER,v);
@@ -45,5 +45,5 @@ int main(void){
  m=request(55,4,0);m.source.gpuVA=m.descriptorGPUVA+4096;assert(A5MaliEncodeRuntimeResourceOp(&m,out,sizeof(out))!=A5RuntimeOK);zeroed();
  m=request(55,4,0);m.sourceX=63;assert(A5MaliEncodeRuntimeResourceOp(&m,out,sizeof(out))!=A5RuntimeOK);zeroed();
  m=request(55,4,0);m.destination.rowBytes=1;assert(A5MaliEncodeRuntimeResourceOp(&m,out,sizeof(out))!=A5RuntimeOK);zeroed();
- puts("PASS 18 real typed copy descriptor contracts (1D/2D), mip topology, raw packing, preload ordering, bounds/alias/unsupported failures zero output; no GPU execution claim");return 0;
+ puts("PASS 20 real typed copy descriptor contracts (1D/2D), mip topology, raw packing, preload ordering, bounds/alias/unsupported failures zero output; no GPU execution claim");return 0;
 }

@@ -30,12 +30,14 @@ are fsynced before publication. These bounds still need measurement on the A53.
 The launch job runs `--serve` and scans the bounded request spool immediately;
 the baseline pairs remain available through the separate `--selftest` action.
 The exact captured QuartzCore `fixed_vert_lph_spc` +
-`fixed_frag_lph_cph` profile 602 and the three captured textured fragment
-specializations (profiles 603–605) have source-pinned translation and Midgard
+`fixed_frag_lph_cph` profile 602 and the four captured textured fragment
+specializations (profiles 603–606) have source-pinned translation and Midgard
 recipes. Textured profiles require their own exact 58 typed fragment constants,
 four vertex constants, and a ClampToEdge S/T/R sampler.
-The phone accepted the textured vertex function and pipeline in 0197, but the
-new normalized-coordinate fragment's output pixels await device verification.
+The 0204 phone log records real 604/605 jobs. Profile606 adds the observed
+coordinate5/image17 combination: a FragmentBuffer1 UV clamp and sampled alpha
+replicated to RGBA. Host compilation and cache admission do not establish606
+phone pixels or successful backboardd startup.
 Unknown functions and pipeline contracts receive
 explicit unsupported results. A compiled stage does not prove an arbitrary
 Metal pipeline can draw.
@@ -47,7 +49,12 @@ translator's paired host binary and provenance manifest. It verifies the
 patch, both artifact hashes and the host CLI's `--no-timeout` option before
 staging; the older optimized translator fails this gate. The package script
 also checks iOS-device Mach-O dependencies, signs all five executables and
-verifies 4 KiB signature pages. No shader binaries are bundled.
+verifies 4 KiB signature pages. The generic backend's build manifest must
+also bind the current source, exact module whitelist, pinned Mesa release,
+active NIR validation and original executable hash. The package provenance
+manifest retains this binding; an older backend that rejects606 cannot pass
+packaging merely by supplying a new606 JSON recipe. No shader binaries are
+bundled.
 
 Package invocation (all generated artifacts remain outside Git):
 
@@ -64,12 +71,14 @@ python3 prepare_package.py PATCHED_AIR_IOS MIDGARD_IOS SPIRV_VAL_IOS \
   --fragment-capture604 PRIVATE_0198_TEXTURE_FUNCTION_CAPTURE_JSON \
   --receipt605 VERIFIED_PRIVATE_605_RECEIPT_JSON \
   --fragment-capture605 PRIVATE_0198_IMAGE_FUNCTION_CAPTURE_JSON \
+  --receipt606 VERIFIED_PRIVATE_606_RECEIPT_JSON \
+  --fragment-capture606 PRIVATE_0204_COORD5_IMAGE17_CAPTURE_JSON \
   --metallib PRIVATE_QUARTZCORE_METALLIB
 python3 test_package_air_gate.py PATCHED_TRANSLATOR_BUILD_DIR \
   --old-translator OLD_OPTIMIZED_TRANSLATOR_IOS
 ```
 
-The package contains only the runner, launchd plist, four tools and five JSON
+The package contains only the runner, launchd plist, four tools and six JSON
 resources. The host-only provenance manifest is written beside it as
 `OUTPUT_DIR-package-manifest.json`, outside the embedder's exact member list.
 
@@ -80,6 +89,18 @@ all streams before writes, and skips files with identical content. It neither
 formats a partition nor copies a whole root image. Patch0173 restricts the
 extra platform authorization to the signed identities/paths with compiler
 entitlements and the explicit `a5compiler=1` boot option.
+
+**0205 host evidence:** the combined backend reproduces the pinned602–606
+native pairs. The606 end-to-end worker test runs actual AIR translation,
+SPIR-V validation and the combined Midgard backend, then publishes the exact
+2192-byte vertex and896-byte fragment pair. It starts with an older
+root-private `unsupported` status for that same request ID and proves that
+only the exact newly supported606 request is retried. Failed statuses and
+unrecognized requests remain terminal. Symlink, hardlink, wrong-mode and wrong
+identity status files fail closed; publication cache tests for602–606 reject
+mutated code, receipts, ownership and stage ABI. The rebuilt iOS package passes
+Cortex-A53 compilation, device Mach-O and4KiB signature-page checks. These are
+host/package results;606 device execution remains to be tested.
 
 **Current evidence:** the 0200 package passed signed iOS Mach-O checks and
 host request-to-publication tests for both 604 and 605; earlier tests covered
