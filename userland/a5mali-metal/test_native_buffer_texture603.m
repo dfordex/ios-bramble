@@ -353,7 +353,9 @@ static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sour
         }
 #endif
     }
-    assert(s.deallocations==1);
+    /* An uncertain Submit18 keeps the no-copy storage quarantined.
+     * Only jobs that never launch or reach a terminal fence may free it. */
+    assert(s.deallocations==(fault==FailSubmit?0u:1u));
     free(s.expected);free(s.actual);
 }
 static void runCase(Fault fault,BOOL useSPI,BOOL blend)

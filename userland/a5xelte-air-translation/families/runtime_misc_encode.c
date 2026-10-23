@@ -353,7 +353,7 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
 static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(p->profileID!=A5MaliDynamicProfileID||
     !(p->flags&A5MaliProfileDynamicStages)||
-    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs))||
+    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly))||
     !(p->flags&A5MaliProfileSourceOverBlend)||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
@@ -402,6 +402,7 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
   }else return 0;
  }
  if(!!(p->flags&A5MaliProfileFramebufferFetch)!=(fetches==1))return 0;
+ if((p->flags&A5MaliProfileVertexColorOnly)&&!(p->flags&A5MaliProfileFragmentNoInputs))return 0;
  if(p->flags&A5MaliProfileFragmentNoInputs){
   /* No sampled-resource fallback: this path executes the reflected ordered
    * attachment load, with real FS UBOs and no FS interpolant descriptors. */
@@ -516,7 +517,7 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
   if(!bind_buffer(m,d,&arena,&r->vertexBuffers[1],r->vertexCount*48,&vertex,&push,&available))return A5RuntimeBounds;
   vertex+=push;unsigned low=(unsigned)(vertex&63);vertex&=~UINT64_C(63);
   attr(d,ATTRS,0,MALI_RGBA32F,0x688,low);
-  if(generic_color)attr(d,ATTRS+8,0,MALI_RGBA16F,0x688,low+32);
+  if(generic_color||(p->flags&A5MaliProfileVertexColorOnly))attr(d,ATTRS+8,0,MALI_RGBA16F,0x688,low+32);
   else{attr(d,ATTRS+8,0,MALI_RG32F,RG_SWIZZLE,low+16);attr(d,ATTRS+16,0,MALI_RGBA16F,0x688,low+32);}
   buf(d,ATTR_BUFS,vertex,48,r->vertexCount*48+low);
   if(generic_textured){int rc=(p->profileID==A5MaliDynamicProfileID&&!dynamic_legacy_texture(m))?dynamic_images(d,m):textured_image(d,m);if(rc)return rc;}
@@ -540,7 +541,7 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
  }
  attr(d,VS_VARY,0,MALI_SNAP_4,0x688,0);buf(d,VS_VARY_BUFS,VA+POS,16,r->vertexCount*16);
  attr(d,VS_VARY+8,1,MALI_R16F,R_SWIZZLE,0);buf(d,VS_VARY_BUFS+16,VA+PSIZ,2,r->vertexCount*2);
- if(home||generic_textured){
+ if((home||generic_textured)&&!(p->flags&A5MaliProfileVertexColorOnly)){
   attr(d,VS_VARY+16,2,MALI_RGBA32UI,0x688,0);buf(d,VS_VARY_BUFS+32,VA+VARY_DATA,16,r->vertexCount*16);
   attr(d,VS_VARY+24,3,MALI_RG32UI,RG_SWIZZLE,0);buf(d,VS_VARY_BUFS+48,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
   if(generic_textured){
@@ -571,11 +572,13 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
    attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);
    buf(d,FS_VARY_BUFS,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
   }
- }else if(generic_color){
+ }else if(generic_color||(p->flags&A5MaliProfileVertexColorOnly)){
   attr(d,VS_VARY+16,2,MALI_RGBA32UI,0x688,0);
   buf(d,VS_VARY_BUFS+32,VA+VARY_DATA,16,r->vertexCount*16);
-  attr(d,FS_VARY,0,MALI_RGBA32F,0x688,0);
-  buf(d,FS_VARY_BUFS,VA+VARY_DATA,16,r->vertexCount*16);
+  if(!(p->flags&A5MaliProfileFragmentNoInputs)){
+   attr(d,FS_VARY,0,MALI_RGBA32F,0x688,0);
+   buf(d,FS_VARY_BUFS,VA+VARY_DATA,16,r->vertexCount*16);
+  }
  }else if(!clear){
   for(unsigned i=0;i<5;++i){unsigned off=VARY_DATA+i*0x1000,stride=i?4:8;
    attr(d,VS_VARY+(i+2)*8,i+2,i?MALI_R32UI:MALI_RG32UI,i?R_SWIZZLE:RG_SWIZZLE,0);buf(d,VS_VARY_BUFS+(i+2)*16,VA+off,stride,r->vertexCount*stride);
@@ -683,6 +686,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   struct MALI_RENDERER_STATE rs;
   MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+VS_RSD),&rs);
   rs.shader.shader=r->descriptorGPUVA+VS_CODE+vs->firstTag;
+  if(p->flags&A5MaliProfileVertexColorOnly){rs.shader.attribute_count=2;rs.shader.varying_count=3;}
   rs.properties.uniform_buffer_count=dynamic_ubo_count(p,A5MaliStageVertex);
   MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+VS_RSD),&rs);
   MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FS_RSD),&rs);

@@ -30,10 +30,23 @@ typedef struct {
     uint64_t gpuVA;
     uint32_t bytes, width, height, rowBytes, metalPixelFormat;
 } A5RuntimeImage;
+/* Blur sampler snapshot. Values follow Metal/A5RuntimeSampler: filter0 is
+ * nearest,1 linear; address0 is clamp-to-edge. Only normalized, noncompare,
+ * one-level clamp sampling is admitted by these authenticated blur profiles.
+ * All-zero is the original internal fixture's nearest/clamp contract; public
+ * Metal submissions must supply valid=1 with their actual descriptor. */
+typedef struct {
+    uint32_t valid,minFilter,magFilter,mipFilter;
+    uint32_t sAddressMode,tAddressMode,rAddressMode;
+    uint32_t normalizedCoordinates,maxAnisotropy,compareEnabled;
+    float lodMinClamp,lodMaxClamp;
+} A5RuntimeBlurSampler;
+int A5MaliRuntimeBlurSamplerSupported(const A5RuntimeBlurSampler *);
 typedef struct {
     const A5MaliCompiledProfile *profile;
     uint64_t descriptorGPUVA;
     A5RuntimeImage source, destination;
+    A5RuntimeBlurSampler sourceSampler;
     /* Optional mapped RT1 backing for profile100's inactive BGRA8 output.
      * Its authenticated write mask is zero: it is retained/validated, never
      * emitted as an SFBD writeback or advertised as general MRT support. */

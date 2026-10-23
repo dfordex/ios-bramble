@@ -252,10 +252,6 @@ int main(void)
         setIndices(&s,triangles,6,4);s.vertexCount=6;
         unsigned before=s.submits;b=encode(device,other,p,target,&s,MTLIndexTypeUInt32,12,0,Unaligned);
         [b commit];[b waitUntilCompleted];assert(b.status==MTLCommandBufferStatusError&&s.submits==before);
-        s.failSubmit=YES;b=encode(device,other,p,target,&s,MTLIndexTypeUInt32,12,0,Good);[b commit];[b waitUntilCompleted];
-        assert(b.status==MTLCommandBufferStatusError&&b.error.code==kIOReturnTimeout&&s.submits==before+1);
-        assert(!b.privateBuffer.completedFence.fragmentFence);
-        s.failSubmit=NO;
         for(unsigned attempt=0;attempt<2;++attempt){
             unsigned queries=s.queries,submits=s.submits,reads=s.privateReads;
             b=encode(device,other,p,target,&s,MTLIndexTypeUInt32,12,0,attempt?PrivateReadFailure:PrivateGood);
@@ -279,6 +275,12 @@ int main(void)
                 assert(b.privateBuffer.completedFence.fragmentFence);
             }
         }
+        /* A timed-out GPU job quarantines the destination; test it last. */
+        before=s.submits;
+        s.failSubmit=YES;b=encode(device,other,p,target,&s,MTLIndexTypeUInt32,12,0,Good);[b commit];[b waitUntilCompleted];
+        assert(b.status==MTLCommandBufferStatusError&&b.error.code==kIOReturnTimeout&&s.submits==before+1);
+        assert(!b.privateBuffer.completedFence.fragmentFence);
+        s.failSubmit=NO;
         puts("indexed602 Metal wrappers: u16/u32 ordered native indices, late commit snapshots/rebind retention, all overloads, bounds/device rejection and terminal fences PASS (mock transport; no GPU pixels)");
     }
     return 0;

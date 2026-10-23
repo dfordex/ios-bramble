@@ -8,6 +8,7 @@
 #import "A5MaliShaderCompileRequest.h"
 #include <string.h>
 #include <errno.h>
+#include <stdio.h>
 #include "../a5xelte-air-translation/families/runtime_misc_encode.h"
 
 @implementation A5MaliDynamicPipelineEntry {
@@ -74,35 +75,88 @@ static BOOL interfaceABI(A5MaliDynamicShaderCacheEntry *e) {
     }
     return YES;
 }
-static BOOL vertexABI(A5MaliDynamicShaderCacheEntry *e) {
-    unsigned locations[]={0,12,32,33},bases[]={0,1,2,3},masks[]={15,1,3,15};
+/* The private registry authenticates code/constants, not arbitrary stage-ID
+ * pairings. Match its native vertex program and stage-only resource/push ABI
+ * to an implemented export layout; fragment identities may differ freely when
+ * their actual input contract links. This also covers equivalent donor rows. */
+static BOOL sameStageProgram(const A5MaliCompiledProfile *p,const A5MaliCompiledProfile *shape,unsigned stage) {
+    if(!p||!shape||!p->passes||!shape->passes||!p->passCount||!shape->passCount)return NO;
+    const A5MaliCompiledShader *a=stage==A5MaliStageVertex?&p->passes[0].vertex:&p->passes[0].fragment;
+    const A5MaliCompiledShader *b=stage==A5MaliStageVertex?&shape->passes[0].vertex:&shape->passes[0].fragment;
+    if(!a->bytes||!b->bytes||a->byteCount!=b->byteCount||a->firstTag!=b->firstTag||
+       a->workRegisters!=b->workRegisters||a->tlsBytes!=b->tlsBytes||a->wlsBytes!=b->wlsBytes||
+       memcmp(a->bytes,b->bytes,a->byteCount))return NO;
+    unsigned counts[2]={0};
+    for(unsigned set=0;set<2;set++){
+        const A5MaliCompiledProfile *x=set?shape:p;
+        for(unsigned i=0;i<x->resourceCount;i++)if(x->resources[i].stage==stage){
+            unsigned n=counts[set]++,at=0;
+            for(;at<shape->resourceCount;at++)if(shape->resources[at].stage==stage){if(!n)break;n--;}
+            if(at==shape->resourceCount||memcmp(x->resources+i,shape->resources+at,sizeof(*x->resources)))return NO;
+        }
+    }
+    if(counts[0]!=counts[1])return NO;
+    counts[0]=counts[1]=0;
+    for(unsigned set=0;set<2;set++){
+        const A5MaliCompiledProfile *x=set?shape:p;
+        for(unsigned i=0;i<x->pushFieldCount;i++)if(x->pushFields[i].stage==stage){
+            unsigned n=counts[set]++,at=0;
+            for(;at<shape->pushFieldCount;at++)if(shape->pushFields[at].stage==stage){if(!n)break;n--;}
+            if(at==shape->pushFieldCount||memcmp(x->pushFields+i,shape->pushFields+at,sizeof(*x->pushFields)))return NO;
+        }
+    }
+    return counts[0]==counts[1];
+}
+static BOOL vertexABI(A5MaliDynamicShaderCacheEntry *e,const A5MaliCompiledProfile *p,
+    BOOL *colorOnly,NSString **reason) {
+    if(!e){
+        if(sameStageProgram(p,A5MaliCompiledProfileForID(602),A5MaliStageVertex)){*colorOnly=YES;return YES;}
+        if(sameStageProgram(p,A5MaliCompiledProfileForID(603),A5MaliStageVertex)){*colorOnly=NO;return YES;}
+        *reason=@"vertex.native-program-resource-ABI";return NO;
+    }
     NSDictionary *n=e.nativeABI[@"native_info"];
-    unsigned inLocations[]={15,16,17},inBases[]={0,1,2},inMasks[]={15,3,15};
-    if(!ioShape(e.nativeABI[@"inputs"],inLocations,inBases,inMasks,3))return NO;
-    if(!interfaceABI(e)||e.stage!=A5MaliStageVertex||[n[@"attributes"] unsignedIntValue]!=3||
-       [n[@"textures"] unsignedIntValue]||[n[@"samplers"] unsignedIntValue]||
-       !ioShape(e.nativeABI[@"outputs"],locations,bases,masks,4))return NO;
-    /* Configured QC packing maps Metal color attribute3 to Vulkan location2.
-     * Unused Metal attribute2 remains part of the validated actual descriptor. */
+    if(!interfaceABI(e)||e.stage!=A5MaliStageVertex||[n[@"textures"] unsignedIntValue]||[n[@"samplers"] unsignedIntValue]){
+        *reason=@"vertex.stage-interface-or-sampled-resource";return NO;
+    }
+    unsigned attributes=[n[@"attributes"] unsignedIntValue];
+    BOOL compact=attributes==2;
+    unsigned fullLocations[]={0,12,32,33},fullBases[]={0,1,2,3},fullMasks[]={15,1,3,15};
+    unsigned fullInputs[]={15,16,17},fullInputBases[]={0,1,2},fullInputMasks[]={15,3,15};
+    unsigned compactLocations[]={0,12,32},compactBases[]={0,1,2},compactMasks[]={15,1,15};
+    unsigned compactInputs[]={15,16},compactInputBases[]={0,1},compactInputMasks[]={15,15};
+    if((attributes!=2&&attributes!=3)||
+       !ioShape(e.nativeABI[@"inputs"],compact?compactInputs:fullInputs,
+           compact?compactInputBases:fullInputBases,compact?compactInputMasks:fullInputMasks,compact?2:3)||
+       !ioShape(e.nativeABI[@"outputs"],compact?compactLocations:fullLocations,
+           compact?compactBases:fullBases,compact?compactMasks:fullMasks,compact?3:4)){
+        *reason=@"vertex.reflected-input-export-layout";return NO;
+    }
+    NSArray *vertexAttributes=compact?
+        @[@{@"location":@0,@"binding":@0,@"format":@109,@"offset":@0},
+          @{@"location":@1,@"binding":@0,@"format":@97,@"offset":@32}]:
+        @[@{@"location":@0,@"binding":@0,@"format":@109,@"offset":@0},
+          @{@"location":@1,@"binding":@0,@"format":@103,@"offset":@16},
+          @{@"location":@2,@"binding":@0,@"format":@97,@"offset":@32}];
     NSDictionary *want=@{@"bindings":@[@{@"binding":@0,@"buffer_index":@1,
         @"input_rate":@0,@"divisor":@1,@"stride":@{@"Static":@48}}],
-        @"attributes":@[@{@"location":@0,@"binding":@0,@"format":@109,@"offset":@0},
-          @{@"location":@1,@"binding":@0,@"format":@103,@"offset":@16},
-          @{@"location":@2,@"binding":@0,@"format":@97,@"offset":@32}],
-        @"pulled":@[],@"variant_pulled":@[]};
-    return [e.reflection[@"vertex_input"] isEqual:want];
+        @"attributes":vertexAttributes,@"pulled":@[],@"variant_pulled":@[]};
+    if(![e.reflection[@"vertex_input"] isEqual:want]){*reason=@"vertex.reflected-Metal-packing";return NO;}
+    *colorOnly=compact;return YES;
 }
-static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch,BOOL *position,BOOL *noInputs) {
+static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch,BOOL *position,BOOL *noInputs,NSString **reason) {
+    *reason=@"fragment.native-attributes-or-sampled-count";
     NSDictionary *n=e.nativeABI[@"native_info"];
     if(!interfaceABI(e)||e.stage!=A5MaliStageFragment||[n[@"attributes"] unsignedIntValue]||
        [n[@"textures"] unsignedIntValue]>4||
        [n[@"samplers"] unsignedIntValue]!=[n[@"textures"] unsignedIntValue])return NO;
     unsigned locations[]={32,33,0},bases[]={0,1,2},masks[]={3,15,15};
     NSArray *io=e.nativeABI[@"inputs"];
+    *reason=@"fragment.native-input-array";
     if(![io isKindOfClass:NSArray.class])return NO;
     *noInputs=io.count==0;
     unsigned textureCount=[n[@"textures"] unsignedIntValue];
     NSArray *live=e.nativeABI[@"live_textures"];
+    *reason=@"fragment.native-texture-liveness-or-no-input-fetch";
     if(![live isKindOfClass:NSArray.class]||
        (*noInputs?(textureCount||live.count||![e.nativeABI[@"framebuffer_fetch"] boolValue]):
                    (!textureCount||!live.count)))return NO;
@@ -112,8 +166,10 @@ static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch
     for(unsigned i=0;i<3;i++)if(!*noInputs&&(!i||(i==1?*color:*position))){
         selectedLocations[count]=locations[i];selectedBases[count]=bases[i];selectedMasks[count++]=masks[i];
     }
+    *reason=@"fragment.reflected-input-location-base-mask";
     if(!ioShape(io,selectedLocations,selectedBases,selectedMasks,count))return NO;
     unsigned outLocations[]={4},outBases[]={0},outMasks[]={15};
+    *reason=@"fragment.reflected-color-output";
     if(!ioShape(e.nativeABI[@"outputs"],outLocations,outBases,outMasks,1))return NO;
     NSDictionary *g=e.reflection[@"graphics"];
     *fetch=[e.nativeABI[@"framebuffer_fetch"] boolValue];
@@ -121,11 +177,18 @@ static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch
         ([g[@"rasterization_order_attachment_access"] boolValue]&&[g[@"rasterization_samples"] unsignedIntValue]==1&&
          [g[@"input_attachments"] isEqual:@[@{@"color_index":@0,@"input_attachment_index":@0,@"format_class":@"Float"}]]):
         ![g[@"input_attachments"] count];
+    *reason=@"fragment.ordered-attachment-and-side-effect-contract";
     return [g[@"color_write_rules"] isEqual:@[@[@0,@8738]]]&&
         ![g[@"writes_depth"] boolValue]&&![g[@"fragment_writes_memory"] boolValue]&&
         ![g[@"reads_position_depth"] boolValue]&&![g[@"snapshot_reads"] boolValue]&&
         attachment&&![g[@"storage_attachments"] count]&&
         [g[@"color_outputs"] unsignedIntValue]==1;
+}
+static BOOL staticFragmentABI(const A5MaliCompiledProfile *p,BOOL *color) {
+    for(unsigned id=603;id<=606;id++)if(sameStageProgram(p,A5MaliCompiledProfileForID(id),A5MaliStageFragment)){
+        *color=id==604;return YES;
+    }
+    return NO;
 }
 A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescriptor *d,NSError **error) {
     if(error)*error=nil;
@@ -139,12 +202,26 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     if(!A5MaliShaderCompilePipelinePayload(d,vf.compileRequestPayload,ff.compileRequestPayload,error))return nil;
     const A5MaliCompiledProfile *vp=vs?NULL:A5MaliCompiledProfileForID(vf.specializationProfileID);
     const A5MaliCompiledProfile *fp=fs?NULL:A5MaliCompiledProfileForID(ff.specializationProfileID);
-    BOOL color=NO,fetch=NO,position=NO,noInputs=NO;
-    if((vs?!vertexABI(vs):(!vp||vp->profileID<603||vp->profileID>606))||
-       (fs?!fragmentABI(fs,&color,&fetch,&position,&noInputs):(!fp||fp->profileID<603||fp->profileID>606))){
-        if(error)*error=unsupported(@"compiled stage IO is outside the implemented QC runtime ABI");return nil;
+    BOOL color=NO,fetch=NO,position=NO,noInputs=NO,vertexColorOnly=NO;
+    NSString *predicate=nil;
+    BOOL vertexOK=vertexABI(vs,vp,&vertexColorOnly,&predicate);
+    BOOL fragmentOK=vertexOK&&(fs?fragmentABI(fs,&color,&fetch,&position,&noInputs,&predicate):
+        staticFragmentABI(fp,&color));
+    if(vertexOK&&!fs&&!fragmentOK)predicate=@"fragment.static-native-ABI";
+    if(vertexOK&&fragmentOK&&vertexColorOnly&&!noInputs){
+        fragmentOK=NO;predicate=@"link.fragment-UV-input-not-exported-by-vertex";
     }
-    if(!fs)color=fp->profileID==604;
+    if(!vertexOK||!fragmentOK){
+        static unsigned diagnostics=0;
+        if(__atomic_fetch_add(&diagnostics,1,__ATOMIC_RELAXED)<48)fprintf(stderr,
+            "A5XELTE Metal dynamic link: rejected predicate=%s vertex=%s vertex_profile=%u vertex_dynamic=%u fragment=%s fragment_profile=%u fragment_dynamic=%u fs_inputs=%lu fs_textures=%u fs_samplers=%u\n",
+            predicate.UTF8String?:"unknown",vf.name.UTF8String,vf.specializationProfileID,!!vs,
+            ff.name.UTF8String,ff.specializationProfileID,!!fs,
+            (unsigned long)[fs.nativeABI[@"inputs"] count],
+            [fs.nativeABI[@"native_info"][@"textures"] unsignedIntValue],
+            [fs.nativeABI[@"native_info"][@"samplers"] unsignedIntValue]);
+        if(error)*error=unsupported([NSString stringWithFormat:@"compiled stage IO ABI rejected: %@ (vertex profile%u fragment profile%u)",predicate,vf.specializationProfileID,ff.specializationProfileID]);return nil;
+    }
     A5MaliDynamicPipelineEntry *e=[A5MaliDynamicPipelineEntry new];
     e->_owners=@[vs?:v,fs?:f];e->_vertexName=[vf.name copy];e->_fragmentName=[ff.name copy];
     e->_pass=(A5MaliCompiledPass){.passID=A5MaliDynamicProfileID,
@@ -176,7 +253,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     e->_profile=(A5MaliCompiledProfile){.profileID=A5MaliDynamicProfileID,.name="dynamic-reflected-QC",
         .vertexName=e->_vertexName.UTF8String,.fragmentName=e->_fragmentName.UTF8String,
         .colorFormats={80},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
-            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0),.passes=&e->_pass,.passCount=1,
+            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0),.passes=&e->_pass,.passCount=1,
         .resources=e->_resources,.resourceCount=resourceCount,.pushFields=e->_pushes,.pushFieldCount=pushCount,
         .attributes=e->_attributes,.attributeCount=4,.layouts=&e->_layout,.layoutCount=1,
         .attachmentContracts=e->_attachments,.attachmentContractCount=2,.immutableSamplers=e->_samplers,.immutableSamplerCount=immutableCount};
@@ -187,5 +264,10 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
 #endif
     NSString *mismatch=A5MaliCompiledDescriptorMismatch(&e->_profile,d);
     if(mismatch){if(error)*error=unsupported(mismatch);return nil;}
+    static unsigned acceptedDiagnostics=0;
+    if(__atomic_fetch_add(&acceptedDiagnostics,1,__ATOMIC_RELAXED)<32)fprintf(stderr,
+        "A5XELTE Metal dynamic link: accepted vertex=%s vertex_profile=%u vertex_dynamic=%u vertex_abi=%s fragment=%s fragment_profile=%u fragment_dynamic=%u fs_no_inputs=%u fetch=%u\n",
+        vf.name.UTF8String,vf.specializationProfileID,!!vs,vertexColorOnly?"position-color":"position-uv-color",
+        ff.name.UTF8String,ff.specializationProfileID,!!fs,noInputs,fetch);
     return e;
 }

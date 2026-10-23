@@ -31,6 +31,9 @@ static kern_return_t transport(void*c,uint32_t selector,const void*input,size_t 
  assert(*z==sizeof(r));memcpy(output,&r,sizeof(r));*z=sizeof(r);return KERN_SUCCESS;
 }
 extern int A5MaliTestZeroTextureFetch(const A5MaliCompiledProfile *,int);
+@interface A5MaliMetalFunction (ZeroFetchDynamicVertexTest)
+- (instancetype)initWithLibrary:(A5MaliMetalLibrary *)library dynamicShader:(A5MaliDynamicShaderCacheEntry *)entry;
+@end
 @interface A5MaliReadSurfCandidate (FetchTest)
 - (const A5MaliCompiledProfile *)profile;
 @end
@@ -46,7 +49,9 @@ int main(int argc,char**argv){@autoreleasepool{
  const char *stock=getenv("A5_MALI_STOCK_QUARTZCORE_METALLIB");assert(stock);
  A5MaliMetalLibrary *library=[device newLibraryWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:stock]] error:&error];assert(library&&!error);
  MTLFunctionConstantValues *v=[MTLFunctionConstantValues new],*f=[MTLFunctionConstantValues new];
- size_t count=0;const A5MaliCompiledFunctionConstant *vc=A5MaliCompiledVertexConstantsForProfile(603,&count);assert(vc&&count==4);
+ const char *choice=getenv("A5_TEST_VERTEX_PROFILE");unsigned vertexProfile=choice?(unsigned)strtoul(choice,NULL,10):603;
+ assert(vertexProfile==602||vertexProfile==603);
+ size_t count=0;const A5MaliCompiledFunctionConstant *vc=A5MaliCompiledVertexConstantsForProfile(vertexProfile,&count);assert(vc&&count==4);
  for(size_t i=0;i<count;i++)[v setConstantValue:vc[i].raw type:vc[i].dataType withName:[NSString stringWithUTF8String:vc[i].name]];
  for(NSDictionary *c in request[@"named_constants"]){
   NSString *raw=c[@"raw"];uint8_t bytes[16];unsigned n=(unsigned)raw.length/2;assert(n&&n<=sizeof(bytes));
@@ -55,6 +60,13 @@ int main(int argc,char**argv){@autoreleasepool{
  }
  MTLRenderPipelineDescriptor *d=[MTLRenderPipelineDescriptor new];
  d.vertexFunction=(id)[library newFunctionWithName:@"fixed_vert_lph_spc" constantValues:v error:&error];assert(d.vertexFunction&&!error);
+ const char *vertexRequest=getenv("A5_TEST_DYNAMIC_VERTEX_REQUEST");
+ if(vertexRequest){
+  NSMutableDictionary *vr=[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:vertexRequest]] options:NSJSONReadingMutableContainers error:&error];assert(vr&&!error);
+  NSString *vid=vr[@"request_id"];[vr removeObjectsForKeys:@[@"request_id",@"owner_uid"]];
+  A5MaliDynamicShaderCacheEntry *ve=A5MaliLoadDynamicShaderStage(vid,vr,&error);if(!ve)NSLog(@"%@",error);assert(ve&&!error);
+  d.vertexFunction=(id)[[A5MaliMetalFunction alloc]initWithLibrary:library dynamicShader:ve];assert(d.vertexFunction);
+ }
  d.fragmentFunction=(id)[library newFunctionWithName:request[@"function"] constantValues:f error:&error];if(!d.fragmentFunction)NSLog(@"%@",error);assert(d.fragmentFunction&&!error);
  assert([(A5MaliMetalFunction*)d.fragmentFunction dynamicShader]);
  const A5MaliCompiledProfile *shape=A5MaliCompiledProfileForID(603);assert(shape);
@@ -68,6 +80,7 @@ int main(int argc,char**argv){@autoreleasepool{
   d.colorAttachments[0].destinationRGBBlendFactor=d.colorAttachments[0].destinationAlphaBlendFactor=blend?MTLBlendFactorOneMinusSourceAlpha:MTLBlendFactorZero;
   error=nil;A5MaliReadSurfCandidate *pipeline=[device newRenderPipelineStateWithDescriptor:d error:&error];if(!pipeline)NSLog(@"%@",error);assert(pipeline&&!error);
   const A5MaliCompiledProfile *profile=[pipeline profile];
+  assert(!!(profile->flags&A5MaliProfileVertexColorOnly)==(vertexProfile==602));
   assert(A5MaliTestZeroTextureFetch(profile,blend));
   for(unsigned fail=0;fail<2;fail++){
    state=(TransportState){.failFence=fail};
@@ -107,5 +120,22 @@ int main(int argc,char**argv){@autoreleasepool{
   error=nil;assert(!A5MaliComposeDynamicPipeline(d,&error)&&error);
  }
  [entry setValue:original forKey:@"nativeABI"];
- printf("PASS exact 58-constant zero-input fetch (4 native submissions, including 2 injected fence failures): production MTLLibrary/newFunction -> zero-input pipeline -> real emitter; no GPU execution\n");
+ if(vertexRequest){
+  A5MaliDynamicShaderCacheEntry *ve=[(A5MaliMetalFunction*)d.vertexFunction dynamicShader];
+  NSDictionary *native=ve.nativeABI,*reflection=ve.reflection;
+  NSMutableDictionary *bad=[native mutableCopy];
+  bad[@"outputs"]=@[@{@"location":@0,@"base":@0,@"component":@0,@"components":@4,@"bit_size":@32},
+   @{@"location":@12,@"base":@1,@"component":@0,@"components":@1,@"bit_size":@32},
+   @{@"location":@32,@"base":@2,@"component":@0,@"components":@2,@"bit_size":@32}];
+  [ve setValue:bad forKey:@"nativeABI"];error=nil;
+  assert(!A5MaliComposeDynamicPipeline(d,&error)&&[error.localizedDescription containsString:@"vertex.reflected-input-export-layout"]);
+  [ve setValue:native forKey:@"nativeABI"];
+  NSMutableDictionary *br=[reflection mutableCopy],*vi=[reflection[@"vertex_input"] mutableCopy];
+  vi[@"attributes"]=@[];br[@"vertex_input"]=vi;
+  [ve setValue:br forKey:@"reflection"];error=nil;
+  assert(!A5MaliComposeDynamicPipeline(d,&error)&&[error.localizedDescription containsString:@"vertex.reflected-Metal-packing"]);
+  [ve setValue:reflection forKey:@"reflection"];
+ }
+
+ printf("PASS exact 58-constant zero-input fetch VS%u (4 native submissions, including 2 injected fence failures): production MTLLibrary/newFunction -> zero-input pipeline -> real emitter; no GPU execution\n",vertexProfile);
 }return 0;}

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #import "A5MaliRestrictedDevice.h"
+#import "A5MaliResourceDependencies.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -27,8 +28,8 @@ enum { A5MaliMaxPrivateBufferLength = 0x800000,
 - (void)makeAliasable;
 /* No stable GPU virtual address/argument-buffer ABI is exported. */
 @property (nonatomic, readonly) MTLGPUAddress gpuAddress;
-/* Audited iOS16 ResourceSPI. Completion/opaque IDs have no exported backend
- * contract: isComplete reports NO, waiting raises, allocationID is invalid0. */
+/* Completion follows all committed work naming this allocation or an alias.
+ * No opaque GPU allocation ID is exported. */
 @property (nonatomic, readonly) uint64_t allocationID,protectionOptions,unfilteredResourceOptions;
 @property (nonatomic) int responsibleProcess;
 - (BOOL)isPurgeable;
@@ -43,6 +44,8 @@ enum { A5MaliMaxPrivateBufferLength = 0x800000,
 @property (nonatomic, readonly, copy) NSArray<NSDictionary *> *debugMarkers;
 - (void)didModifyRange:(NSRange)range;
 - (nullable void *)contents;
+/* Raw storage identity only; never waits on a command or takes the device lock. */
+- (nullable void *)a5StorageContents;
 /* Explicit driver transfers; no public shared contents pointer is fabricated.
  * A failure may follow earlier successful chunks; callers must discard failed
  * uploads rather than submit the partially updated resource. */
@@ -55,6 +58,9 @@ enum { A5MaliMaxPrivateBufferLength = 0x800000,
  * serialized with uploads and all jobs on this connection. */
 - (kern_return_t)readBytesForSubmission:(void *)bytes offset:(NSUInteger)offset
     length:(NSUInteger)length client:(A5MaliClient *)client;
+/* Internal CPU row transfer after the caller waited outside its texture lock. */
+- (kern_return_t)a5TransferBytesWithoutWaiting:(void *)bytes offset:(NSUInteger)offset
+    length:(NSUInteger)length write:(BOOL)write;
 - (nullable id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
                                            offset:(NSUInteger)offset
                                       bytesPerRow:(NSUInteger)bytesPerRow;
@@ -114,6 +120,12 @@ enum { A5MaliMaxPrivateBufferLength = 0x800000,
 
 /* Physical identity/range comparison shared by buffer and texture SPI. */
 BOOL A5MaliResourcesAlias(id a,id b);
+/* Retain the resource and project its current backing into root/range and
+ * host/IOSurface identities. Recompute at commit; no bytes are copied here. */
+A5MaliStorageIdentity * _Nullable A5MaliStorageForResource(id resource);
+A5MaliResourceDependencies *A5MaliDependenciesForDevice(A5MaliRestrictedDevice *device);
+BOOL A5MaliResourceIsComplete(id resource);
+void A5MaliWaitForResource(id resource,A5MaliResourceAccess access);
 
 /* Valid sizes describe driver allocations, not heap allocation support. */
 MTLSizeAndAlign A5MaliPrivateBufferSizeAndAlign(NSUInteger length,

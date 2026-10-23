@@ -10,6 +10,7 @@
 #include "A5ZeroFetchFixtureData.inc"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 enum { BASE=0x02000000, OUTPUT=0x3e000 };
 static unsigned vertex(uint8_t*v,unsigned n,float x,float y){
@@ -20,22 +21,33 @@ static unsigned quad(uint8_t*v,unsigned n,float left,float right){
  n=vertex(v,n,left,32);n=vertex(v,n,right,0);return vertex(v,n,right,32);
 }
 int main(int argc,char**argv){
- assert(argc==3);unsigned overlapping=argv[2][0]=='1';
+ assert(argc==3||argc==4);unsigned overlapping=argv[2][0]=='1';
+ unsigned vertexProfile=argc==4?(unsigned)strtoul(argv[3],NULL,10):603;assert(vertexProfile==602||vertexProfile==603);
  const A5MaliCompiledProfile*old=NULL;
  for(unsigned i=0;i<sizeof(kA5MaliCompiledProfiles)/sizeof(kA5MaliCompiledProfiles[0]);i++)
-  if(kA5MaliCompiledProfiles[i].profileID==603)old=kA5MaliCompiledProfiles+i;
+  if(kA5MaliCompiledProfiles[i].profileID==vertexProfile)old=kA5MaliCompiledProfiles+i;
  assert(old);
  A5MaliCompiledPass pass={.passID=A5MaliDynamicProfileID,.vertex=old->passes[0].vertex,
   .fragment={a5_zero_fetch_code,sizeof(a5_zero_fetch_code),A5_ZERO_FETCH_TAG,A5_ZERO_FETCH_REGS,0,0,A5_ZERO_FETCH_SHA}};
- const A5MaliCompiledResource resources[]={
-  {1,1,2,0,1,1,0,64,0,0},{1,1,3,1,2,1,0,16,0,4},
-  {2,1,1,1,2,1,0,168,0,64},{2,4,0,3,0,1,0,0,0,0}};
- const A5MaliCompiledPushField pushes[]={
-  {1,1,2,0,4,0},{1,1,3,4,4,0},{2,1,1,64,4,0},{2,2,0,68,4,0x2222}};
+ A5MaliCompiledResource resources[4];A5MaliCompiledPushField pushes[4];
+ unsigned resourceCount=0,pushCount=0;
+ for(unsigned i=0;i<old->resourceCount;i++)if(old->resources[i].stage==1)resources[resourceCount++]=old->resources[i];
+ for(unsigned i=0;i<old->pushFieldCount;i++)if(old->pushFields[i].stage==1)pushes[pushCount++]=old->pushFields[i];
+ resources[resourceCount++]=(A5MaliCompiledResource){2,1,1,1,2,1,0,168,0,64};
+ resources[resourceCount++]=(A5MaliCompiledResource){2,4,0,3,0,1,0,0,0,0};
+ pushes[pushCount++]=(A5MaliCompiledPushField){2,1,1,64,4,0};
+ pushes[pushCount++]=(A5MaliCompiledPushField){2,2,0,68,4,0x2222};
  A5MaliCompiledProfile p=*old;p.profileID=A5MaliDynamicProfileID;
  p.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
-  A5MaliProfileFramebufferFetch|A5MaliProfileFragmentNoInputs;
- p.passes=&pass;p.resources=resources;p.resourceCount=4;p.pushFields=pushes;p.pushFieldCount=4;
+  A5MaliProfileFramebufferFetch|A5MaliProfileFragmentNoInputs|
+  (vertexProfile==602?A5MaliProfileVertexColorOnly:0);
+ p.passes=&pass;p.resources=resources;p.resourceCount=resourceCount;p.pushFields=pushes;p.pushFieldCount=pushCount;
+ A5MaliCompiledAttachmentContract contracts[2];
+ for(unsigned c=0;c<2;c++)for(unsigned a=0;a<8;a++){
+  unsigned over=c==1&&a==0;
+  contracts[c].attachments[a]=(A5MaliCompiledAttachmentState){15,over,0,0,1,over?5u:0u,1,over?5u:0u};
+ }
+ p.attachmentContracts=contracts;p.attachmentContractCount=2;
  p.immutableSamplers=NULL;p.immutableSamplerCount=0;
  assert(A5MaliDynamicRuntimeProfileSupported(&p));
  uint8_t vertices[12*48]={0};unsigned count=0;

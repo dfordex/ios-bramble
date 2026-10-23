@@ -639,3 +639,11 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Read-only evidence:** SYSTEMflush90/all1,023,694recordedbytes;9,608decodedlines, nooverwrite/kernelpanic; CPU4/4/newbundleconfirmed. Fournewcases4096/4096passwithfences/MMU0/guards; total31/35, oldfourfailuresunchanged.
 - **Live blockers remain:** Actualprofile100u16indexed54/offset4848rejectspipeline-or-resource-contractbeforesubmit. Actual2448-bytefragment/cacheacceptedandsameABIas0208, butcombinedpipelineIOgatestillrejects; backboarddabortstwice13/4. TestsuseVS603; actualstartupcreates602/603andfactoryrejectsstatic602. Exactrejectedpairandresourcefieldnotyetcaptured, soneitherisclaimedfixedforliveUI. See[0209readout](docs/a5xelte-0209-log-review.md).
 - **Reference review:** UniXNUNativeMetalc6d29causesgeneralMetaldescriptor/resourcebridgeandactuallinearblurtests. Compareagainstournarrowvertex/samplergates; hardware-specificAdrenopathnotcopied. See[sourcecomparison](docs/a5xelte-unixnu-native-metal-comparison.md). Noimagewrite/rebootduringthisreview.
+
+
+## 2026-10-24 — 0210 integrates three NativeMetal bridge improvements
+
+- **Implementation:** Actual602 color-only vertex ABI plus authenticated reflected stage matching; genuine linear samplers for blur100..108; per-device committed storage dependency tracking across IOSurface/views/no-copy buffer aliases. CPU waits and resource completion follow terminal fences. Uncertain GPU faults quarantine backing memory; pre-submit errors remain reusable.
+- **Local build:** Signed provider,19-file payload preflight (40,637,488 raw /9,833,968 packed), full XNU and31,641,616-byte BOOT pass. Proven loader/ADT unchanged. Suite39 cases includes actual602 ordered fetch and independent fractional-UV linear blur tests. New phone results and live UI remain pending. See[0210 implementation](docs/a5xelte-0210-native-metal-integration.md).
+
+- **Final local gate:** All18 native wrapper binaries and Cortex-A53/iOS API compile pass, including actual IOSurface command-buffer dependency integration. Tests retain backing memory after injected GPU timeout instead of assuming reusable destinations. Kernel transport remains mocked in host tests.

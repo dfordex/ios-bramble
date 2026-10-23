@@ -330,9 +330,9 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
 - (kern_return_t)setOwnerWithIdentity:(uint32_t)identity
 {(void)identity;return kIOReturnUnsupported;}
 - (BOOL)isPurgeable{return [self setPurgeableState:MTLPurgeableStateKeepCurrent]!=MTLPurgeableStateNonVolatile;}
-- (BOOL)isComplete{return NO;}
+- (BOOL)isComplete{return A5MaliResourceIsComplete(self);}
 - (void)waitUntilComplete
-{[NSException raise:NSInternalInconsistencyException format:@"resource-specific GPU completion tracking is unsupported; wait on the command buffer"];}
+{A5MaliWaitForResource(self,A5MaliResourceAccessRead|A5MaliResourceAccessWrite);}
 - (BOOL)doesAliasResource:(id)resource{return A5MaliResourcesAlias(self,resource);}
 - (BOOL)doesAliasAnyResources:(id const __unsafe_unretained *)resources count:(NSUInteger)count
 {
@@ -349,6 +349,7 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
 {
     if(state<MTLPurgeableStateKeepCurrent||state>MTLPurgeableStateEmpty)
         [NSException raise:NSInvalidArgumentException format:@"invalid texture purgeable state"];
+    if(state!=MTLPurgeableStateKeepCurrent)A5MaliWaitForResource(self,A5MaliResourceAccessWrite);
     if(_buffer)return [_buffer setPurgeableState:state];
     if(_parent)return [_parent setPurgeableState:state];
     /* Kernel imports and memoryless leases currently retain their actual
@@ -442,6 +443,7 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
     if(!bytes||stride<line||(r.size.height>1&&stride>(NSUIntegerMax-line)/(r.size.height-1))||
        (image&&image<(r.size.height-1)*stride+line))
         [NSException raise:NSInvalidArgumentException format:@"texture CPU transfer source/destination row bounds invalid"];
+    A5MaliWaitForResource(self,write?A5MaliResourceAccessWrite:A5MaliResourceAccessRead);
     if(_buffer){
         uint64_t start=(uint64_t)l.byteOffset+r.origin.y*l.rowBytes+r.origin.x*_allocation.bytesPerElement;
         uint64_t last=start+(r.size.height-1)*l.rowBytes+line;
@@ -449,8 +451,8 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
         [_cpuLock lock];kern_return_t status=KERN_SUCCESS;
         for(NSUInteger y=0;y<r.size.height;++y){
             void *cpu=(uint8_t *)bytes+y*stride;
-            status=write?[_buffer uploadBytes:cpu offset:(NSUInteger)start+y*l.rowBytes length:line]:
-                [_buffer readBytes:cpu offset:(NSUInteger)start+y*l.rowBytes length:line];
+            status=[_buffer a5TransferBytesWithoutWaiting:cpu offset:(NSUInteger)start+y*l.rowBytes
+                length:line write:write];
             if(status)break;
         }
         [_cpuLock unlock];

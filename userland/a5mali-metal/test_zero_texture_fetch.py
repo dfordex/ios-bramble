@@ -18,7 +18,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('registry', 'mesa-build', 'publication', 'request', 'metallib', 'output'):
         parser.add_argument('--'+name, type=Path, required=True)
+    parser.add_argument('--vertex-publication', type=Path)
+    parser.add_argument('--vertex-request', type=Path)
     a = parser.parse_args()
+    if bool(a.vertex_publication) != bool(a.vertex_request):
+        parser.error('vertex publication and request must be supplied together')
     here = Path(__file__).resolve().parent
     family = here.parent / 'a5xelte-air-translation/families'
     out = a.output.resolve()
@@ -58,7 +62,7 @@ def main():
                'A5MaliRestrictedDevice.m', 'A5MaliMetalAPI.m', 'A5MaliMetalTexture.m',
                'A5MaliNativeTextureOps.m', 'A5MaliShaderCompiledCache.m', 'A5MaliShaderCompileRequest.m',
                'A5MaliMetalLibrary.m', 'A5MaliDynamicShaderCache.m', 'A5MaliDynamicPipeline.m',
-               'A5MaliMetalDeviceResources.m', 'test_zero_texture_fetch.m']
+               'A5MaliMetalDeviceResources.m', 'A5MaliResourceDependencies.m', 'test_zero_texture_fetch.m']
     exe = out / 'fetch-test'
     command = ['clang', '-fobjc-arc', '-fblocks', '-Wall', '-Wextra', '-Werror',
                '-DA5_MALI_HOST_TEST', '-DA5_MALI_REQUIRE_COMPILED_REGISTRY=1',
@@ -71,7 +75,20 @@ def main():
                '-framework', 'Metal', '-o', str(exe)]
     subprocess.run(command, check=True)
     env = dict(os.environ, A5_MALI_STOCK_QUARTZCORE_METALLIB=str(a.metallib.resolve()))
-    subprocess.run([str(exe), str(a.request.resolve())], env=env, check=True)
+    for vertex in ('602', '603'):
+        subprocess.run([str(exe), str(a.request.resolve())], env=dict(env, A5_TEST_VERTEX_PROFILE=vertex), check=True)
+    if a.vertex_request:
+        vertex_identity=json.loads(a.vertex_request.read_text())['request_id']
+        vertex_stage=publication / vertex_identity
+        if vertex_stage.exists():
+            shutil.rmtree(vertex_stage)
+        shutil.copytree(a.vertex_publication.resolve(), vertex_stage)
+        vertex_stage.chmod(0o755)
+        for path in vertex_stage.iterdir():
+            if path.is_file():
+                path.chmod(0o444)
+        subprocess.run([str(exe), str(a.request.resolve())], env=dict(env,
+            A5_TEST_VERTEX_PROFILE='602', A5_TEST_DYNAMIC_VERTEX_REQUEST=str(a.vertex_request.resolve())), check=True)
     print('PASS actual zero-texture ordered-fetch factory/emitter and malformed native IO; GPU pixels not tested')
 
 

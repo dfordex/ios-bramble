@@ -114,7 +114,7 @@ xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -mcpu=cortex-a53 -march=a
     "$src_dir/A5MaliBridge.c" "$src_dir/A5MaliNative.c" "$src_dir/A5MaliNativeUpload.c" "$src_dir/A5MaliCommandBuffer.m" \
     "$src_dir/A5MaliRestrictedDevice.m" "$src_dir/A5MaliMetalAPI.m" "$src_dir/A5MaliMetalTexture.m" "$src_dir/A5MaliNativeTextureOps.m" \
     "$src_dir/A5MaliShaderCompiledCache.m" "$src_dir/A5MaliDynamicShaderCache.m" "$src_dir/A5MaliDynamicPipeline.m" "$src_dir/A5MaliShaderCompileRequest.m" "$src_dir/A5MaliMetalLibrary.m" \
-    "$src_dir/A5MaliMetalDeviceResources.m" \
+    "$src_dir/A5MaliMetalDeviceResources.m" "$src_dir/A5MaliResourceDependencies.m" \
     "$src_dir/A5MaliMetalUnsupportedSPI.m" \
     "$src_dir/A5MaliDiscoveryAudit.m" "$src_dir/A5ProtocolRuntimeAudit.m" "$plugin_dir/A5MaliMetalDevice.m" \
     -framework Foundation -framework IOSurface -framework IOKit \

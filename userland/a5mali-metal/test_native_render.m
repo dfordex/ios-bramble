@@ -222,12 +222,9 @@ int main(void)
         t.badFormat=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);
         [b commit];[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusError&&t.queries==2&&t.submits==1);
-        t.badFormat=NO;t.badFence=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);
-        assert(![b commitAndWaitUntilSubmitted]);[b waitUntilCompleted];
-        assert(b.status==MTLCommandBufferStatusError&&t.queries==3&&t.submits==2);
-        t.badFence=NO;t.badDestinationRead=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);
+        t.badFormat=NO;t.badDestinationRead=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);
         [b commit];[b waitUntilCompleted];
-        assert(b.status==MTLCommandBufferStatusError&&t.queries==4&&t.submits==2);
+        assert(b.status==MTLCommandBufferStatusError&&t.queries==3&&t.submits==1);
         /* The SPI waits for work on an independently configured async queue,
          * rather than returning a fabricated submission/completion status. */
         A5MaliMetalQueue *asyncQueue=[device newCommandQueue];
@@ -243,7 +240,12 @@ int main(void)
         [combinedEncoder setFragmentTexture:nil atTextureIndex:3 samplerState:nil atSamplerIndex:0];
         [combinedEncoder setFragmentTexture:source atTextureIndex:3 samplerState:nil atSamplerIndex:16];
         [combinedEncoder endEncoding];assert(![combined commitAndWaitUntilSubmitted]);
-        assert(combined.status==MTLCommandBufferStatusError&&t.queries==4&&t.submits==2);
+        assert(combined.status==MTLCommandBufferStatusError&&t.queries==3&&t.submits==1);
+        /* Missing completion fences quarantine all referenced aliases. Run
+         * this last; later commands must never reuse those GPU pages. */
+        t.badDestinationRead=NO;t.badFence=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);
+        assert(![b commitAndWaitUntilSubmitted]);[b waitUntilCompleted];
+        assert(b.status==MTLCommandBufferStatusError&&t.queries==4&&t.submits==2);
         puts("native render: authenticated code, caller binding snapshots, mapping epoch, format checks, fences and unsupported state passed (mock transport)");
     }
     return 0;

@@ -31,7 +31,8 @@ static void rgba_source_to_bgra(uint8_t*dst,const uint8_t*src){
 }
 
 int main(int argc,char**argv){
- if(argc!=3&&argc!=4)return 2;FILE*f=fopen(argv[1],"rb");if(!f)return 2;
+ if(argc<3||argc>5)return 2;
+ int linear=argc==5&&!strcmp(argv[4],"--linear");if(argc==5&&!linear)return 2;FILE*f=fopen(argv[1],"rb");if(!f)return 2;
  if(fread(legacy,1,sizeof(legacy),f)!=sizeof(legacy)||fgetc(f)!=EOF)return 2;fclose(f);
  if(!legacy_source_is_rgba(legacy)){fputs("legacy source must be exact RGBA8 linear64x64 contract\n",stderr);return 2;}
  const A5MaliCompiledProfile*p=NULL;
@@ -42,7 +43,17 @@ int main(int argc,char**argv){
  A5RuntimeDraw d={0};d.profile=p;d.descriptorGPUVA=0x02000000;
  d.source=(A5RuntimeImage){0x03000000,0x4000,64,64,256,80};
  d.destination=(A5RuntimeImage){0x04000000,0x1000,32,32,128,80};
- d.vertexBuffers[1]=(A5RuntimeBuffer){0,192,0,legacy+0xc00};
+ uint8_t vertices[192];memcpy(vertices,legacy+0xc00,sizeof(vertices));
+ if(linear){
+  /* Same positions and indexed topology; fractional source coordinates cross
+   * the left and bottom clamp boundaries and stripe interiors. No expected
+   * framebuffer values enter this input preparation. */
+  for(unsigned i=0;i<4;++i){float uv[2]={(i&1)?62.25f:-1.75f,(i&2)?64.25f:.25f};
+   memcpy(vertices+i*48+16,uv,sizeof(uv));}
+  d.sourceSampler=(A5RuntimeBlurSampler){.valid=1,.minFilter=1,.magFilter=1,
+   .normalizedCoordinates=1,.maxAnisotropy=1};
+ }
+ d.vertexBuffers[1]=(A5RuntimeBuffer){0,192,0,vertices};
  d.vertexBuffers[2]=(A5RuntimeBuffer){0,64,0,(const uint8_t*)mvp};
  d.vertexBuffers[3]=(A5RuntimeBuffer){0,16,0,legacy+0xa40};
  d.fragmentBuffers[1]=(A5RuntimeBuffer){0,32,0,legacy+0xa80};
@@ -50,7 +61,7 @@ int main(int argc,char**argv){
  d.viewportWidth=d.viewportHeight=32;d.viewportFar=1;
  d.scissorWidth=d.scissorHeight=32;d.vertexCount=4;d.primitive=A5RuntimeTriangleStrip;
  uint8_t indexBytes[32]={0};unsigned indexWidth=0;
- if(argc==4){
+ if(argc>=4){
   unsigned bits=(unsigned)strtoul(argv[3],NULL,10);if(bits!=16&&bits!=32)return 2;
   indexWidth=bits/8;const uint32_t indices[]={2,0,1,2,1,3};
   memset(indexBytes,0xa6,sizeof(indexBytes));
@@ -87,5 +98,5 @@ int main(int argc,char**argv){
  rgba_source_to_bgra(out+0x3a000,legacy+0xa000);memset(out+0x3e000,0xcd,0x1000);memset(out+0x3f000,0xa7,0x1000);
  f=fopen(argv[2],"wb");if(!f)return 2;
  if(fwrite(out,1,sizeof(out),f)!=sizeof(out)||fclose(f))return 2;
- printf("Encoded genuine dynamic blur VS offscreen32x32, index width=%u; real runtime descriptors and caller ortho MVP; no GPU execution claim\n",indexWidth);return 0;
+ printf("Encoded genuine dynamic blur VS offscreen32x32, index width=%u; real runtime descriptors and caller ortho MVP; linear=%u; no GPU execution claim\n",indexWidth,linear);return 0;
 }

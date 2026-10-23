@@ -23,7 +23,7 @@ clang -fobjc-arc -fblocks -Wall -Wextra -Werror -DA5_MALI_HOST_TEST \
  "$src/A5MaliBridge.c" "$src/A5MaliNative.c" "$src/A5MaliNativeUpload.c" "$src/A5MaliCommandBuffer.m" \
  "$src/A5MaliRestrictedDevice.m" "$src/A5MaliMetalAPI.m" "$src/A5MaliMetalTexture.m" "$src/A5MaliNativeTextureOps.m" \
  "$src/A5MaliShaderCompiledCache.m" "$src/A5MaliShaderCompileRequest.m" "$src/A5MaliMetalLibrary.m" \
- "$src/A5MaliDynamicShaderCache.m" "$src/A5MaliDynamicPipeline.m" "$src/A5MaliMetalDeviceResources.m" \
+ "$src/A5MaliDynamicShaderCache.m" "$src/A5MaliDynamicPipeline.m" "$src/A5MaliMetalDeviceResources.m" "$src/A5MaliResourceDependencies.m" \
  "$src/test_native_buffer_texture603.m" "$out/runtime-encode.o" "$out/runtime-misc.o" \
  "$out/runtime-clear.o" "$out/runtime-path.o" "$out/runtime-resource.o" \
  -framework Foundation -framework IOSurface -framework IOKit -framework Metal -o "$out/test"

@@ -214,12 +214,16 @@ int main(void)
       assert(b.status==MTLCommandBufferStatusError && t.queries==3 && t.submits==2);t.badAuxSpan=NO;
       t.badAuxAlias=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);[b commit];[b waitUntilCompleted];
       assert(b.status==MTLCommandBufferStatusError && t.queries==4 && t.submits==2);t.badAuxAlias=NO;
+      t.failImport=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);[b commit];[b waitUntilCompleted];
+      assert(b.status==MTLCommandBufferStatusError && t.queries==4 && t.submits==2);t.failImport=NO;
+      /* Last use: actual missing fences pin/quarantine the final auxiliary. */
       t.badFence=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);[b commit];[b waitUntilCompleted];
       assert(b.status==MTLCommandBufferStatusError && t.queries==5 && t.submits==3);t.badFence=NO;
-      t.failImport=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);[b commit];[b waitUntilCompleted];
-      assert(b.status==MTLCommandBufferStatusError && t.queries==5 && t.submits==3);t.failImport=NO;
+
     }
-    for(unsigned i=0;i<t.imports;++i)assert(!t.imported[i]);
+    assert(t.imports>0);
+    for(unsigned i=0;i+1<t.imports;++i)assert(!t.imported[i]);
+    assert(t.imported[t.imports-1]); /* uncertain GPU access must retain pages */
     printf("profile100 absent RT1: exact factory, real IOSurface, query3/read7/write2, caller RT1, bounds/alias/fence/allocation gates passed\n");
  }
  return 0;

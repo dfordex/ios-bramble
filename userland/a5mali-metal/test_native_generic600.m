@@ -258,8 +258,9 @@ static int run(uint32_t profileID)
         [command commit];[command waitUntilCompleted];
         assert(command.status==MTLCommandBufferStatusError&&command.error.code==kIOReturnTimeout);
         assert(s.queries==2&&s.submits==2&&!command.privateBuffer.completedFence.fragmentFence);
+        assert(!A5MaliResourceIsComplete(target)); /* Failed DMA storage remains quarantined. */
     }
-    assert(s.releases==1);
+    assert(s.releases==0); /* Timeout pages retained, matching kernel poison policy. */
     printf("native generic%u: exact fragment specialization, authenticated native pair, original packing0, CPU snapshots, RT0-only query/submit, constant rejection and terminal/error fences passed (mock transport; no GPU pixels claimed)\n",profileID);
     return 0;
 }

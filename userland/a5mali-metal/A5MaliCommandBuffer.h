@@ -64,6 +64,8 @@ typedef kern_return_t (^A5MaliNativeWork)(A5MaliClient *client, A5MaliFence *fen
 /* 0151 completes each job synchronously; this call serializes and waits. */
 - (BOOL)commitAndWait:(NSError * _Nullable * _Nullable)error;
 @property (nonatomic, readonly) A5MaliFence completedFence;
+/* Legacy batch/copy transports do not expose the native Submit18 outcome. */
+- (BOOL)usesLegacyGPUWork;
 @end
 
 NS_ASSUME_NONNULL_END

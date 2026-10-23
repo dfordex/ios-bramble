@@ -54,7 +54,7 @@ static atomic_uint callbackDiagnosticCount,waitDiagnosticCount;
 static atomic_uint queueConfigDiagnosticCount;
 static atomic_uint indexedDrawDiagnosticCount;
 #if A5_MALI_NATIVE_RENDER
-static atomic_uint inputImageDiagnosticCount,inputVertexDiagnosticCount,inputUVDiagnosticCount;
+static atomic_uint inputImageDiagnosticCount,inputVertexDiagnosticCount,inputUVDiagnosticCount,blurResourceDiagnosticCount;
 #endif
 static void logQueuePhase(const char *phase,unsigned bufferID,BOOL created,atomic_uint *counter,unsigned limit)
 {
@@ -78,6 +78,25 @@ static void logIndexedRejection(unsigned bufferID,uint32_t profile,const char *r
         (unsigned long)offset,(unsigned long)b.length,
         indexType==MTLIndexTypeUInt16?2:indexType==MTLIndexTypeUInt32?4:0,valid&&b.readyForRead,reason);
 }
+
+#if A5_MALI_NATIVE_RENDER
+static BOOL rejectBlurResource(unsigned cb,uint32_t profile,const char *reason,
+    A5MaliMetalTexture *source,A5MaliMetalTexture *target,A5MaliSamplerState *sampler)
+{
+    if(diagnosticTake(&blurResourceDiagnosticCount,48)){
+        MTLSamplerDescriptor *d=sampler.descriptor;
+        fprintf(stderr,"A5XELTE Metal blur resources: cb=%u profile=%u reason=%s source=%lu/%lux%lu usage=%lu buffer=%u surface=%u target=%lu/%lux%lu usage=%lu min=%lu mag=%lu mip=%lu address=%lu/%lu/%lu norm=%u anis=%lu compare=%lu lod=%g/%g\n",
+            cb,profile,reason,(unsigned long)source.pixelFormat,(unsigned long)source.width,(unsigned long)source.height,
+            (unsigned long)source.usage,source.buffer!=nil,source.privateSurface!=nil,
+            (unsigned long)target.pixelFormat,(unsigned long)target.width,(unsigned long)target.height,
+            (unsigned long)target.usage,(unsigned long)d.minFilter,(unsigned long)d.magFilter,(unsigned long)d.mipFilter,
+            (unsigned long)d.sAddressMode,(unsigned long)d.tAddressMode,(unsigned long)d.rAddressMode,
+            d.normalizedCoordinates,(unsigned long)d.maxAnisotropy,(unsigned long)d.compareFunction,
+            (double)d.lodMinClamp,(double)d.lodMaxClamp);
+    }
+    return NO;
+}
+#endif
 
 static NSError *metalError(kern_return_t code)
 {
@@ -238,11 +257,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 
 static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,A5MaliMetalTexture *b)
 {
-    if(a==b)return YES;
-    if(a.buffer && a.buffer==b.buffer)return YES;
-    uint64_t at=a.privateSurface.resource.token,bt=b.privateSurface.resource.token;
-    return (at && at==bt) || (a.privateSurface.iosurface && b.privateSurface.iosurface &&
-        IOSurfaceGetID(a.privateSurface.iosurface)==IOSurfaceGetID(b.privateSurface.iosurface));
+    return A5MaliResourcesAlias(a,b);
 }
 
 @interface A5MaliMetalQueue () {
@@ -271,6 +286,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     NSMutableArray<MTLCommandBufferHandler> *_completed;
     NSMutableArray<A5MaliTexturePassBacking *> *_memorylessPassBackings;
     NSMutableArray<NSString *> *_debugGroups;
+    NSMutableDictionary<NSValue *,NSMutableDictionary *> *_resourceUses;
 }
 - (instancetype)initWithQueue:(A5MaliMetalQueue *)queue
                 privateBuffer:(A5MaliCommandBuffer *)buffer;
@@ -282,6 +298,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 - (void)noteQueuedDraw;
 - (void)noteBlitCommand;
 - (void)finishEncoding;
+- (void)recordResource:(id)resource access:(A5MaliResourceAccess)access;
 - (BOOL)encodeNativeClear:(A5MaliMetalTexture *)target color:(MTLClearColor)color;
 @end
 
@@ -313,6 +330,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 }
 - (instancetype)initWithBuffer:(A5MaliMetalBuffer *)buffer
                    attachments:(NSDictionary<NSNumber *,A5MaliMetalTexture *> *)attachments;
+- (void)recordDrawResources;
 - (BOOL)encodeCompiledDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count;
 - (BOOL)encodeCompiledDraw:(MTLPrimitiveType)primitiveType vertexCount:(NSUInteger)count
     indexBinding:(nullable A5MaliBufferBinding *)indexBinding indexCount:(NSUInteger)indexCount
@@ -594,6 +612,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         _memorylessPassBackings = [NSMutableArray new];
         _debugGroups = [NSMutableArray new];
         _condition = [NSCondition new];
+        _resourceUses = [NSMutableDictionary new];
         _status = MTLCommandBufferStatusNotEnqueued;
     }
     return self;
@@ -663,6 +682,21 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         _diagnosticID,(unsigned)code,sel_getName(selector));
 }
 - (void)finishEncoding { _encoderOpen = NO; }
+- (void)recordResource:(id)resource access:(A5MaliResourceAccess)access
+{
+    if(!resource)return;
+    NSValue *key=[NSValue valueWithPointer:(__bridge const void *)resource];
+    [_condition lock];
+    if(_status<MTLCommandBufferStatusCommitted){
+        NSMutableDictionary *use=_resourceUses[key];
+        if(use)use[@"access"]=@([use[@"access"] unsignedIntegerValue]|access);
+        else if(_resourceUses.count<4096)_resourceUses[key]=
+            [@{@"resource":resource,@"access":@(access)}mutableCopy];
+        else if(!_error)_error=metalError(kIOReturnNoResources);
+    }
+    [_condition unlock];
+}
+
 
 - (void)rejectUnsupportedCommand:(SEL)selector
 {
@@ -821,6 +855,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 #if !A5_MALI_NATIVE_RENDER
     (void)target;(void)color;return NO;
 #else
+    [self recordResource:target access:A5MaliResourceAccessWrite];
     unsigned diagnosticID=_diagnosticID;
     return [_privateBuffer encodeNativeWork:^kern_return_t(A5MaliClient*client,A5MaliFence*fence){
         A5NativeQueryRequest query={.header={1,sizeof(query),0,0}};
@@ -873,15 +908,50 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     BOOL submit = !_error;
     kern_return_t priorError=(kern_return_t)_error.code;
     [_condition unlock];
+    A5MaliResourceDependencies *dependencies=A5MaliDependenciesForDevice(self.device);
+    A5MaliDependencyTicket *ticket=nil;
+    if(submit){
+        @try{
+            NSMutableArray<A5MaliResourceUse *> *uses=[NSMutableArray new];
+            for(NSDictionary *record in _resourceUses.allValues){
+                A5MaliStorageIdentity *storage=A5MaliStorageForResource(record[@"resource"]);
+                if(!storage)[NSException raise:NSInvalidArgumentException format:@"unknown encoded resource"];
+                [uses addObject:[[A5MaliResourceUse alloc]initWithStorage:storage
+                    access:[record[@"access"] unsignedIntegerValue]]];
+            }
+            ticket=[dependencies beginCommand:self uses:uses];
+        }@catch(NSException *exception){
+            (void)exception;submit=NO;priorError=kIOReturnNotReady;
+            [_condition lock];if(!_error)_error=metalError(priorError);[_condition unlock];
+        }
+    }
     BOOL diagnose=diagnosticTake(&commitDiagnosticCount,64);
     if(diagnose)fprintf(stderr,"A5XELTE Metal commit: cb=%u phase=begin submit=%u first_error=%x render_encoders=%lu blit_encoders=%lu draw_calls=%lu queued_draws=%lu clear_commands=%lu blit_commands=%lu\n",
         _diagnosticID,submit,(unsigned)priorError,(unsigned long)_renderEncoders,(unsigned long)_blitEncoders,
         (unsigned long)_drawCalls,(unsigned long)_queuedDraws,(unsigned long)_clearCommands,(unsigned long)_blitCommands);
     [_queue submitWork:^{
     NSError *submissionError = nil;
-    if (submit) {
-        if (![_privateBuffer commitAndWait:&submissionError])
-            submissionError = submissionError ?: metalError(kIOReturnError);
+    @try{
+        A5MaliBeginNativeSubmissionTracking();
+        if(submit){
+            /* Cross-queue storage dependencies precede the device lock. The
+             * typed backend retires every native draw synchronously. */
+            [dependencies waitForDependenciesAndMarkExecuting:ticket];
+            if(![_privateBuffer commitAndWait:&submissionError])
+                submissionError=submissionError?:metalError(kIOReturnError);
+        }
+    }@catch(NSException *exception){
+        (void)exception;submissionError=metalError(kIOReturnNotReady);
+    }@finally{
+        if(ticket){
+            /* A failed submission may have poisoned/pinned the kernel queue.
+             * Never advertise those aliased pages as safely completed. */
+            if(submissionError && (A5MaliNativeSubmissionMayBeActive() ||
+                [_privateBuffer usesLegacyGPUWork] ||
+                ![[self.device privateDevice]supportsNativePrograms]))[dependencies failTicket:ticket];
+            else [dependencies finishTicket:ticket];
+        }
+        [_resourceUses removeAllObjects];
     }
     for(A5MaliTexturePassBacking *lease in _memorylessPassBackings)[lease invalidateAfterCompletion];
     [_memorylessPassBackings removeAllObjects];
@@ -983,6 +1053,19 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 @end
 
 @implementation A5MaliMetalRenderEncoder
+- (void)recordDrawResources
+{
+    for(A5MaliMetalTexture *target in _attachments.allValues)
+        [_buffer recordResource:target access:A5MaliResourceAccessRead|A5MaliResourceAccessWrite];
+    for(A5MaliMetalTexture *image in _textures.allValues)
+        [_buffer recordResource:image access:A5MaliResourceAccessRead];
+    if(_source)[_buffer recordResource:_source access:A5MaliResourceAccessRead];
+    if(_inactiveColor1)[_buffer recordResource:_inactiveColor1 access:A5MaliResourceAccessRead];
+    for(NSDictionary *bindings in @[_vertexBindings,_fragmentBindings])
+        for(A5MaliBufferBinding *binding in bindings.allValues)
+            if(binding.buffer)[_buffer recordResource:binding.buffer access:A5MaliResourceAccessRead];
+}
+
 
 - (instancetype)initWithBuffer:(A5MaliMetalBuffer *)buffer
                    attachments:(NSDictionary<NSNumber *,A5MaliMetalTexture *> *)attachments
@@ -1204,27 +1287,34 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     A5MaliMetalTexture *source=_textures[@3], *destination=_attachments[@0];
     A5MaliSamplerState *sampler=_samplers[@0];
     MTLSamplerDescriptor *sd=sampler.descriptor;
+    A5RuntimeBlurSampler sourceSampler={.valid=1,.minFilter=(uint32_t)sd.minFilter,
+        .magFilter=(uint32_t)sd.magFilter,.mipFilter=(uint32_t)sd.mipFilter,
+        .sAddressMode=(uint32_t)sd.sAddressMode,.tAddressMode=(uint32_t)sd.tAddressMode,
+        .rAddressMode=(uint32_t)sd.rAddressMode,.normalizedCoordinates=sd.normalizedCoordinates,
+        .maxAnisotropy=(uint32_t)sd.maxAnisotropy,.compareEnabled=sd.compareFunction!=MTLCompareFunctionNever,
+        .lodMinClamp=sd.lodMinClamp,.lodMaxClamp=sd.lodMaxClamp};
     MTLViewport viewport=_hasViewport?_viewport:
         (MTLViewport){0,0,destination.width,destination.height,0,1};
+    const char *resourceReason=NULL;
     for(NSNumber *key in _attachments)
-        if(_attachments[key].pixelFormat!=profile->colorFormats[key.unsignedIntegerValue])return NO;
-    if (!source || !destination || source==destination || source.device!=_buffer.device ||
-        (source.privateSurface.iosurface && destination.privateSurface.iosurface &&
-         IOSurfaceGetID(source.privateSurface.iosurface)==IOSurfaceGetID(destination.privateSurface.iosurface)) ||
-        source.pixelFormat!=MTLPixelFormatBGRA8Unorm ||
-        destination.pixelFormat!=profile->colorFormats[0] ||
-        !(destination.usage&MTLTextureUsageRenderTarget) ||
-        !sampler || sampler.device!=_buffer.device ||
-        sd.minFilter!=MTLSamplerMinMagFilterNearest || sd.magFilter!=MTLSamplerMinMagFilterNearest ||
-        sd.mipFilter!=MTLSamplerMipFilterNotMipmapped || !sd.normalizedCoordinates ||
-        sd.sAddressMode!=MTLSamplerAddressModeClampToEdge ||
-        sd.tAddressMode!=MTLSamplerAddressModeClampToEdge ||
-        sd.rAddressMode!=MTLSamplerAddressModeClampToEdge || sd.maxAnisotropy!=1 ||
-        sd.compareFunction!=MTLCompareFunctionNever || sd.lodMinClamp!=0 ||
-        isnan(sd.lodMaxClamp) || sd.lodMaxClamp<0 ||
-        ((profile->flags&A5MaliProfileFixedViewport) &&
-         (viewport.originX!=0 || viewport.originY!=0 || viewport.width!=1080 ||
-          viewport.height!=1920 || viewport.znear!=0 || viewport.zfar!=1))) return NO;
+        if(_attachments[key].pixelFormat!=profile->colorFormats[key.unsignedIntegerValue])resourceReason="attachment-format";
+    if(!resourceReason){
+        if(!source||!destination)resourceReason="missing-image";
+        else if(source.device!=_buffer.device||destination.device!=_buffer.device)resourceReason="image-device";
+        else if(textureBackingAliases(source,destination))resourceReason="image-storage-alias";
+        else if(source.pixelFormat!=MTLPixelFormatBGRA8Unorm)resourceReason="source-format";
+        else if(!source.privateSurface||!destination.privateSurface)resourceReason="image-backing";
+        else if(destination.pixelFormat!=profile->colorFormats[0])resourceReason="target-format";
+        else if(!(destination.usage&MTLTextureUsageRenderTarget))resourceReason="target-usage";
+        else if(!sampler||sampler.device!=_buffer.device)resourceReason="sampler-device";
+        else if(!A5MaliRuntimeBlurSamplerSupported(&sourceSampler))resourceReason="sampler-state";
+        else if(profile->profileID==99&&(sourceSampler.minFilter||sourceSampler.magFilter))resourceReason="unverified-DS4-linear";
+        else if((profile->flags&A5MaliProfileFixedViewport)&&
+            (viewport.originX!=0||viewport.originY!=0||viewport.width!=1080||viewport.height!=1920||
+             viewport.znear!=0||viewport.zfar!=1))resourceReason="fixed-viewport";
+    }
+    if(resourceReason)return rejectBlurResource(_buffer.diagnosticID,profile->profileID,
+        resourceReason,source,destination,sampler);
 
     A5MaliMetalTexture *auxiliary=nil;
     if(pipeline.suppliesInactiveColor1){
@@ -1257,7 +1347,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if (r->kind!=A5MaliResourceBuffer) continue;
         if (r->metalIndex>=31 || !r->uniformBytes || r->windowOffset ||
             (r->flags&A5MaliResourceWrite) ||
-            (r->stage!=A5MaliStageVertex && r->stage!=A5MaliStageFragment)) return NO;
+            (r->stage!=A5MaliStageVertex && r->stage!=A5MaliStageFragment)) return rejectBlurResource(_buffer.diagnosticID,profile->profileID,"uniform-contract",source,destination,sampler);
         NSUInteger stage=r->stage==A5MaliStageFragment;
         NSUInteger required=MAX(windows[stage][@(r->metalIndex)].unsignedIntegerValue,r->uniformBytes);
         windows[stage][@(r->metalIndex)]=@(required);
@@ -1266,7 +1356,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         for (NSNumber *slot in windows[stage]) {
             A5MaliBufferBinding *b=bindings[stage][slot];
             if (!b || b.device!=_buffer.device || b.length<windows[stage][slot].unsignedIntegerValue ||
-                (b.buffer && !b.buffer.readyForRead)) return NO;
+                (b.buffer && !b.buffer.readyForRead)) return rejectBlurResource(_buffer.diagnosticID,profile->profileID,"uniform-contract",source,destination,sampler);
         }
     MTLScissorRect scissor=_scissor;
     BOOL sourceOver=pipeline.sourceOver;
@@ -1331,7 +1421,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         logNativePhase(diagnosticID,"blur-query17",profile->profileID,result);
         if(result)return result;
         A5MaliMetalTexture *images[2]={source,destination};
-        A5RuntimeDraw draw={.profile=profile,.descriptorGPUVA=mapped.jobVA,
+        A5RuntimeDraw draw={.profile=profile,.descriptorGPUVA=mapped.jobVA,.sourceSampler=sourceSampler,
             .vertexCount=(uint32_t)submittedVertexCount,
             .primitive=primitiveType==MTLPrimitiveTypeTriangle?A5RuntimeTriangle:A5RuntimeTriangleStrip,
             .blend=sourceOver?A5RuntimeBlendPremultipliedSourceOver:A5RuntimeBlendCopy,
@@ -1782,13 +1872,13 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     if ([_pipeline isKindOfClass:[A5MaliCompiledPipeline class]]) {
         if (_ended || vertexStart || ![self encodeCompiledDraw:primitiveType vertexCount:vertexCount])
             [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];
-        else { _hasDraw=YES; [_buffer noteQueuedDraw]; }
+        else { _hasDraw=YES; [self recordDrawResources];[_buffer noteQueuedDraw]; }
         return;
     }
     if (_ended || _hasDraw || primitiveType != MTLPrimitiveTypeTriangle ||
         vertexStart || vertexCount != 3)
         [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];
-    else _hasDraw = YES;
+    else { _hasDraw=YES;[self recordDrawResources]; }
 }
 - (void)drawPrimitives:(MTLPrimitiveType)type vertexStart:(NSUInteger)start
     vertexCount:(NSUInteger)count instanceCount:(NSUInteger)instances
@@ -1832,7 +1922,8 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         [self logIndexedRejection:binding?"pipeline-or-resource-contract":"index-binding" primitive:type
             count:count indexType:indexType buffer:indexBuffer offset:offset];
         [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];
-    }else { _hasDraw=YES;[_buffer noteQueuedDraw]; }
+    }else { _hasDraw=YES;[self recordDrawResources];
+        [_buffer recordResource:indexBuffer access:A5MaliResourceAccessRead];[_buffer noteQueuedDraw]; }
 }
 - (void)drawIndexedPrimitives:(MTLPrimitiveType)type indexCount:(NSUInteger)count
     indexType:(MTLIndexType)indexType indexBuffer:(A5MaliPrivateBuffer *)indexBuffer
@@ -2140,7 +2231,9 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     if (![self validateActiveForSelector:_cmd] || ![self validateTexture:texture selector:_cmd]) return;
     if(texture.mipmapLevelCount>1 && !A5MaliEncodeTextureMipmaps([_buffer privateBuffer],texture))
         [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];
-    else if(texture.mipmapLevelCount>1)[_buffer noteBlitCommand];
+    else if(texture.mipmapLevelCount>1){
+        [_buffer recordResource:texture access:A5MaliResourceAccessRead|A5MaliResourceAccessWrite];
+        [_buffer noteBlitCommand];}
 }
 - (void)optimizeContentsForGPUAccess:(A5MaliMetalTexture *)texture
 {
@@ -2256,7 +2349,8 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(!A5MaliEncodeTextureCopy([_buffer privateBuffer],sourceTexture,sourceLevel,sourceOrigin,
             sourceSize,destinationTexture,destinationLevel,destinationOrigin))
             [_buffer markEncodingError:kIOReturnBadArgument selector:_cmd];
-        else [_buffer noteBlitCommand];
+        else { [_buffer recordResource:sourceTexture access:A5MaliResourceAccessRead];
+            [_buffer recordResource:destinationTexture access:A5MaliResourceAccessWrite];[_buffer noteBlitCommand]; }
         return;
     }
     if(sourceLevel||destinationLevel||sourceTexture.mipmapLevelCount!=1||destinationTexture.mipmapLevelCount!=1||
@@ -2271,7 +2365,8 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     if(![[_buffer privateBuffer]encodeCopy:sourceTexture.privateSurface sourceRect:source
         to:destinationTexture.privateSurface destinationRect:destination])
         [_buffer markEncodingError:kIOReturnBadArgument selector:_cmd];
-    else [_buffer noteBlitCommand];
+    else { [_buffer recordResource:sourceTexture access:A5MaliResourceAccessRead];
+            [_buffer recordResource:destinationTexture access:A5MaliResourceAccessWrite];[_buffer noteBlitCommand]; }
 }
 
 /* Required iOS16 blit operations not backed by a typed kernel operation fail

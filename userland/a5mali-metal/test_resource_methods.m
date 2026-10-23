@@ -62,8 +62,8 @@ static void shared(A5MaliRestrictedDevice*d)
  for(NSUInteger i=0;i<b.length;++i)assert(!((uint8_t*)b.contents)[i]);
  assert(!b.heap&&!b.heapOffset&&![b isAliasable]&&!b.gpuAddress);
  assert(!b.allocationID&&!b.protectionOptions&&b.unfilteredResourceOptions==b.resourceOptions);
- b.responsibleProcess=123;assert(b.responsibleProcess==123&&[b setOwnerWithIdentity:7]==kIOReturnUnsupported&&!b.isComplete);
- BOOL unsupported=NO;@try{[b waitUntilComplete];}@catch(NSException*e){unsupported=YES;}assert(unsupported);
+ b.responsibleProcess=123;assert(b.responsibleProcess==123&&[b setOwnerWithIdentity:7]==kIOReturnUnsupported&&b.isComplete);
+ [b waitUntilComplete];assert(b.isComplete);
  A5MaliPrivateBuffer*other=[d newBufferWithLength:4096 options:0];id __unsafe_unretained objects[]={other,b};
  assert([b doesAliasResource:b]&&![b doesAliasResource:other]&&[b doesAliasAnyResources:objects count:2]&&![b doesAliasAllResources:objects count:2]);
  assert([b doesAliasAllResources:NULL count:0]&&![b doesAliasAnyResources:NULL count:0]);
@@ -88,7 +88,7 @@ static void alias(A5MaliRestrictedDevice*d)
   assert([t doesAliasResource:b]&&[view doesAliasResource:t]&&[b doesAliasResource:view]);
   A5MaliMetalTexture*separate=(id)[b newTextureWithDescriptor:desc() offset:1024 bytesPerRow:64];assert(separate&&![t doesAliasResource:separate]);
   A5MaliPrivateBuffer*externalOverlap=[d newBufferWithBytesNoCopy:p length:4096 options:0 deallocator:nil];assert(externalOverlap&&[b doesAliasResource:externalOverlap]);
-  assert(!t.isComplete&&[t setOwnerWithIdentity:0]==kIOReturnUnsupported);
+  assert(t.isComplete&&[t setOwnerWithIdentity:0]==kIOReturnUnsupported);
   t.responsibleProcess=321;assert(t.responsibleProcess==321&&!t.protectionOptions&&!t.allocationID&&!t.gpuHandle&&t.numFaces==1&&!t.rotation&&!t.isCompressed&&!t.compressionFeedback&&!t.compressionFootprint&&!t.isDrawable);
   MTLTextureSwizzleChannels channels=t.swizzle;uint32_t key=0;memcpy(&key,&channels,sizeof(key));assert(t.swizzleKey==key);
   assert(!t.parentTexture&&t.rootResource==(id)b&&!t.iosurfacePlane&&!t.isShareable&&!t.isFramebufferOnly&&!t.isSparse);

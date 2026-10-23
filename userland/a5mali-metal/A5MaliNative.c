@@ -8,6 +8,9 @@ _Static_assert(sizeof(A5NativeQueryRequest)==80,"native query ABI");
 _Static_assert(sizeof(A5NativeQueryResult)==352,"native spans ABI");
 _Static_assert(sizeof(A5NativeSubmitRequest)==120,"native submit ABI");
 _Static_assert(sizeof(A5NativeSubmitResult)==40,"native fences ABI");
+static _Thread_local int submissionMayBeActive;
+void A5MaliBeginNativeSubmissionTracking(void){submissionMayBeActive=0;}
+int A5MaliNativeSubmissionMayBeActive(void){return submissionMayBeActive;}
 static int valid(A5NativeHeader h,size_t bytes,size_t actual)
 { return h.version==1 && h.size==bytes && actual==bytes && !h.reserved0 && !h.reserved1; }
 static kern_return_t nativeCall(A5MaliClient *c,uint32_t selector,
@@ -74,13 +77,21 @@ kern_return_t A5MaliSubmitNative(A5MaliClient *c,const A5NativeSubmitRequest *q,
  uint8_t *input=malloc(count); if (!input) return kIOReturnNoMemory;
  memcpy(input,q,sizeof(*q)); memcpy(input+sizeof(*q),jobs,q->jobBytes);
  A5NativeSubmitResult r={0}; size_t size=sizeof(r);
+ if(!c || !(c->gpuCommandsSupported&A5NativeCapability) || !c->call){free(input);return kIOReturnUnsupported;}
+ submissionMayBeActive=1;
  kern_return_t kr=nativeCall(c,A5NativeSubmitSelector,input,count,&r,&size);
  free(input); if (kr) return kr;
  if (!valid(r.header,sizeof(r),size) || r.reserved || r.status>5)
   return kIOReturnBadArgument;
- if (r.status) return r.status==1?kIOReturnBadArgument:r.status==2?kIOReturnBusy:
+ if (r.status) {
+  /* Protocol states1/2 reject before the kernel starts a job. Fault/timeout
+   * states keep the address space and pages pinned, so remain uncertain. */
+  if(r.status==1 || r.status==2)submissionMayBeActive=0;
+  return r.status==1?kIOReturnBadArgument:r.status==2?kIOReturnBusy:
    r.status==4?kIOReturnTimeout:kIOReturnIOError;
+ }
  if (!r.fragmentFence || (q->profileID==0 ? r.tilerFence!=0 :
      (!r.tilerFence || r.fragmentFence<=r.tilerFence))) return kIOReturnIOError;
- f->tilerFence=r.tilerFence; f->fragmentFence=r.fragmentFence; return KERN_SUCCESS;
+ f->tilerFence=r.tilerFence; f->fragmentFence=r.fragmentFence;
+ submissionMayBeActive=0;return KERN_SUCCESS;
 }

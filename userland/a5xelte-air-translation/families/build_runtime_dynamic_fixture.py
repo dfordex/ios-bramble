@@ -58,7 +58,7 @@ def main():
                'A5MaliRestrictedDevice.m', 'A5MaliMetalAPI.m', 'A5MaliMetalTexture.m',
                'A5MaliNativeTextureOps.m', 'A5MaliShaderCompiledCache.m', 'A5MaliShaderCompileRequest.m',
                'A5MaliMetalLibrary.m', 'A5MaliDynamicShaderCache.m', 'A5MaliDynamicPipeline.m',
-               'A5MaliMetalDeviceResources.m']
+               'A5MaliMetalDeviceResources.m', 'A5MaliResourceDependencies.m']
     exe = out / 'builder'
     command = ['clang', '-fobjc-arc', '-fblocks', '-Wall', '-Wextra', '-Werror',
         '-DA5_MALI_HOST_TEST', '-DA5_MALI_REQUIRE_COMPILED_REGISTRY=1',

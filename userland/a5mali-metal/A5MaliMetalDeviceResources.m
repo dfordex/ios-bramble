@@ -72,34 +72,89 @@ static A5MaliHeader wireHeader(NSUInteger size)
 static BOOL validHeader(A5MaliHeader h, NSUInteger expected, NSUInteger actual)
 { return expected == actual && h.version == A5MaliProtocolVersion &&
     h.size == expected && !h.reserved0 && !h.reserved1; }
-typedef struct { unsigned kind;id __unsafe_unretained owner;uint64_t identity,offset,bytes; } AliasSpan;
-static AliasSpan resourceSpan(id value)
+static char dependenciesKey;
+A5MaliResourceDependencies *A5MaliDependenciesForDevice(A5MaliRestrictedDevice *device)
 {
-    if([value isKindOfClass:A5MaliPrivateBuffer.class]){
-        A5MaliPrivateBuffer *b=value;void *p=b.contents;
-        if(p)return (AliasSpan){1,nil,0,(uint64_t)(uintptr_t)p,b.length};
-        if(b.privateKernelHandle)return (AliasSpan){2,b.device,b.privateKernelHandle,0,b.length};
-    }else if([value isKindOfClass:A5MaliMetalTexture.class]){
-        A5MaliMetalTexture *t=value;A5MaliTextureLevelLayout first={0},last={0};
-        if(!t.mipmapLevelCount||![t getLevelLayout:&first level:0]||
-            ![t getLevelLayout:&last level:t.mipmapLevelCount-1]||last.byteOffset<first.byteOffset)return (AliasSpan){0};
-        uint64_t bytes=(uint64_t)last.byteOffset+last.byteLength-first.byteOffset;
-        if(t.buffer){AliasSpan span=resourceSpan(t.buffer);span.offset+=first.byteOffset;span.bytes=bytes;return span;}
-        A5MaliSurface *surface=t.privateSurface;
-        if(surface.iosurface)return (AliasSpan){3,nil,IOSurfaceGetID(surface.iosurface),first.byteOffset,bytes};
-        if(surface.resource.token)return (AliasSpan){4,t.device,surface.resource.token,first.byteOffset,bytes};
+    @synchronized(device){
+        A5MaliResourceDependencies *registry=objc_getAssociatedObject(device,&dependenciesKey);
+        if(!registry){registry=[A5MaliResourceDependencies new];
+            objc_setAssociatedObject(device,&dependenciesKey,registry,OBJC_ASSOCIATION_RETAIN_NONATOMIC);}
+        return registry;
     }
-    return (AliasSpan){0};
+}
+static NSUInteger bufferStorageSpans(A5MaliPrivateBuffer *buffer,uint64_t offset,
+    uint64_t length,A5MaliStorageSpan *spans)
+{
+    spans[0]=A5MaliMakeStorageSpan(A5MaliStorageAllocation,(uint64_t)(uintptr_t)(__bridge void *)buffer,offset,length);
+    void *base=[buffer a5StorageContents];
+    if(!base)return 1;
+    uint64_t address=(uint64_t)(uintptr_t)base;
+    spans[1]=offset>UINT64_MAX-address?
+        A5MaliMakeWholeStorageSpan(A5MaliStorageHostRange,0):
+        A5MaliMakeStorageSpan(A5MaliStorageHostRange,0,address+offset,length);
+    return 2;
+}
+A5MaliStorageIdentity *A5MaliStorageForResource(id value)
+{
+    A5MaliStorageSpan spans[4];NSUInteger count=0;id owner=value;
+    if([value isKindOfClass:A5MaliPrivateBuffer.class]){
+        A5MaliPrivateBuffer *buffer=value;
+        count=bufferStorageSpans(buffer,0,buffer.length,spans);
+    }else if([value isKindOfClass:A5MaliMetalTexture.class]){
+        A5MaliMetalTexture *texture=value;A5MaliTextureLevelLayout first={0},last={0};
+        A5MaliSurface *backing=texture.privateSurface;
+        if(backing)owner=@[value,backing];
+        BOOL valid=texture.mipmapLevelCount&&[texture getLevelLayout:&first level:0]&&
+            [texture getLevelLayout:&last level:texture.mipmapLevelCount-1]&&
+            last.byteOffset>=first.byteOffset;
+        if(!valid){spans[count++]=A5MaliMakeWholeStorageSpan(A5MaliStorageUnknown,0);}
+        else{
+            uint64_t bytes=(uint64_t)last.byteOffset+last.byteLength-first.byteOffset;
+            A5MaliMetalTexture *root=texture;
+            for(unsigned depth=0;root.parentTexture&&depth<64;depth++)root=root.parentTexture;
+            if(root.parentTexture)spans[count++]=A5MaliMakeWholeStorageSpan(A5MaliStorageUnknown,0);
+            else spans[count++]=A5MaliMakeStorageSpan(A5MaliStorageAllocation,
+                (uint64_t)(uintptr_t)(__bridge void *)root,first.byteOffset,bytes);
+            A5MaliPrivateBuffer *buffer=texture.buffer?:root.buffer;
+            if(buffer)count+=bufferStorageSpans(buffer,first.byteOffset,bytes,spans+count);
+            else{
+                IOSurfaceRef surface=texture.privateSurface.iosurface;
+                if(surface){
+                    spans[count++]=A5MaliMakeStorageSpan(A5MaliStorageIOSurface,
+                        IOSurfaceGetID(surface),first.byteOffset,bytes);
+                    void *base=IOSurfaceGetBaseAddress(surface);
+                    if(base){uint64_t address=(uint64_t)(uintptr_t)base;
+                        spans[count++]=first.byteOffset>UINT64_MAX-address?
+                            A5MaliMakeWholeStorageSpan(A5MaliStorageHostRange,0):
+                            A5MaliMakeStorageSpan(A5MaliStorageHostRange,0,address+first.byteOffset,bytes);}
+                }
+            }
+        }
+    }else return nil;
+    return [[A5MaliStorageIdentity alloc]initWithOwner:owner spans:spans count:count];
 }
 BOOL A5MaliResourcesAlias(id a,id b)
 {
-    BOOL left=[a isKindOfClass:A5MaliPrivateBuffer.class]||[a isKindOfClass:A5MaliMetalTexture.class];
-    BOOL right=[b isKindOfClass:A5MaliPrivateBuffer.class]||[b isKindOfClass:A5MaliMetalTexture.class];
-    if(!left||!right)return NO;if(a==b)return YES;
-    AliasSpan x=resourceSpan(a),y=resourceSpan(b);
-    if(!x.kind||x.kind!=y.kind||x.owner!=y.owner||x.identity!=y.identity||!x.bytes||!y.bytes||
-        x.offset>UINT64_MAX-x.bytes||y.offset>UINT64_MAX-y.bytes)return NO;
-    return x.offset<y.offset+y.bytes&&y.offset<x.offset+x.bytes;
+    A5MaliStorageIdentity *left=A5MaliStorageForResource(a),*right=A5MaliStorageForResource(b);
+    return left&&right&&A5MaliResourceStoragesAlias(left,right);
+}
+static A5MaliRestrictedDevice *resourceDevice(id resource)
+{
+    return ([resource isKindOfClass:A5MaliPrivateBuffer.class]||
+        [resource isKindOfClass:A5MaliMetalTexture.class])?[resource device]:nil;
+}
+BOOL A5MaliResourceIsComplete(id resource)
+{
+    A5MaliStorageIdentity *storage=A5MaliStorageForResource(resource);
+    A5MaliRestrictedDevice *device=resourceDevice(resource);
+    return storage&&device&&[A5MaliDependenciesForDevice(device)isCompleteForStorage:storage];
+}
+void A5MaliWaitForResource(id resource,A5MaliResourceAccess access)
+{
+    A5MaliStorageIdentity *storage=A5MaliStorageForResource(resource);
+    A5MaliRestrictedDevice *device=resourceDevice(resource);
+    if(!storage||!device)[NSException raise:NSInvalidArgumentException format:@"unknown resource storage"];
+    [A5MaliDependenciesForDevice(device)waitForStorage:storage access:access];
 }
 static BOOL hasSelector(A5MaliClient *client, uint32_t selector)
 { return client && client->call &&
@@ -242,9 +297,9 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 - (kern_return_t)setOwnerWithIdentity:(uint32_t)identity
 {(void)identity;return kIOReturnUnsupported;}
 - (BOOL)isPurgeable{return [self setPurgeableState:MTLPurgeableStateKeepCurrent]!=MTLPurgeableStateNonVolatile;}
-- (BOOL)isComplete{return NO;}
+- (BOOL)isComplete{return A5MaliResourceIsComplete(self);}
 - (void)waitUntilComplete
-{[NSException raise:NSInternalInconsistencyException format:@"resource-specific GPU completion tracking is unsupported; wait on the command buffer"] ;}
+{A5MaliWaitForResource(self,A5MaliResourceAccessRead|A5MaliResourceAccessWrite);}
 - (BOOL)doesAliasResource:(id)resource{return A5MaliResourcesAlias(self,resource);}
 - (BOOL)doesAliasAnyResources:(id const __unsafe_unretained *)resources count:(NSUInteger)count
 {
@@ -276,6 +331,7 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 {
     if(state<MTLPurgeableStateKeepCurrent||state>MTLPurgeableStateEmpty)
         [NSException raise:NSInvalidArgumentException format:@"invalid buffer purgeable state"];
+    if(state!=MTLPurgeableStateKeepCurrent)A5MaliWaitForResource(self,A5MaliResourceAccessWrite);
     [_transferLock lock];
     MTLPurgeableState prior=atomic_load_explicit(&_purgeState,memory_order_acquire);
     kern_return_t status=KERN_SUCCESS;
@@ -306,6 +362,7 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     return prior;
 }
 - (void *)contents { return NULL; }
+- (void *)a5StorageContents { return NULL; }
 - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)descriptor
     offset:(NSUInteger)offset bytesPerRow:(NSUInteger)bytesPerRow
 { return (id)[A5MaliMetalTexture newBufferTextureWithBuffer:self descriptor:descriptor
@@ -358,10 +415,13 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 }
 - (kern_return_t)uploadBytes:(const void *)bytes offset:(NSUInteger)offset
     length:(NSUInteger)length
-{ return [self transferBytes:(void *)bytes offset:offset length:length write:YES]; }
+{ A5MaliWaitForResource(self,A5MaliResourceAccessWrite);return [self transferBytes:(void *)bytes offset:offset length:length write:YES]; }
 - (kern_return_t)readBytes:(void *)bytes offset:(NSUInteger)offset
     length:(NSUInteger)length
-{ return [self transferBytes:bytes offset:offset length:length write:NO]; }
+{ A5MaliWaitForResource(self,A5MaliResourceAccessRead);return [self transferBytes:bytes offset:offset length:length write:NO]; }
+- (kern_return_t)a5TransferBytesWithoutWaiting:(void *)bytes offset:(NSUInteger)offset
+    length:(NSUInteger)length write:(BOOL)write
+{ return [self transferBytes:bytes offset:offset length:length write:write]; }
 - (kern_return_t)readBytesForSubmission:(void *)bytes offset:(NSUInteger)offset
     length:(NSUInteger)length client:(A5MaliClient *)client
 {
@@ -465,11 +525,13 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
 - (MTLResourceOptions)resourceOptions { return MTLResourceStorageModeShared; }
 - (uint64_t)privateKernelHandle { return 0; }
 - (BOOL)readyForRead { return atomic_load_explicit(&_sharedPurgeState,memory_order_acquire)==MTLPurgeableStateNonVolatile; }
-- (void *)contents { [_sharedLock lock];void *p=_sharedContents;[_sharedLock unlock];return p; }
+- (void *)contents { return [self a5StorageContents]; }
+- (void *)a5StorageContents { [_sharedLock lock];void *p=_sharedContents;[_sharedLock unlock];return p; }
 - (MTLPurgeableState)setPurgeableState:(MTLPurgeableState)state
 {
     if(state<MTLPurgeableStateKeepCurrent||state>MTLPurgeableStateEmpty)
         [NSException raise:NSInvalidArgumentException format:@"invalid Shared buffer purgeable state"];
+    if(state!=MTLPurgeableStateKeepCurrent)A5MaliWaitForResource(self,A5MaliResourceAccessWrite);
     [_sharedLock lock];MTLPurgeableState prior=atomic_load_explicit(&_sharedPurgeState,memory_order_acquire);
     BOOL failed=NO;
     if(state==MTLPurgeableStateEmpty&&prior!=MTLPurgeableStateEmpty&&!_sharedExternal){
@@ -510,9 +572,12 @@ MTLSizeAndAlign A5MaliBGRA8TextureSizeAndAlign(MTLTextureDescriptor *d)
     return KERN_SUCCESS;
 }
 - (kern_return_t)uploadBytes:(const void *)bytes offset:(NSUInteger)offset length:(NSUInteger)length
-{ return [self sharedTransfer:(void *)bytes offset:offset length:length write:YES]; }
+{ A5MaliWaitForResource(self,A5MaliResourceAccessWrite);return [self sharedTransfer:(void *)bytes offset:offset length:length write:YES]; }
 - (kern_return_t)readBytes:(void *)bytes offset:(NSUInteger)offset length:(NSUInteger)length
-{ return [self sharedTransfer:bytes offset:offset length:length write:NO]; }
+{ A5MaliWaitForResource(self,A5MaliResourceAccessRead);return [self sharedTransfer:bytes offset:offset length:length write:NO]; }
+- (kern_return_t)a5TransferBytesWithoutWaiting:(void *)bytes offset:(NSUInteger)offset
+    length:(NSUInteger)length write:(BOOL)write
+{ return [self sharedTransfer:bytes offset:offset length:length write:write]; }
 - (kern_return_t)readBytesForSubmission:(void *)bytes offset:(NSUInteger)offset
     length:(NSUInteger)length client:(A5MaliClient *)client
 { (void)client;return [self sharedTransfer:bytes offset:offset length:length write:NO]; }
@@ -579,7 +644,8 @@ static NSError *bindingError(kern_return_t status, NSString *message)
         return nil;
     }
     NSMutableData *data = [NSMutableData dataWithLength:length];
-    kern_return_t result = [_buffer readBytes:data.mutableBytes offset:_offset length:length];
+    kern_return_t result = [_buffer readBytesForSubmission:data.mutableBytes offset:_offset
+        length:length client:[[_buffer.device privateDevice]client]];
     if (result != KERN_SUCCESS) {
         if (error) *error = bindingError(result, @"shared read binding capture failed");
         return nil;

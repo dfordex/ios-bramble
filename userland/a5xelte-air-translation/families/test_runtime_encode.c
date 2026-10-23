@@ -72,6 +72,40 @@ static void check_indexed(const A5MaliCompiledProfile*p){
   assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
  }
 }
+static void check_sampler(const A5MaliCompiledProfile*p){
+ A5RuntimeDraw d=request(p,64,128);
+ for(unsigned min=0;min<=1;++min)for(unsigned mag=0;mag<=1;++mag){
+  d.sourceSampler=(A5RuntimeBlurSampler){.valid=1,.minFilter=min,.magFilter=mag,
+   .normalizedCoordinates=1,.maxAnisotropy=1,.lodMaxClamp=1000};
+  assert(A5MaliRuntimeBlurSamplerSupported(&d.sourceSampler));
+  if(p->profileID==99&&(min||mag)){
+   assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeUnsupported&&zero());
+   continue;
+  }
+  assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
+  pan_unpack((struct mali_sampler_packed*)(output+0x680),SAMPLER,sampler);
+  assert(sampler.minify_nearest==!min&&sampler.magnify_nearest==!mag&&sampler.normalized_coordinates);
+  assert(sampler.wrap_mode_s==MALI_WRAP_MODE_CLAMP_TO_EDGE&&sampler.wrap_mode_t==MALI_WRAP_MODE_CLAMP_TO_EDGE&&
+   sampler.wrap_mode_r==MALI_WRAP_MODE_CLAMP_TO_EDGE&&sampler.minimum_lod==0&&sampler.maximum_lod==0);
+ }
+ A5RuntimeBlurSampler good=d.sourceSampler;
+ for(unsigned i=0;i<13;++i){
+  d.sourceSampler=good;
+  switch(i){case 0:d.sourceSampler.valid=2;break;
+   case 1:d.sourceSampler.minFilter=2;break;case 2:d.sourceSampler.magFilter=2;break;
+   case 3:d.sourceSampler.mipFilter=1;break;case 4:d.sourceSampler.sAddressMode=1;break;
+   case 5:d.sourceSampler.tAddressMode=1;break;case 6:d.sourceSampler.rAddressMode=1;break;
+   case 7:d.sourceSampler.normalizedCoordinates=0;break;case 8:d.sourceSampler.maxAnisotropy=2;break;
+   case 9:d.sourceSampler.compareEnabled=1;break;case 10:d.sourceSampler.lodMinClamp=1;break;
+   case 11:d.sourceSampler.lodMaxClamp=NAN;break;case 12:d.sourceSampler.lodMaxClamp=-1;break;}
+  assert(!A5MaliRuntimeBlurSamplerSupported(&d.sourceSampler));
+  assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeUnsupported&&zero());
+ }
+ memset(&d.sourceSampler,0,sizeof(d.sourceSampler));
+ assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
+ d.sourceSampler.minFilter=1;
+ assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeUnsupported&&zero());
+}
 static void compare_legacy(const char*path){
  uint8_t*legacy=malloc(A5RuntimeJobBytes);assert(legacy);FILE*f=fopen(path,"rb");assert(f);
  assert(fread(legacy,1,A5RuntimeJobBytes,f)==A5RuntimeJobBytes&&fgetc(f)==EOF);fclose(f);
@@ -109,7 +143,7 @@ int main(int argc,char**argv){
  unsigned passed=0;
  for(unsigned i=0;i<sizeof(kA5MaliCompiledProfiles)/sizeof(kA5MaliCompiledProfiles[0]);++i){
   const A5MaliCompiledProfile*p=kA5MaliCompiledProfiles+i;if(p->profileID<99||p->profileID>108)continue;
-  check_indexed(p);
+  check_indexed(p);check_sampler(p);
   A5RuntimeDraw d=p->colorFormats[0]==115?request(p,64,128):request(p,1080,1920);
   int rc=A5MaliEncodeRuntimeDraw(&d,output,sizeof(output));if(rc){fprintf(stderr,"profile%u rc%d\n",p->profileID,rc);return 1;}
   check_preload(output,d.descriptorGPUVA,&d.destination);

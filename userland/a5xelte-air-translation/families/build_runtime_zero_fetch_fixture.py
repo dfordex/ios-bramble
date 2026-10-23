@@ -64,11 +64,11 @@ def main():
     subprocess.run(['cc', *objects, '-o', str(exe)], check=True)
     initial = (32, 64, 96, 128)
     cases = []
-    for overlapping in (False, True):
-        name = 'actual_zero_fetch_' + ('same_job_overlap' if overlapping else 'full_target')
+    for vertex_profile, overlapping in ((603, False), (603, True), (602, False), (602, True)):
+        name = 'actual_zero_fetch_' + ('color_vertex_' if vertex_profile == 602 else '') + ('same_job_overlap' if overlapping else 'full_target')
         payload = out / (name + '-payload.bin')
         expected = out / (name + '-expected.bin')
-        subprocess.run([str(exe), str(payload), str(int(overlapping))], check=True)
+        subprocess.run([str(exe), str(payload), str(int(overlapping)), str(vertex_profile)], check=True)
         output = bytearray()
         for _y in range(32):
             for x in range(32):
@@ -97,12 +97,12 @@ def main():
                 ('overlapping rectangles x=0..23 and8..31 swap overlap twice'
                  if overlapping else 'one full-target rectangle swaps once'),
             'shader_sha256': ACTUAL_SHA,
-            'request_id': receipt['request_id']})
+            'request_id': receipt['request_id'], 'vertex_profile': vertex_profile})
     (out / 'manifest.json').write_text(json.dumps({
         'cases': cases,
         'reference': 'Exact2448-byte phone-verified stock AIR stage, optimized-NIR independent color-matrix oracle; no textures/samplers/FS varyings',
         'pixel_result': 'pending physical GPU execution'}, indent=2) + '\n')
-    print('Prepared two actual stock zero-texture ordered-fetch GPU cases; device pixels pending')
+    print('Prepared four actual stock zero-texture ordered-fetch GPU cases; device pixels pending')
 
 if __name__ == '__main__':
     main()

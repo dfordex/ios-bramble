@@ -75,10 +75,27 @@ static int index_data(const A5RuntimeDraw*r,uint8_t*d,uint64_t*gpuVA){
  memcpy(d+INDEX,b->cpuBytes+b->offset,need);*gpuVA=r->descriptorGPUVA+INDEX;
  return A5RuntimeOK;
 }
+int A5MaliRuntimeBlurSamplerSupported(const A5RuntimeBlurSampler*s){
+ if(!s)return 0;
+ if(!s->valid)return !s->minFilter&&!s->magFilter&&!s->mipFilter&&
+  !s->sAddressMode&&!s->tAddressMode&&!s->rAddressMode&&
+  !s->normalizedCoordinates&&!s->maxAnisotropy&&!s->compareEnabled&&
+  s->lodMinClamp==0&&s->lodMaxClamp==0;
+ return s->valid==1&&s->minFilter<=1&&s->magFilter<=1&&!s->mipFilter&&
+  !s->sAddressMode&&!s->tAddressMode&&!s->rAddressMode&&
+  s->normalizedCoordinates==1&&s->maxAnisotropy==1&&!s->compareEnabled&&
+  s->lodMinClamp==0&&isfinite(s->lodMaxClamp)&&s->lodMaxClamp>=0;
+}
 static int encode(const A5RuntimeDraw*r,uint8_t*d){
  const A5MaliCompiledProfile*p=r->profile;
+ if(!A5MaliRuntimeBlurSamplerSupported(&r->sourceSampler))return A5RuntimeUnsupported;
  if(!p||!(p->profileID==99||(p->profileID>=100&&p->profileID<=108))||
     p->passCount!=1||!p->passes||p->passes[0].logicalTarget||p->resourceCount>16||p->pushFieldCount>16)
+  return A5RuntimeUnsupported;
+ /* Released-backend filter-specialization equivalence has been proved for
+  * the actual installed100..108 programs. DS4/99 retains its original
+  * nearest contract until its private SPIR-V can be checked separately. */
+ if(p->profileID==99&&(r->sourceSampler.minFilter||r->sourceSampler.magFilter))
   return A5RuntimeUnsupported;
  const A5MaliCompiledPass*pass=p->passes;
  const A5MaliCompiledShader*vs=&pass->vertex,*fs=&pass->fragment;
@@ -176,7 +193,16 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
  }
  put64(d,TT,va+TEX);
  pan_pack((struct mali_sampler_packed*)(d+SAMP),SAMPLER,c){
-  c.normalized_coordinates=true;c.seamless_cube_map=false;c.minify_nearest=true;c.magnify_nearest=true;
+  c.normalized_coordinates=true;c.seamless_cube_map=false;
+  c.minify_nearest=r->sourceSampler.minFilter==0;
+  c.magnify_nearest=r->sourceSampler.magFilter==0;
+  c.wrap_mode_s=MALI_WRAP_MODE_CLAMP_TO_EDGE;
+  c.wrap_mode_t=MALI_WRAP_MODE_CLAMP_TO_EDGE;
+  c.wrap_mode_r=MALI_WRAP_MODE_CLAMP_TO_EDGE;
+  /* A single image level resolves all valid client LOD clamps to level0.
+   * Match the dynamic sampler-LOD sysvals in UBO0 bytes16..27 (zero).
+   * Filtering remains the actual min/mag request, not a shader substitute. */
+  c.mipmap_mode=MALI_MIPMAP_MODE_NEAREST;c.minimum_lod=0;c.maximum_lod=0;
  }
  put32(d,FPUSH,1);put32(d,FPUSH+4,r->source.width);put32(d,FPUSH+8,r->source.height);
  pan_section_pack(d+FB,FRAMEBUFFER,LOCAL_STORAGE,c){

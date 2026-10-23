@@ -10,6 +10,11 @@ kern_return_t A5MaliQueryNative(A5MaliClient *,
     const A5NativeQueryRequest *,A5NativeQueryResult *);
 kern_return_t A5MaliSubmitNative(A5MaliClient *,
     const A5NativeSubmitRequest *,const void *encodedJobs,A5MaliFence *);
+/* Internal worker outcome: validation/query failures did not launch GPU work.
+ * After Submit18 begins, only a valid terminal-fence reply proves retirement.
+ * Reset once before a command buffer starts on its actual worker thread. */
+void A5MaliBeginNativeSubmissionTracking(void);
+int A5MaliNativeSubmissionMayBeActive(void);
 #ifdef __cplusplus
 }
 #endif

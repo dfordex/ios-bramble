@@ -23,7 +23,7 @@ typedef struct {
     unsigned queries,submits,releases,imports;
     IOSurfaceRef imported[32];
     BOOL badAuxSpan,badAuxAlias,failImport,providedAux;
-    BOOL badFormat,badFence,badDestinationRead;
+    BOOL badFormat,badFence,badDestinationRead,linearSampler;
     unsigned indexSize,indexFault,privateCreates,privateReads,privateReleases;
     BOOL privateIndex,failPrivateRead,privateLive;
     uint8_t privateBytes[4096],indices[24];
@@ -115,6 +115,10 @@ static kern_return_t transport(void *opaque,uint32_t selector,const void *input,
     assert(q->vertexOffset==0 && q->tilerOffset==0x100 && q->fragmentOffset==0x200);
     assert(q->readSurfaces==7 && q->writeSurfaces==2 && !q->readBuffers);
     const uint8_t *jobs=(const uint8_t *)input+sizeof(*q);
+    /* Released Mesa v4: magnify_nearest bit0, minify_nearest bit1.
+     * These must reflect actual caller filtering, not hardcoded nearest. */
+    uint32_t samplerWord;memcpy(&samplerWord,jobs+0x680,4);
+    assert((samplerWord&3)==(t->linearSampler?0u:3u));
     uint32_t primitive,number,invocations;uint64_t address;
     memcpy(&primitive,jobs+0x128,4);memcpy(&number,jobs+0x134,4);
     memcpy(&address,jobs+0x138,8);memcpy(&invocations,jobs+0x20,4);
@@ -188,8 +192,11 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     memset(inlineFilter,0xff,sizeof(inlineFilter)); /* setBytes owns the old copy */
     [r setFragmentBytes:t->edr length:2 atIndex:6];
     if(samplerMissing)[r setFragmentTexture:source atIndex:3];
-    else [r setFragmentTexture:source atTextureIndex:3 samplerState:[device newSamplerStateWithDescriptor:
-        [MTLSamplerDescriptor new]] atSamplerIndex:0];
+    else {
+        MTLSamplerDescriptor *sampler=[MTLSamplerDescriptor new];
+        sampler.minFilter=sampler.magFilter=t->linearSampler?MTLSamplerMinMagFilterLinear:MTLSamplerMinMagFilterNearest;
+        [r setFragmentTexture:source atTextureIndex:3 samplerState:[device newSamplerStateWithDescriptor:sampler] atSamplerIndex:0];
+    }
     NSUInteger offset=5*t->indexSize,length=6*t->indexSize;
     A5MaliPrivateBuffer *indices=[device newBufferWithLength:offset+length+16
         options:t->privateIndex?MTLResourceStorageModePrivate:MTLResourceStorageModeShared];assert(indices);
@@ -267,10 +274,8 @@ int main(void)
       assert(b.status==MTLCommandBufferStatusError && t.queries==3 && t.submits==2);t.badAuxSpan=NO;
       t.badAuxAlias=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);[b commit];[b waitUntilCompleted];
       assert(b.status==MTLCommandBufferStatusError && t.queries==4 && t.submits==2);t.badAuxAlias=NO;
-      t.badFence=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);[b commit];[b waitUntilCompleted];
-      assert(b.status==MTLCommandBufferStatusError && t.queries==5 && t.submits==3);t.badFence=NO;
       t.failImport=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);[b commit];[b waitUntilCompleted];
-      assert(b.status==MTLCommandBufferStatusError && t.queries==5 && t.submits==3);t.failImport=NO;
+      assert(b.status==MTLCommandBufferStatusError && t.queries==4 && t.submits==2);t.failImport=NO;
     }
     @autoreleasepool {
       A5MaliMetalTexture *source=[device hostTestTextureWithResource:
@@ -296,6 +301,23 @@ int main(void)
     }
     assert(t.privateCreates==2&&t.privateReleases==2&&!t.privateLive&&t.privateReads==2);
     for(unsigned i=0;i<t.imports;++i)assert(!t.imported[i]);
+    t.privateIndex=NO;t.failPrivateRead=NO;t.linearSampler=YES;
+    @autoreleasepool {
+      A5MaliMetalTexture *source=[device hostTestTextureWithResource:(A5MaliResource){0x100000001,64,64,256,A5MaliRead}];
+      A5MaliMetalTexture *destination=[device hostTestTextureWithResource:(A5MaliResource){0x100000002,32,32,128,A5MaliWrite}];
+      unsigned before=t.queries,submitted=t.submits;
+      A5MaliMetalBuffer *linear=encode(device,pipeline,source,destination,&t,NO,NO);
+      [linear commit];[linear waitUntilCompleted];
+      assert(linear.status==MTLCommandBufferStatusCompleted&&t.queries==before+1&&t.submits==submitted+1);
+      /* Last command for these aliases: an attempted GPU submission without
+       * both terminal fences is quarantined, never immediately recycled. */
+      t.badFence=YES;A5MaliMetalBuffer *failed=encode(device,pipeline,source,destination,&t,NO,NO);
+      [failed commit];[failed waitUntilCompleted];
+      assert(failed.status==MTLCommandBufferStatusError&&t.queries==before+2&&t.submits==submitted+2);
+    }
+    assert(t.imports>0);
+    for(unsigned i=0;i+1<t.imports;++i)assert(!t.imported[i]);
+    assert(t.imported[t.imports-1]);
     printf("profile100 indexed u16/u32: actual native index descriptor, commit snapshots, private reads, exact vertex bounds, inactive RT1, allocation/alias/fence gates passed\n");
  }
  return 0;

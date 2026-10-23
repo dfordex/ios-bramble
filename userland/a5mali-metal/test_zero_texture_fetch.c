@@ -56,7 +56,8 @@ int A5MaliTestZeroTextureFetch(const A5MaliCompiledProfile *p,int blend){
  CHECK(!draw.textures&&!draw.samplers&&!draw.varyings&&!draw.varying_buffers);
  CHECK(zero(d+0xc00,0x100)&&zero(d+0x4000,0x200));
  struct MALI_RENDERER_STATE vertex;MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+0x500),&vertex);
- CHECK(vertex.shader.varying_count==4); /* The actual QC VS exports are retained. */
+ CHECK(vertex.shader.varying_count==((p->flags&A5MaliProfileVertexColorOnly)?3u:4u));
+ CHECK(vertex.shader.attribute_count==((p->flags&A5MaliProfileVertexColorOnly)?2u:3u)); /* The actual QC VS exports are retained. */
  m.draw.fragmentBuffers[fragmentSlot].bytes=0;
  CHECK(A5MaliEncodeRuntimeMiscPass(&m,d,A5RuntimeJobBytes)!=A5RuntimeOK&&zero(d,A5RuntimeJobBytes));
  m.draw.fragmentBuffers[fragmentSlot].bytes=4096;

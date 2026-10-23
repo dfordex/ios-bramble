@@ -403,5 +403,11 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
 }
 
 - (A5MaliFence)completedFence { return _completedFence; }
+- (BOOL)usesLegacyGPUWork
+{
+    for(A5MaliOperation *operation in _operations)
+        if(operation.kind!=A5MaliKindNative)return YES;
+    return NO;
+}
 
 @end
