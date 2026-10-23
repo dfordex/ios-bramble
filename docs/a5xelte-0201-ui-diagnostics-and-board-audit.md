@@ -110,3 +110,11 @@ Runtime verification must establish `A5XELTE UI diag: sampler enabled`, `SMP`
 records for the UI processes, and any new PosterBoard/assetsd output. A next
 crash may require a longer capture; initial waiting-thread samples should
 already be useful after several minutes.
+
+## Installation
+
+Source `327c379` was pushed before installation. ADB rechecked the lab phone
+in TWRP, its exact model, BOOT p10 mapping and 32 MiB capacity. Direct streaming
+acknowledged 30,343,184 bytes, followed by sync and reboot. No BOOT backup,
+post-write hash/readback, format or whole root-image transfer. New SMP and
+exception-output delivery remain pending recovery of the next device log.
