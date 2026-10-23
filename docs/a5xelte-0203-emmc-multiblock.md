@@ -49,3 +49,11 @@ exactly. Repository integrity passes197 patches/35Python/10shell scripts.
 The complete XNU build passes. Existing Metal/compiler payload and23 GPU
 cases remain. Device batching acceptance, filesystem correctness, measured
 speed and later UI progression require the next runtime capture.
+
+## Installation
+
+Source `51be9aa` is pushed. Exact lab-phone recovery/model/TWRP, BOOT p10
+mapping and33,554,432-byte capacity checks pass. Direct streaming acknowledges
+30,359,568 bytes; sync completes and reboot is requested. No BOOT backup,
+post-write hash/readback, format or whole root transfer. The long physical
+run and recovered batch/timing/error counters remain pending.
