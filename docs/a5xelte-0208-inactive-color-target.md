@@ -40,8 +40,13 @@ caller-provided RT1, three mapped tokens, read7/write2, invalid span/alias,
 allocation failure, terminal-fence failure and resource release. The provider
 also cross-compiles for ARM64 iOS/Cortex-A53 with warnings as errors.
 
-The signed iOS bundle builds; actual kernel payload preflight passes. BOOT
-packaging/install details are recorded after completion. Physical acceptance
+The signed iOS bundle and full XNU build pass; actual kernel payload preflight
+accepts all19 files (40,578,032 raw /9,812,557 packed bytes). The first sandboxed
+make stops only at the dSYM process-substitution step; the identical incremental
+make completes with permission to access `/dev/fd`. BOOT is31,426,576 bytes,
+below32MiB. Its loader and ADT are byte-identical to the physically verified
+0207d image; the newly signed provider's exact compressed bytes occur in the
+linked kernel. Install details follow below. Physical acceptance
 and resulting UI behavior require the next phone run. The four failing0207d
 pixel-suite cases have not been repaired by this attachment change.
 
@@ -52,3 +57,14 @@ pixel-suite cases have not been repaired by this attachment change.
    for profile100 with result0, followed by a genuine completed command buffer.
 3. Inspect subsequent backboardd errors and visible UI separately. A successful
    query or matching result alone does not establish GPU-rendered UI progress.
+
+
+## Installation
+
+Source `c5fff96` was pushed before installation. Exact A5XELTE recovery, TWRP,
+BOOT p10 mapping and32MiB capacity guards passed. Direct `dd` acknowledged all
+31,426,576 bytes, sync completed and reboot was requested. No runtime success
+is inferred from writing the image. No BOOT backup, post-write readback/hash,
+formatting or full root-image transfer was performed. Recovery/EFS/GPT remain
+outside the write operation. Device acceptance, native profile100 completion
+and visible UI progression are pending the next capture.
