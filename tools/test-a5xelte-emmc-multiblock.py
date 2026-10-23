@@ -75,7 +75,8 @@ static uint32_t emmc_rd(uint32_t off){
   return INT_CMD_DONE|(moved==byte_count&&mode!=4?INT_DATA_OVER:0)|(opcode==18?INT_RXDR:INT_TXDR);
  }
  if(off==EMMC_RESP0)return opcode==23&&mode==1?1u<<22:opcode==25&&mode==9?1u<<26:0;
- if(off==EMMC_TCBCNT)return mode==5?byte_count-512:byte_count;
+ if(off==EMMC_TCBCNT)return mode==5?0:byte_count;
+ if(off==EMMC_TBBCNT)return byte_count;
  if(off==0x200||off==0x204){
   assert(opcode==18&&moved+4<=byte_count&&start+moved+4<=sizeof(disk));
   uint32_t v;memcpy(&v,disk+start+moved,4);moved+=4;return v;
@@ -125,11 +126,14 @@ int main(void){
   assert(intmask==0x1234&&!emmc_io_poisoned);cases++;
  }
  reset(0);width=1;locked=1;assert(!emmc_transfer_blocks(1000,p,8,false));locked=0;assert(!memcmp(p,disk,4096));cases++;
+ reset(5);memset(p,0xd2,4096);locked=1;assert(!emmc_transfer_blocks(1000,p,8,true));locked=0;
+ assert(ncmd==2&&commands[1]==25&&!emmc_io_poisoned&&!memcmp(p,disk,4096));cases++;
  for(unsigned m=1;m<=12;m++){
   reset(m);locked=1;int e=emmc_transfer_blocks(1000,p,2,m==9);locked=0;
+  if(m==5){assert(!e&&ncmd==2&&emmc_multi_blocks==32&&!emmc_io_poisoned);assert(!memcmp(p,disk,1024));cases++;continue;}
   assert(e);if(m==1){assert(e==ENOTSUP&&ncmd==1&&!emmc_io_poisoned);}
   if(m==2||m==8||m==12)assert(emmc_io_poisoned);
-  if(m==3||m==4||m==5||m==6||m==7||m==9||m==10||m==11){assert(commands[ncmd-1]==12);assert(emmc_io_poisoned==(m==6||m==7));}
+  if(m==3||m==4||m==6||m==7||m==9||m==10||m==11){assert(commands[ncmd-1]==12);assert(emmc_io_poisoned==(m==6||m==7));}
   assert(emmc_multi_blocks==1&&intmask==0x1234);cases++;
  }
  for(unsigned c=0;c<8;c++){
