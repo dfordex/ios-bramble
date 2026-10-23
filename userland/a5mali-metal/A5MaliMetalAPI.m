@@ -168,13 +168,16 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 @interface A5MaliCompiledPipeline : A5MaliReadSurfCandidate
 @property (nonatomic, readonly) const A5MaliCompiledProfile *profile;
 @property (nonatomic, readonly) BOOL sourceOver;
+@property (nonatomic, readonly) BOOL suppliesInactiveColor1;
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
     profile:(const A5MaliCompiledProfile *)profile sourceOver:(BOOL)sourceOver
-    compileRequestID:(nullable NSString *)requestID dynamicOwner:(nullable A5MaliDynamicPipelineEntry *)owner;
+    compileRequestID:(nullable NSString *)requestID dynamicOwner:(nullable A5MaliDynamicPipelineEntry *)owner
+    suppliesInactiveColor1:(BOOL)suppliesInactiveColor1;
 @end
 @implementation A5MaliCompiledPipeline {
     const A5MaliCompiledProfile *_profile;
     BOOL _sourceOver;
+    BOOL _suppliesInactiveColor1;
     NSString *_compileRequestID;
     NSLock *_compiledCacheLock;
     A5MaliShaderCompiledCacheEntry *_compiledCacheEntry;
@@ -184,9 +187,11 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
     profile:(const A5MaliCompiledProfile *)profile sourceOver:(BOOL)sourceOver
     compileRequestID:(NSString *)requestID dynamicOwner:(A5MaliDynamicPipelineEntry *)owner
+    suppliesInactiveColor1:(BOOL)suppliesInactiveColor1
 {
     if ((self = [super initWithDevice:device])) {
         _profile=profile;_sourceOver=sourceOver;_dynamicOwner=owner;
+        _suppliesInactiveColor1=suppliesInactiveColor1;
         _compileRequestID=(profile->profileID!=A5MaliDynamicProfileID && (profile->profileID==602 || compiledTexturedProfile(profile->profileID)))?[requestID copy]:nil;
         _compiledCacheLock=[NSLock new];
     }
@@ -212,6 +217,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     return profile;
 }
 - (BOOL)sourceOver { return _sourceOver; }
+- (BOOL)suppliesInactiveColor1 { return _suppliesInactiveColor1; }
 @end
 
 @interface A5MaliSurface (NativeResourceAccess)
@@ -282,6 +288,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     A5MaliMetalBuffer *_buffer;
     A5MaliMetalTexture *_destination;
     NSDictionary<NSNumber *,A5MaliMetalTexture *> *_attachments;
+    A5MaliMetalTexture *_inactiveColor1;
     A5MaliMetalTexture *_source;
     A5MaliReadSurfCandidate *_pipeline;
     BOOL _ended, _hasDraw, _hasViewport;
@@ -347,11 +354,39 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     uint32_t profileID=0;
 #if A5_MALI_NATIVE_RENDER
     const A5MaliCompiledProfile *profile=NULL;
+    BOOL suppliesInactiveColor1=NO;
     A5MaliDynamicPipelineEntry *dynamicOwner=nil;
     if(!authenticatedPair)rejection=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
         code:kIOReturnUnsupported userInfo:@{NSLocalizedDescriptionKey:
         @"factory requires authenticated same-device functions from one library"}];
     else profile=A5MaliSelectCompiledProfile(descriptor,&rejection);
+    /* The released downsample_8 program has an authenticated BGRA8 RT1
+     * declaration with writeMask=0. QuartzCore also requests the same program
+     * with RT1 absent. Materialize that inactive attachment internally, without
+     * changing caller state or accepting an unproved MRT write. All remaining
+     * constants, formats, vertex layouts and blend state still pass the exact
+     * registry selector. This is deliberately not a general format fallback. */
+    if(!profile && authenticatedPair &&
+        [[vertex name]isEqualToString:@"downsample_blur_vert_lph"] &&
+        [[fragment name]isEqualToString:@"downsample_8_frag_lph"]){
+        MTLRenderPipelineColorAttachmentDescriptor *a=descriptor.colorAttachments[1];
+        if(a.pixelFormat==MTLPixelFormatInvalid && !a.isBlendingEnabled &&
+            (a.writeMask==MTLColorWriteMaskAll || a.writeMask==MTLColorWriteMaskNone) &&
+            a.rgbBlendOperation==MTLBlendOperationAdd && a.alphaBlendOperation==MTLBlendOperationAdd &&
+            a.sourceRGBBlendFactor==MTLBlendFactorOne && a.sourceAlphaBlendFactor==MTLBlendFactorOne &&
+            a.destinationRGBBlendFactor==MTLBlendFactorZero && a.destinationAlphaBlendFactor==MTLBlendFactorZero){
+            MTLRenderPipelineDescriptor *internal=[descriptor copy];
+            internal.colorAttachments[1].pixelFormat=MTLPixelFormatBGRA8Unorm;
+            internal.colorAttachments[1].writeMask=MTLColorWriteMaskNone;
+            const A5MaliCompiledProfile *candidate=A5MaliSelectCompiledProfile(internal,NULL);
+            if(candidate && candidate->profileID==100 && candidate->passCount==1 &&
+                candidate->passes[0].logicalTarget==0 && candidate->colorFormats[1]==80 &&
+                candidate->attachmentContractCount &&
+                candidate->attachmentContracts[0].attachments[1].writeMask==0){
+                profile=candidate;suppliesInactiveColor1=YES;rejection=nil;
+            }
+        }
+    }
     if(!profile && authenticatedPair && ([vertex dynamicShader] || [fragment dynamicShader])){
         dynamicOwner=A5MaliComposeDynamicPipeline(descriptor,&rejection);
         profile=dynamicOwner.profile;
@@ -364,9 +399,11 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         (profile->profileID>=300 && profile->profileID<=302));
     if(executable && [[self privateDevice]supportsNativePrograms]){
         if(error)*error=nil;
-        logPipelineDecision(self,descriptor,profileID,YES,@"authenticated executable profile");
+        logPipelineDecision(self,descriptor,profileID,YES,suppliesInactiveColor1?
+            @"authenticated executable profile; internal BGRA8 color1 writeMask=0":@"authenticated executable profile");
         return [[A5MaliCompiledPipeline alloc]initWithDevice:self profile:profile
-            sourceOver:descriptor.colorAttachments[0].isBlendingEnabled compileRequestID:compileRequestID dynamicOwner:dynamicOwner];
+            sourceOver:descriptor.colorAttachments[0].isBlendingEnabled compileRequestID:compileRequestID dynamicOwner:dynamicOwner
+            suppliesInactiveColor1:suppliesInactiveColor1];
     }
     if(profile)rejection=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
         code:kIOReturnUnsupported userInfo:@{NSLocalizedDescriptionKey:executable?
@@ -1159,6 +1196,24 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
          (viewport.originX!=0 || viewport.originY!=0 || viewport.width!=1080 ||
           viewport.height!=1920 || viewport.znear!=0 || viewport.zfar!=1))) return NO;
 
+    A5MaliMetalTexture *auxiliary=nil;
+    if(pipeline.suppliesInactiveColor1){
+        auxiliary=_attachments[@1];
+        if(!auxiliary){
+            if(!_inactiveColor1){
+                MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+                    MTLPixelFormatBGRA8Unorm width:destination.width height:destination.height mipmapped:NO];
+                d.storageMode=MTLStorageModePrivate;d.usage=MTLTextureUsageRenderTarget;
+                _inactiveColor1=[_buffer.device newTextureWithDescriptor:d];
+            }
+            auxiliary=_inactiveColor1;
+        }
+        if(!auxiliary || auxiliary.device!=_buffer.device || !auxiliary.privateSurface ||
+            auxiliary.pixelFormat!=MTLPixelFormatBGRA8Unorm || auxiliary.width!=destination.width ||
+            auxiliary.height!=destination.height || !(auxiliary.usage&MTLTextureUsageRenderTarget) ||
+            textureBackingAliases(auxiliary,source) || textureBackingAliases(auxiliary,destination))return NO;
+    }
+
     /* Retain binding identity at draw time. Shared contents are deliberately
      * captured later, under the command buffer's commit lock. setBytes already
      * owns an immutable copy, and private buffers retain real kernel handles. */
@@ -1192,6 +1247,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         A5NativeQueryRequest query={.header={1,sizeof(query),0,0}};
         query.surfaces[0]=source.privateSurface.resource.token;
         query.surfaces[1]=destination.privateSurface.resource.token;
+        query.surfaces[2]=auxiliary.privateSurface.resource.token;
         if (!query.surfaces[0] || !query.surfaces[1] || query.surfaces[0]==query.surfaces[1])
             return kIOReturnBadArgument;
         unsigned handleCount=0;
@@ -1225,6 +1281,12 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 i?(A5MaliRead|A5MaliWrite):A5MaliRead,&image))return kIOReturnBadArgument;
             if(i)draw.destination=image;else draw.source=image;
         }
+        if(auxiliary){
+            if(!A5MaliRuntimeImageForTexture(auxiliary,0,auxiliary.privateSurface,&mapped.surfaces[2],
+                A5MaliRead,&draw.inactiveColor1))return kIOReturnBadArgument;
+            draw.hasInactiveColor1=1;
+            logNativePhase(diagnosticID,"blur-inactive-color1",profile->profileID,KERN_SUCCESS);
+        }
         NSMutableArray<NSData *> *snapshots=[NSMutableArray new];
         for(NSUInteger stage=0;stage<2;++stage)
             for(NSNumber *slot in windows[stage]){
@@ -1254,7 +1316,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(encoded!=A5RuntimeOK)return encoded==A5RuntimeUnsupported?kIOReturnUnsupported:kIOReturnBadArgument;
         A5NativeSubmitRequest submit={.header={1,sizeof(submit),0,0},.jobBytes=A5RuntimeJobBytes,
             .vertexOffset=A5RuntimeVertexOffset,.tilerOffset=A5RuntimeTilerOffset,
-            .fragmentOffset=A5RuntimeFragmentOffset,.readSurfaces=3,.writeSurfaces=2,
+            .fragmentOffset=A5RuntimeFragmentOffset,.readSurfaces=auxiliary?7:3,.writeSurfaces=2,
             .readBuffers=(1u<<handleCount)-1u,.profileID=profile->profileID,.mappingEpoch=mapped.flags};
         memcpy(submit.surfaces,query.surfaces,sizeof(submit.surfaces));
         memcpy(submit.buffers,query.buffers,sizeof(submit.buffers));

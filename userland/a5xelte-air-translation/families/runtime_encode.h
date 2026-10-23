@@ -34,6 +34,11 @@ typedef struct {
     const A5MaliCompiledProfile *profile;
     uint64_t descriptorGPUVA;
     A5RuntimeImage source, destination;
+    /* Optional mapped RT1 backing for profile100's inactive BGRA8 output.
+     * Its authenticated write mask is zero: it is retained/validated, never
+     * emitted as an SFBD writeback or advertised as general MRT support. */
+    A5RuntimeImage inactiveColor1;
+    uint32_t hasInactiveColor1;
     /* The application bindings, indexed by the ORIGINAL Metal slot number.
      * offset is the actual set*Buffer:offset: value, never folded into GPUVA. */
     A5RuntimeBuffer vertexBuffers[31], fragmentBuffers[31];
