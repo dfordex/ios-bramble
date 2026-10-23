@@ -632,3 +632,10 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **0209 build:** Full signed provider/19-file kernel preflight, XNU compile/link/dSYM/symsets pass. BOOT31,524,880bytes fits32MiB; loader/ADT identicalto0208/proven0207d, exactcompressedproviderandfournewcasespresentinlinkedkernel. Suite35cases; newphysicalresultsandUIremainpending.
 
 - **0209 installed:** Source37afaa9pushed; exactA5/TWRP/BOOTp10/capacityguardspass. Full31,524,880bytewriteacknowledged,synccomplete,rebootrequested. NoBOOTbackup/readback/hash/fullroottransfer. New35caseGPUresultsandbackboardd/UIprogresspendingphonecapture.
+
+
+## 2026-10-24 — 0209 physical results and UniXNU comparison
+
+- **Read-only evidence:** SYSTEMflush90/all1,023,694recordedbytes;9,608decodedlines, nooverwrite/kernelpanic; CPU4/4/newbundleconfirmed. Fournewcases4096/4096passwithfences/MMU0/guards; total31/35, oldfourfailuresunchanged.
+- **Live blockers remain:** Actualprofile100u16indexed54/offset4848rejectspipeline-or-resource-contractbeforesubmit. Actual2448-bytefragment/cacheacceptedandsameABIas0208, butcombinedpipelineIOgatestillrejects; backboarddabortstwice13/4. TestsuseVS603; actualstartupcreates602/603andfactoryrejectsstatic602. Exactrejectedpairandresourcefieldnotyetcaptured, soneitherisclaimedfixedforliveUI. See[0209readout](docs/a5xelte-0209-log-review.md).
+- **Reference review:** UniXNUNativeMetalc6d29causesgeneralMetaldescriptor/resourcebridgeandactuallinearblurtests. Compareagainstournarrowvertex/samplergates; hardware-specificAdrenopathnotcopied. See[sourcecomparison](docs/a5xelte-unixnu-native-metal-comparison.md). Noimagewrite/rebootduringthisreview.
