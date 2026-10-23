@@ -649,3 +649,10 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Final local gate:** All18 native wrapper binaries and Cortex-A53/iOS API compile pass, including actual IOSurface command-buffer dependency integration. Tests retain backing memory after injected GPU timeout instead of assuming reusable destinations. Kernel transport remains mocked in host tests.
 
 - **0210 installed:** Sourcec9649edpushed; exactserial/A5/TWRP/BOOTp10/capacityguardspass. Full31,641,616-bytewriteacknowledged,synccomplete,rebootrequested. NoBOOTbackup/readback/hash/fullroottransfer. New39-case GPUresults andbackboardd/UIprogresspendingphonecapture.
+
+
+## 2026-10-24 — 0210 phone readout: real602 pairing fixed, next blur RT1 abort
+
+- **Read-only capture:** SYSTEMflush152/all1,221,706recordedbytes;11,851decodedlines/nooverwrite/kernelpanic. Exact failed HFS pipeline request/status read separately; no device write/reboot/BOOTreadback.
+- **Verified improvements:** All four new cases4096/4096pass with real fences/MMU0/guards; total35/39, same four old failures. Actual2448-byte ordered-fetch fragment now links with602 color-only VS and combined factory accepts.19loggedCBs complete/error0;41logged native submissions succeed. No live submission for new602/fetch or blur100 captured before next abort.
+- **Confirmed blocker:** Backboardd aborts three times Metalpipeline13/4. First explicit rejection: profile104 narrow_blur_19 RT1format0 expected80. Shader already compiled; inactive-RT1 bridge only handlesprofile100. Exact request/status confirms automatic worker rejects this blur render pair asunsupported. Generalize by authenticated inactive-target metadata through factory/allocation/emitter, then test actual104 descriptor. PosterBoard state assertion anddasd crash remain separate. See[0210readout](docs/a5xelte-0210-log-review.md).
