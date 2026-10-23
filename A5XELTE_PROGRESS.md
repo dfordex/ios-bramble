@@ -630,3 +630,5 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Candidate GPU tests:** Old31 payloads unchanged plus reordered u16/u32 blur and two actual2448-byte no-texture fetch cases. Optimized actual NIR independently yields a nonzero R/B-swap matrix oracle, including two swaps in the overlap. Existing four physical-suite failures remain open. See[0209](docs/a5xelte-0209-zero-fetch-indexed-blur.md). Build/install evidence follows when complete.
 
 - **0209 build:** Full signed provider/19-file kernel preflight, XNU compile/link/dSYM/symsets pass. BOOT31,524,880bytes fits32MiB; loader/ADT identicalto0208/proven0207d, exactcompressedproviderandfournewcasespresentinlinkedkernel. Suite35cases; newphysicalresultsandUIremainpending.
+
+- **0209 installed:** Source37afaa9pushed; exactA5/TWRP/BOOTp10/capacityguardspass. Full31,524,880bytewriteacknowledged,synccomplete,rebootrequested. NoBOOTbackup/readback/hash/fullroottransfer. New35caseGPUresultsandbackboardd/UIprogresspendingphonecapture.

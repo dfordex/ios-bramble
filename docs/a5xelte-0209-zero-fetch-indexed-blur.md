@@ -64,3 +64,11 @@ The signed provider and actual19-file kernel payload preflight pass (40,578,576 
 paths are preserved. Only BOOT p10 is explicitly written; the existing in-kernel
 installer updates its exact embedded userland files. No whole root-image
 transfer, BOOT backup or post-write readback/hash is performed.
+
+## Installed0209
+
+Source37afaa9 was pushed before the write. Exact serial/recovery/model/TWRP,
+BOOT p10 mapping and32MiB capacity guards passed. Direct offset-zero streaming
+acknowledged all31,524,880 bytes, sync completed and reboot was requested. No
+backup, partition readback/hash or whole root transfer occurred. Device runtime,
+new35-case suite results and the next backboardd draw remain pending.
