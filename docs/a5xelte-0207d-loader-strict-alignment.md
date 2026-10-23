@@ -1,6 +1,6 @@
 # 0207c reboot: unaligned DCS read in restored loader
 
-## Verdict: FAIL for0207c; corrected loader awaits physical execution
+## Verdict: FAIL for0207c; corrected early boot physically confirmed
 
 The restored loader has a concrete early-boot compiler defect. It was rebuilt
 with Clang while older images reused the previously working loader binary.
@@ -43,3 +43,10 @@ ARMv8-A target; new Image10,336bytes.
 
 This is not a proof that the corrected phone boot or the new GPU features work.
 The next physical checkpoint is the loader's display labels and XNU console.
+
+## Physical result
+
+0207d was written in full(31,420,432bytes), synced and rebooted. The user
+confirms that loader text and XNU logs appeared. This passes the previous
+Samsung-logo restart checkpoint. Sustained boot, new GPU pixel results, TCC
+behavior and home UI are not yet established by this confirmation.
