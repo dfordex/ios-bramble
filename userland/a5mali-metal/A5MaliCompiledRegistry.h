@@ -25,7 +25,13 @@ enum { A5MaliProfileFixedViewport = 1, A5MaliProfileNearestSampler = 2,
        A5MaliProfileNormalizedSampler = 4, A5MaliProfileIndependentTargets = 8,
        A5MaliProfileSourceOverBlend = 16, A5MaliProfileNotExecutable = 32,
        A5MaliProfileCoverageAdd = 64, A5MaliProfileStrokeSourceOver = 128,
-       A5MaliProfileInlineSourceOver = 256 };
+       A5MaliProfileInlineSourceOver = 256,
+       /* Root-compiled stages, admitted by their reflected runtime ABI rather
+        * than a constant/module fingerprint. These flags do not authorize a
+        * new resource layout; the runtime validates it independently. */
+       A5MaliProfileDynamicStages = 512,
+       A5MaliProfileDynamicColorVarying = 1024 };
+enum { A5MaliDynamicProfileID = 65536 };
 
 typedef struct {
     const uint8_t *bytes;

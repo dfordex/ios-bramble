@@ -42,6 +42,7 @@ struct a5_stage_profile {
    unsigned push_bytes;
 };
 #include A5_FAMILY_CONFIG
+#include "misc_dynamic.h"
 #ifndef A5_PROFILE_COUNT
 #define A5_PROFILE_COUNT 2
 #endif
@@ -185,7 +186,8 @@ static bool lower_sysvals(nir_builder *b,nir_intrinsic_instr *intr,void *data)
       nir_imm_int(b,offset),.range_base=offset,.range=count*4,.align_mul=4));
    return true;
 }
-static int compile(const char *input,const char *output,mesa_shader_stage stage)
+static int compile(const char *input,const char *output,mesa_shader_stage stage,
+                   const struct a5_dynamic_profile *dynamic,const char *info_path)
 {
    size_t bytes=0;
    uint32_t *words=read_module(input,&bytes);
@@ -193,9 +195,9 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage)
       fprintf(stderr,"module differs from authenticated family profile\n");free(words);return 2;
    }
    uint64_t module_fingerprint=fingerprint(words,bytes);
-   const struct a5_stage_profile *profile=NULL;
+   const struct a5_stage_profile *profile=dynamic?&dynamic->profile:NULL;
    unsigned stage_index=stage==MESA_SHADER_VERTEX?0:1;
-   for(unsigned i=stage_index;i<A5_PROFILE_COUNT;i+=2)
+   for(unsigned i=stage_index;!profile && i<A5_PROFILE_COUNT;i+=2)
       if(kStages[i].fingerprint==module_fingerprint){profile=&kStages[i];break;}
    if(!profile){
       fprintf(stderr,"module differs from authenticated family profile\n");free(words);return 2;
@@ -227,7 +229,7 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage)
       nir_var_shader_in|nir_var_shader_out,UINT32_MAX);
    NIR_PASS(_,nir,nir_lower_io,nir_var_shader_in|nir_var_shader_out,
       type_size,nir_lower_io_use_interpolated_input_intrinsics);
-   if(stage==MESA_SHADER_FRAGMENT)
+   if(stage==MESA_SHADER_FRAGMENT && !dynamic)
       NIR_PASS(_,nir,nir_shader_intrinsics_pass,select_target,nir_metadata_control_flow,NULL);
    NIR_PASS(_,nir,nir_opt_constant_folding);
    struct pan_compile_inputs inputs={.gpu_id=0x07201000,.is_blit=true,.no_idvs=true};
@@ -300,8 +302,20 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage)
          }
       }
    }
+   struct a5_dynamic_info dynamic_info={0};
    fprintf(stderr,"%s: final NIR\n",input);nir_print_shader(nir,stdout);
    pan_shader_compile(nir,&inputs,&binary,&info);
+   /* Midgard's optimizer eliminates inactive constant-blob/storage branches.
+    * Analyze the actual optimized program, never declarations or an earlier
+    * unoptimized AIR translation, before publishing any executable bytes. */
+   if(dynamic && !a5_dynamic_analyze(nir,dynamic,&dynamic_info)){
+      fprintf(stderr,"unsupported dynamic live resource or IO ABI\n");
+      util_dynarray_fini(&binary);ralloc_free(nir);return 2;
+   }
+   if(dynamic && (!binary.size || binary.size>4096 || info.tls_size || info.wls_size ||
+      info.work_reg_count>16 || info.texture_count>4 || info.ubo_count>8)){
+      fprintf(stderr,"unsupported dynamic native limits\n");util_dynarray_fini(&binary);ralloc_free(nir);return 2;
+   }
    FILE *f=fopen(output,"wb");
    int rc=1;
    if(f && binary.size && fwrite(binary.data,1,binary.size,f)==binary.size){
@@ -310,13 +324,29 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage)
          output,binary.size,info.midgard.first_tag,info.texture_count,info.work_reg_count,
          info.tls_size,info.wls_size,info.attribute_count,info.ubo_count,info.sampler_count);
    }
-   if(f)fclose(f);util_dynarray_fini(&binary);ralloc_free(nir);return rc;
+   if(f)fclose(f);
+   if(!rc && dynamic && !a5_dynamic_write(info_path,stage,&info,binary.size,&dynamic_info))rc=2;
+   if(rc && dynamic){remove(output);remove(info_path);}
+   util_dynarray_fini(&binary);ralloc_free(nir);return rc;
 }
 int main(int argc,char**argv)
 {
+   if(argc==7 && !strcmp(argv[1],"--dynamic-stage")){
+      mesa_shader_stage stage;
+      if(!strcmp(argv[2],"vertex"))stage=MESA_SHADER_VERTEX;
+      else if(!strcmp(argv[2],"fragment"))stage=MESA_SHADER_FRAGMENT;
+      else return 2;
+      struct a5_dynamic_profile profile;
+      if(!a5_dynamic_read(argv[5],stage,&profile)){
+         fprintf(stderr,"invalid dynamic reflected ABI manifest\n");return 2;
+      }
+      glsl_type_singleton_init_or_ref();
+      int rc=compile(argv[3],argv[4],stage,&profile,argv[6]);
+      glsl_type_singleton_decref();return rc;
+   }
    if(argc!=5){fprintf(stderr,"usage: %s vert.spv frag.spv vert.bin frag.bin\n",argv[0]);return 2;}
    glsl_type_singleton_init_or_ref();
-   int rc=compile(argv[1],argv[3],MESA_SHADER_VERTEX);
-   if(!rc)rc=compile(argv[2],argv[4],MESA_SHADER_FRAGMENT);
+   int rc=compile(argv[1],argv[3],MESA_SHADER_VERTEX,NULL,NULL);
+   if(!rc)rc=compile(argv[2],argv[4],MESA_SHADER_FRAGMENT,NULL,NULL);
    glsl_type_singleton_decref();return rc;
 }

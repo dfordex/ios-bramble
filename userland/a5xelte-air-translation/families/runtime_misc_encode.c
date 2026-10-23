@@ -272,6 +272,79 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
   pass->vertex.byteCount==2192&&pass->fragment.byteCount==fragmentBytes&&
   pass->vertex.workRegisters==8&&pass->fragment.workRegisters==fragmentRegs;
 }
+/* Dynamic code is compiled from the pinned source library by the root worker.
+ * Its module fingerprint is deliberately not enumerated here. This independent
+ * encoder gate admits only resource/packing semantics this emitter implements. */
+static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
+ if(p->profileID!=A5MaliDynamicProfileID||
+    !(p->flags&A5MaliProfileDynamicStages)||
+    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend))||
+    !(p->flags&A5MaliProfileSourceOverBlend)||p->passCount!=1||!p->passes||
+    p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
+    !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
+    p->colorFormats[0]!=80||p->viewportWidth||p->viewportHeight||
+    p->attributeCount!=4||!p->attributes||p->layoutCount!=1||!p->layouts||
+    !p->resourceCount||p->resourceCount>16||!p->resources||
+    !p->pushFieldCount||p->pushFieldCount>16||!p->pushFields||
+    p->attachmentContractCount!=2||!p->attachmentContracts)return 0;
+ for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return 0;
+ static const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
+ for(unsigned i=0;i<4;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
+  if(a->index!=i||a->format!=formats[i]||a->offset!=offsets[i]||a->bufferIndex!=1)return 0;
+ }
+ const A5MaliCompiledVertexLayout*l=p->layouts;
+ if(l->index!=1||l->stride!=48||l->stepFunction!=1||l->stepRate!=1)return 0;
+ unsigned textures=0,samplers=0;uint32_t bindings[2]={0},slots[2]={0};
+ for(unsigned i=0;i<p->resourceCount;++i){const A5MaliCompiledResource*r=p->resources+i;
+  if((r->stage!=1&&r->stage!=2)||r->flags!=A5MaliResourceRead||r->windowOffset||r->sysvalOffset)return 0;
+  unsigned st=r->stage-1;
+  if(r->kind==A5MaliResourceBuffer){
+   if(r->metalIndex>=31||r->bindingIndex>=7||r->nativeIndex!=r->bindingIndex+1||
+      !r->uniformBytes||r->uniformBytes>4096||r->pushOffset>76||(r->pushOffset&3)||
+      (bindings[st]&(1u<<r->bindingIndex))||(slots[st]&(1u<<r->metalIndex)))return 0;
+   bindings[st]|=1u<<r->bindingIndex;slots[st]|=1u<<r->metalIndex;
+  }else if(r->kind==A5MaliResourceTexture){
+   if(r->stage!=2||r->metalIndex!=3||r->nativeIndex||r->uniformBytes||r->pushOffset||textures++)return 0;
+  }else if(r->kind==A5MaliResourceSampler){
+   if(r->stage!=2||r->metalIndex||r->nativeIndex||r->uniformBytes||r->pushOffset||samplers++)return 0;
+  }else return 0;
+ }
+ if(textures!=1||samplers!=1)return 0;
+ uint32_t used[2]={0};
+ for(unsigned i=0;i<p->pushFieldCount;++i){const A5MaliCompiledPushField*f=p->pushFields+i;
+  if((f->stage!=1&&f->stage!=2)||f->bytes!=4||f->offset>76||(f->offset&3)||
+     (used[f->stage-1]&(1u<<(f->offset/4))))return 0;
+  used[f->stage-1]|=1u<<(f->offset/4);
+  if(f->kind==A5MaliPushBindOffset){
+   unsigned match=0;
+   for(unsigned j=0;j<p->resourceCount;++j){const A5MaliCompiledResource*r=p->resources+j;
+    if(r->stage==f->stage&&r->kind==A5MaliResourceBuffer&&r->metalIndex==f->metalIndex&&r->pushOffset==f->offset)match++;
+   }
+   if(match!=1||f->value)return 0;
+  }else if(f->kind!=A5MaliPushColorWriteRule||f->stage!=2||f->value!=0x2222||f->metalIndex)return 0;
+ }
+ for(unsigned i=0;i<p->resourceCount;++i){const A5MaliCompiledResource*r=p->resources+i;
+  if(r->kind==A5MaliResourceBuffer&&!(used[r->stage-1]&(1u<<(r->pushOffset/4))))return 0;
+ }
+ for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i){
+  const A5MaliCompiledAttachmentState*a=&p->attachmentContracts[c].attachments[i];
+  unsigned over=c==1&&i==0;
+  if(a->writeMask!=15||a->blendEnabled!=over||a->rgbOperation||a->alphaOperation||
+     a->sourceRGB!=1||a->sourceAlpha!=1||a->destinationRGB!=(over?5u:0u)||
+     a->destinationAlpha!=(over?5u:0u))return 0;
+ }
+ return 1;
+}
+int A5MaliDynamicRuntimeProfileSupported(const A5MaliCompiledProfile*p){
+ return p&&dynamic_textured_contract(p);
+}
+static unsigned dynamic_ubo_count(const A5MaliCompiledProfile*p,unsigned stage){
+ unsigned count=1;
+ for(unsigned i=0;i<p->resourceCount;++i){const A5MaliCompiledResource*r=p->resources+i;
+  if(r->stage==stage&&r->kind==A5MaliResourceBuffer&&r->nativeIndex>=count)count=r->nativeIndex+1;
+ }
+ return count;
+}
 static int bind_buffer(const A5RuntimeMiscDraw*m,uint8_t*d,unsigned*arena,
  const A5RuntimeBuffer*b,unsigned need,uint64_t*addr,unsigned*push,unsigned*available){
  if(!need||b->offset>b->bytes||need>b->bytes-b->offset)return 0;
@@ -365,7 +438,7 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
    buf(d,VS_VARY_BUFS+48,VA+VARY_DATA+0x1000,16,r->vertexCount*16);
    attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);
    buf(d,FS_VARY_BUFS,VA+VARY_DATA,8,r->vertexCount*8);
-   if(p->profileID==604){
+   if(p->profileID==604||(p->flags&A5MaliProfileDynamicColorVarying)){
     /* The texture-function-3 fragment reads both UV (VAR0) and the
      * interpolated half4 vertex colour (VAR1, promoted to float4). */
     attr(d,FS_VARY+8,1,MALI_RGBA32F,0x688,0);
@@ -439,13 +512,14 @@ static void jobs(uint8_t*d,uint64_t VA,const A5RuntimeDraw*r,uint64_t indexVA){
 }
 static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  const A5RuntimeDraw*r=&m->draw;const A5MaliCompiledProfile*p=r->profile;
- if(!p||!(p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601||p->profileID==602||p->profileID==603||p->profileID==604||p->profileID==605||p->profileID==606)||
+ if(!p||!(p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601||p->profileID==602||p->profileID==603||p->profileID==604||p->profileID==605||p->profileID==606||p->profileID==A5MaliDynamicProfileID)||
   p->passCount<1||p->passCount>2||!p->passes||m->passIndex>=p->passCount||p->resourceCount>16||p->pushFieldCount>16)return A5RuntimeUnsupported;
  const A5MaliCompiledPass*pass=p->passes+m->passIndex;
  int home=p->profileID==206,clear=p->profileID==207,generic_color=p->profileID==600||p->profileID==601||p->profileID==602;
- int generic_textured=p->profileID==603||p->profileID==604||p->profileID==605||p->profileID==606;
+ int dynamic=p->profileID==A5MaliDynamicProfileID;
+ int generic_textured=p->profileID==603||p->profileID==604||p->profileID==605||p->profileID==606||dynamic;
  if(generic_color&&!generic_color_contract(p))return A5RuntimeUnsupported;
- if(generic_textured&&!generic_textured_contract(p))return A5RuntimeUnsupported;
+ if(generic_textured&&!(dynamic?dynamic_textured_contract(p):generic_textured_contract(p)))return A5RuntimeUnsupported;
  if(pass->logicalTarget>=2||p->passCount!=1||pass->logicalTarget!=(clear?1u:0u))return A5RuntimeUnsupported;
  if(!span(r->descriptorGPUVA,SIZE)||(r->descriptorGPUVA&4095))return A5RuntimeBounds;
  for(unsigned i=0;i<p->passCount;++i){unsigned target=p->passes[i].logicalTarget;if(target>=2)return A5RuntimeUnsupported;
@@ -479,8 +553,17 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
    fs->tlsBytes||fs->wlsBytes||!vs->workRegisters||vs->workRegisters>16||!fs->workRegisters||fs->workRegisters>16)return A5RuntimeUnsupported;
  memcpy(d+VS_CODE,vs->bytes,vs->byteCount);memcpy(d+FS_CODE,fs->bytes,fs->byteCount);
  unsigned fmt=out->metalPixelFormat==115?2:out->metalPixelFormat==10?1:out->metalPixelFormat==30?3:0;
- framebuffer(d,r->descriptorGPUVA,fmt,out);renderer(d,r->descriptorGPUVA,home,clear,generic_color,generic_textured,p->profileID==604,vs->workRegisters,fs->workRegisters,
+ framebuffer(d,r->descriptorGPUVA,fmt,out);renderer(d,r->descriptorGPUVA,home,clear,generic_color,generic_textured,p->profileID==604||!!(p->flags&A5MaliProfileDynamicColorVarying),vs->workRegisters,fs->workRegisters,
   p->flags&A5MaliProfileInlineSourceOver?0:r->blend);
+ if(dynamic){
+  struct MALI_RENDERER_STATE rs;
+  MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+VS_RSD),&rs);
+  rs.properties.uniform_buffer_count=dynamic_ubo_count(p,A5MaliStageVertex);
+  MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+VS_RSD),&rs);
+  MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
+  rs.properties.uniform_buffer_count=dynamic_ubo_count(p,A5MaliStageFragment);
+  MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
+ }
  if(p->flags&A5MaliProfileInlineSourceOver){
   /* Inline blend shader reads the preloaded tilebuffer. Fixed-function RSD
    * remains copy, never applies the equation a second time. */

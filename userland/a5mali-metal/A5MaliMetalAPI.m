@@ -9,6 +9,7 @@
 #import "A5MaliCompiledRegistry.h"
 #import "A5MaliShaderCompileRequest.h"
 #import "A5MaliShaderCompiledCache.h"
+#import "A5MaliDynamicPipeline.h"
 #import "A5MaliNative.h"
 #import "A5MaliNativeUpload.h"
 #include "../a5xelte-air-translation/families/runtime_encode.h"
@@ -32,7 +33,7 @@
  * actual typed stage constants, native hashes and complete pipeline state. */
 static BOOL compiledTexturedProfile(uint32_t profileID)
 {
-    return profileID>=603 && profileID<=606;
+    return (profileID>=603 && profileID<=606)||profileID==A5MaliDynamicProfileID;
 }
 
 /* Independent bounded receipt budgets: resource metadata only, never payloads. */
@@ -169,7 +170,7 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 @property (nonatomic, readonly) BOOL sourceOver;
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
     profile:(const A5MaliCompiledProfile *)profile sourceOver:(BOOL)sourceOver
-    compileRequestID:(nullable NSString *)requestID;
+    compileRequestID:(nullable NSString *)requestID dynamicOwner:(nullable A5MaliDynamicPipelineEntry *)owner;
 @end
 @implementation A5MaliCompiledPipeline {
     const A5MaliCompiledProfile *_profile;
@@ -177,15 +178,16 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
     NSString *_compileRequestID;
     NSLock *_compiledCacheLock;
     A5MaliShaderCompiledCacheEntry *_compiledCacheEntry;
+    A5MaliDynamicPipelineEntry *_dynamicOwner;
     double _nextCachePoll;
 }
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
     profile:(const A5MaliCompiledProfile *)profile sourceOver:(BOOL)sourceOver
-    compileRequestID:(NSString *)requestID
+    compileRequestID:(NSString *)requestID dynamicOwner:(A5MaliDynamicPipelineEntry *)owner
 {
     if ((self = [super initWithDevice:device])) {
-        _profile=profile;_sourceOver=sourceOver;
-        _compileRequestID=(profile->profileID==602 || compiledTexturedProfile(profile->profileID))?[requestID copy]:nil;
+        _profile=profile;_sourceOver=sourceOver;_dynamicOwner=owner;
+        _compileRequestID=(profile->profileID!=A5MaliDynamicProfileID && (profile->profileID==602 || compiledTexturedProfile(profile->profileID)))?[requestID copy]:nil;
         _compiledCacheLock=[NSLock new];
     }
     return self;
@@ -345,21 +347,26 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     uint32_t profileID=0;
 #if A5_MALI_NATIVE_RENDER
     const A5MaliCompiledProfile *profile=NULL;
+    A5MaliDynamicPipelineEntry *dynamicOwner=nil;
     if(!authenticatedPair)rejection=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
         code:kIOReturnUnsupported userInfo:@{NSLocalizedDescriptionKey:
         @"factory requires authenticated same-device functions from one library"}];
     else profile=A5MaliSelectCompiledProfile(descriptor,&rejection);
+    if(!profile && authenticatedPair && ([vertex dynamicShader] || [fragment dynamicShader])){
+        dynamicOwner=A5MaliComposeDynamicPipeline(descriptor,&rejection);
+        profile=dynamicOwner.profile;
+    }
     if(profile)profileID=profile->profileID;
     BOOL executable=profile && ((profile->profileID>=99 && profile->profileID<=108) ||
         profile->profileID==200 || profile->profileID==202 || profile->profileID==204 ||
         profile->profileID==206 || profile->profileID==207 ||
-        (profile->profileID>=600 && profile->profileID<=606) ||
+        (profile->profileID>=600 && profile->profileID<=606) || profile->profileID==A5MaliDynamicProfileID ||
         (profile->profileID>=300 && profile->profileID<=302));
     if(executable && [[self privateDevice]supportsNativePrograms]){
         if(error)*error=nil;
         logPipelineDecision(self,descriptor,profileID,YES,@"authenticated executable profile");
         return [[A5MaliCompiledPipeline alloc]initWithDevice:self profile:profile
-            sourceOver:descriptor.colorAttachments[0].isBlendingEnabled compileRequestID:compileRequestID];
+            sourceOver:descriptor.colorAttachments[0].isBlendingEnabled compileRequestID:compileRequestID dynamicOwner:dynamicOwner];
     }
     if(profile)rejection=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali"
         code:kIOReturnUnsupported userInfo:@{NSLocalizedDescriptionKey:executable?
@@ -1275,7 +1282,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     NSUInteger primitiveCount=indexed?indexCount:count;
     if(!profile || !(profile->profileID==200 || profile->profileID==202 ||
         profile->profileID==204 || profile->profileID==206 || profile->profileID==207 ||
-        (profile->profileID>=600 && profile->profileID<=606) ||
+        (profile->profileID>=600 && profile->profileID<=606) || profile->profileID==A5MaliDynamicProfileID ||
         (profile->profileID>=300 && profile->profileID<=302)) ||
         !profile->passCount || profile->passCount>2 || primitiveCount<3 ||
         (!indexed && count>A5RuntimeMaxVertices) ||
@@ -1339,6 +1346,9 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         /* The coord5/image17 contract is validated with real alpha-only
          * textures. Other source formats need their own pixel proof. */
         if(profile->profileID==606)sourceFormat=image.pixelFormat==MTLPixelFormatA8Unorm;
+        if(profile->profileID==A5MaliDynamicProfileID)sourceFormat=
+            image.pixelFormat==MTLPixelFormatBGRA8Unorm||image.pixelFormat==MTLPixelFormatA8Unorm||
+            image.pixelFormat==MTLPixelFormatR8Unorm||image.pixelFormat==MTLPixelFormatRG8Unorm;
         if(!image || !(image.usage&MTLTextureUsageShaderRead) || !sourceFormat)return NO;
         if(textured && (r->metalIndex!=3 || image.mipmapLevelCount!=1 ||
             image.textureType!=MTLTextureType2D || image.sampleCount!=1))return NO;
@@ -1357,7 +1367,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
     NSMutableArray<NSMutableSet<NSNumber *> *> *storageSlots=
         [NSMutableArray arrayWithObjects:[NSMutableSet new],[NSMutableSet new],nil];
-    if(profile->profileID==206 || (profile->profileID>=600 && profile->profileID<=606))
+    if(profile->profileID==206 || (profile->profileID>=600 && profile->profileID<=606) || profile->profileID==A5MaliDynamicProfileID)
         windows[0][@1]=@((indexed?1:count)*48);
     for(uint32_t i=0;i<profile->resourceCount;++i){const A5MaliCompiledResource*r=profile->resources+i;
         if(r->kind!=A5MaliResourceBuffer)continue;

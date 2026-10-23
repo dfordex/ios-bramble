@@ -110,10 +110,10 @@ fi
 sdk=$(xcrun --sdk iphoneos --show-sdk-path)
 xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -mcpu=cortex-a53 -march=armv8-a+crypto \
     -isysroot "$sdk" -fobjc-arc -fblocks -Wall -Wextra -Werror \
-    -DA5_MALI_RUNTIME_AUDIT_LIBRARY=1 "$@" -bundle \
+    -DA5_MALI_RUNTIME_AUDIT_LIBRARY=1 -DA5_MALI_DYNAMIC_SHADER_COMPILER=1 "$@" -bundle \
     "$src_dir/A5MaliBridge.c" "$src_dir/A5MaliNative.c" "$src_dir/A5MaliNativeUpload.c" "$src_dir/A5MaliCommandBuffer.m" \
     "$src_dir/A5MaliRestrictedDevice.m" "$src_dir/A5MaliMetalAPI.m" "$src_dir/A5MaliMetalTexture.m" "$src_dir/A5MaliNativeTextureOps.m" \
-    "$src_dir/A5MaliShaderCompiledCache.m" "$src_dir/A5MaliShaderCompileRequest.m" "$src_dir/A5MaliMetalLibrary.m" \
+    "$src_dir/A5MaliShaderCompiledCache.m" "$src_dir/A5MaliDynamicShaderCache.m" "$src_dir/A5MaliDynamicPipeline.m" "$src_dir/A5MaliShaderCompileRequest.m" "$src_dir/A5MaliMetalLibrary.m" \
     "$src_dir/A5MaliMetalDeviceResources.m" \
     "$src_dir/A5MaliMetalUnsupportedSPI.m" \
     "$src_dir/A5MaliDiscoveryAudit.m" "$src_dir/A5ProtocolRuntimeAudit.m" "$plugin_dir/A5MaliMetalDevice.m" \

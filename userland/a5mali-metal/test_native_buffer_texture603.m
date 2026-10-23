@@ -8,6 +8,9 @@
 #import "A5MaliMetalTexture.h"
 #import "A5MaliNative.h"
 #import "A5MaliCompiledRegistry.h"
+#ifndef A5_TEST_DYNAMIC_SHADER
+#define A5_TEST_DYNAMIC_SHADER 0
+#endif
 #ifndef A5_TEST_TEXTURED_PROFILE
 #define A5_TEST_TEXTURED_PROFILE 603
 #endif
@@ -25,6 +28,18 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#if A5_TEST_DYNAMIC_SHADER
+#include <unistd.h>
+#import "A5MaliDynamicShaderCache.h"
+#include "../a5xelte-air-translation/families/runtime_misc_encode.h"
+@interface A5MaliMetalFunction (DynamicStageTransportTest)
+- (instancetype)initWithLibrary:(A5MaliMetalLibrary *)library dynamicShader:(A5MaliDynamicShaderCacheEntry *)entry;
+@end
+uid_t A5MaliDynamicShaderCacheTestUID(void){return geteuid();}
+@interface A5MaliReadSurfCandidate (DynamicTransportTest)
+- (const A5MaliCompiledProfile *)profile;
+@end
+#endif
 
 @interface A5MaliMetalBuffer (BufferTexture603FenceTest)
 - (A5MaliCommandBuffer *)privateBuffer;
@@ -94,7 +109,7 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
     }
     assert(selector==A5NativeSubmitSelector);
     const A5NativeSubmitRequest*q=input;
-    assert(bytes==sizeof(*q)+A5NativeJobBytes&&q->profileID==A5_TEST_TEXTURED_PROFILE&&q->mappingEpoch==107);
+    assert(bytes==sizeof(*q)+A5NativeJobBytes&&q->profileID==(A5_TEST_DYNAMIC_SHADER?A5MaliDynamicProfileID:A5_TEST_TEXTURED_PROFILE)&&q->mappingEpoch==107);
     assert(q->readSurfaces==1&&q->writeSurfaces==1&&q->readBuffers==1);
     assert(q->surfaces[0]==UINT64_C(0x100000001)&&!q->surfaces[1]&&q->buffers[0]==s->handle);
     assert(s->uploaded==s->length&&!memcmp(s->actual,s->expected,s->length));
@@ -105,7 +120,11 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
     assert(contains(j+0x20000,0x10000,s->vertices,sizeof(s->vertices)));
     assert(contains(j+0x20000,0x10000,s->matrix,sizeof(s->matrix)));
     assert(contains(j+0x20000,0x10000,s->transform,sizeof(s->transform)));
-    assert(contains(j+0x20000,0x10000,s->lod,sizeof(s->lod)));
+    assert(contains(j+0x20000,0x10000,s->lod,A5_TEST_DYNAMIC_SHADER?4:sizeof(s->lod)));
+#if A5_TEST_DYNAMIC_SHADER
+    assert(p->fragment.byteCount==864&&p->vertex.byteCount==2192);
+    assert((u32(j+0x608)&0x3fffff)==((163u<<12)|0x124u));
+#endif
 #if A5_TEST_TEXTURED_PROFILE == 606
     assert(p->vertex.byteCount==2192&&p->fragment.byteCount==A5_TEST_FRAGMENT_BYTES);
     /* CPU Shared bindings are captured from their public offset at COMMIT.
@@ -136,6 +155,9 @@ static MTLFunctionConstantValues *constants(BOOL vertex)
     assert(c&&count==(vertex?4u:58u));MTLFunctionConstantValues *result=[MTLFunctionConstantValues new];
     for(size_t i=0;i<count;++i)[result setConstantValue:c[i].raw type:c[i].dataType
         withName:[NSString stringWithUTF8String:c[i].name]];
+#if A5_TEST_DYNAMIC_SHADER
+    if(!vertex){uint8_t image=17;[result setConstantValue:&image type:MTLDataTypeUChar withName:@"fc_image_function0"];}
+#endif
     return result;
 }
 static A5MaliReadSurfCandidate *pipeline(A5MaliRestrictedDevice *device,State *s)
@@ -146,6 +168,19 @@ static A5MaliReadSurfCandidate *pipeline(A5MaliRestrictedDevice *device,State *s
     MTLRenderPipelineDescriptor *d=[MTLRenderPipelineDescriptor new];
     d.vertexFunction=(id)[library newFunctionWithName:@"fixed_vert_lph_spc" constantValues:constants(YES) error:&error];
     d.fragmentFunction=(id)[library newFunctionWithName:@"fixed_frag_lph_cph" constantValues:constants(NO) error:&error];
+#if A5_TEST_DYNAMIC_SHADER
+    const char *vertexRequest=getenv("A5_TEST_DYNAMIC_VERTEX_REQUEST");
+    if(vertexRequest){
+        NSData *data=[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:vertexRequest]];
+        NSMutableDictionary *request=[NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:NULL];
+        NSString *requestID=request[@"request_id"];
+        [request removeObjectForKey:@"owner_uid"];[request removeObjectForKey:@"request_id"];
+        A5MaliDynamicShaderCacheEntry *entry=A5MaliLoadDynamicShaderStage(requestID,request,&error);
+        assert(entry&&!error&&entry.stage==A5MaliStageVertex);
+        d.vertexFunction=(id)[[A5MaliMetalFunction alloc]initWithLibrary:library dynamicShader:entry];
+        assert([(A5MaliMetalFunction *)d.vertexFunction dynamicShader]==entry);
+    }
+#endif
     assert(d.vertexFunction&&d.fragmentFunction&&!error);d.vertexDescriptor=[MTLVertexDescriptor vertexDescriptor];
     assert(s->profile->attributeCount==4&&s->profile->layoutCount==1);
     for(unsigned i=0;i<4;++i){const A5MaliCompiledVertexAttribute *a=s->profile->attributes+i;
@@ -171,7 +206,28 @@ static A5MaliReadSurfCandidate *pipeline(A5MaliRestrictedDevice *device,State *s
         d.colorAttachments[0].destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
         error=nil;
     }
-    A5MaliReadSurfCandidate *result=[device newRenderPipelineStateWithDescriptor:d error:&error];assert(result&&!error);return result;
+#if A5_TEST_DYNAMIC_SHADER
+    MTLLinkedFunctions *linked=[MTLLinkedFunctions new];linked.functions=@[d.vertexFunction];
+    d.vertexLinkedFunctions=linked;
+    assert(![device newRenderPipelineStateWithDescriptor:d error:&error]&&error);
+    d.vertexLinkedFunctions=nil;error=nil;
+    d.vertexDescriptor.attributes[0].offset=4;
+    assert(![device newRenderPipelineStateWithDescriptor:d error:&error]&&error);
+    d.vertexDescriptor.attributes[0].offset=0;error=nil;
+#endif
+    A5MaliReadSurfCandidate *result=[device newRenderPipelineStateWithDescriptor:d error:&error];assert(result&&!error);
+#if A5_TEST_DYNAMIC_SHADER
+    s->profile=[result profile];assert(s->profile&&s->profile->profileID==A5MaliDynamicProfileID);
+    assert(A5MaliDynamicRuntimeProfileSupported(s->profile));
+    A5MaliCompiledProfile changed=*s->profile;A5MaliCompiledResource resources[16];
+    memcpy(resources,changed.resources,changed.resourceCount*sizeof(*resources));changed.resources=resources;
+    resources[0].flags|=A5MaliResourceWrite;assert(!A5MaliDynamicRuntimeProfileSupported(&changed));
+    resources[0].flags=A5MaliResourceRead;resources[0].nativeIndex=8;
+    assert(!A5MaliDynamicRuntimeProfileSupported(&changed));
+    resources[0]=s->profile->resources[0];changed.flags|=A5MaliProfileNotExecutable;
+    assert(!A5MaliDynamicRuntimeProfileSupported(&changed));
+#endif
+    return result;
 }
 static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,id pipelineState,
     A5MaliMetalTexture*target,A5MaliMetalTexture*source,State*s)
@@ -302,7 +358,7 @@ static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sour
 }
 static void runCase(Fault fault,BOOL useSPI,BOOL blend)
 {
-#if A5_TEST_TEXTURED_PROFILE == 606
+#if A5_TEST_TEXTURED_PROFILE == 606 || A5_TEST_DYNAMIC_SHADER
     runCaseFormat(fault,useSPI,blend,MTLPixelFormatA8Unorm);
 #else
     runCaseFormat(fault,useSPI,blend,MTLPixelFormatBGRA8Unorm);

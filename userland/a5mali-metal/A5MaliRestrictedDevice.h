@@ -122,12 +122,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, nullable) NSString *installName;
 @end
 
+@class A5MaliDynamicShaderCacheEntry;
 @interface A5MaliMetalFunction : NSObject
 @property (nonatomic, readonly) NSString *name;
 @property (nonatomic, readonly) MTLFunctionType functionType;
 @property (nonatomic, readonly) A5MaliRestrictedDevice *device;
 @property (nonatomic, readonly) A5MaliMetalLibrary *library;
 @property (nonatomic, readonly) uint32_t specializationProfileID;
+@property (nullable, nonatomic, readonly) A5MaliDynamicShaderCacheEntry *dynamicShader;
 @property (nonatomic, readonly) MTLPatchType patchType;
 @property (nonatomic, readonly) NSInteger patchControlPointCount;
 @property (nonatomic, readonly) MTLFunctionOptions options;

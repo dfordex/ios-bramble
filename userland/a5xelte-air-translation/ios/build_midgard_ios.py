@@ -92,7 +92,7 @@ def main() -> int:
         "   NIR_PASS(_,nir,nir_lower_variable_initializers,\n"
         "            nir_var_function_temp|nir_var_shader_temp);\n" + anchor)
     generic_source.write_text(generic_source_text)
-    for name in ("misc_resource_lowering.h", "misc_native_rt.h"):
+    for name in ("misc_resource_lowering.h", "misc_native_rt.h", "misc_dynamic.h"):
         shutil.copyfile(family_dir / name, integration / name)
     shutil.copyfile(generic_profile, integration / "ios_602_profile.h")
     (integration / "meson.build").write_text(
@@ -146,6 +146,9 @@ def main() -> int:
             executable.read_bytes()).hexdigest(), "dependencies": dependency_paths,
         "generic_602_source_sha256": hashlib.sha256(generic_source.read_bytes()).hexdigest(),
         "generic_profile_sha256": hashlib.sha256(generic_profile.read_bytes()).hexdigest(),
+        "generic_dynamic_abi_sha256": hashlib.sha256((integration / "misc_dynamic.h").read_bytes()).hexdigest(),
+        "generic_helper_sha256": {name: hashlib.sha256((integration / name).read_bytes()).hexdigest()
+            for name in ("misc_dynamic.h", "misc_resource_lowering.h", "misc_native_rt.h")},
         "generic_602_executable_sha256": hashlib.sha256(generic_executable.read_bytes()).hexdigest(),
     }, indent=2) + "\n")
     print(executable)

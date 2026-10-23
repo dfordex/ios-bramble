@@ -52,6 +52,8 @@ def verified_generic_backend(path, src):
     """Bind the device backend to all admitted modules, including606."""
     record = json.loads((path.parent / 'build-manifest.json').read_text())
     family = src.parent / 'families'
+    helpers = {name: sha(family / name) for name in
+        ('misc_dynamic.h', 'misc_resource_lowering.h', 'misc_native_rt.h')}
     code = (family / 'misc_backend.c').read_text()
     anchor = '   pan_preprocess_nir(nir,inputs.gpu_id);'
     if code.count(anchor) != 1:
@@ -68,11 +70,14 @@ def verified_generic_backend(path, src):
             hashlib.sha256(code.encode()).hexdigest() or
             record.get('generic_profile_sha256') !=
             sha(src.parent / 'generic' / 'ios_602_profile.h') or
+            record.get('generic_dynamic_abi_sha256') != helpers['misc_dynamic.h'] or
+            record.get('generic_helper_sha256') != helpers or
             record.get('generic_602_executable_sha256') != sha(path)):
         raise ValueError('generic backend does not bind the current authenticated module whitelist')
     return {key: record[key] for key in ('mesa_version', 'mesa_archive_sha256',
         'target', 'nir_validation', 'generic_602_source_sha256',
-        'generic_profile_sha256', 'generic_602_executable_sha256')}
+        'generic_profile_sha256', 'generic_dynamic_abi_sha256',
+        'generic_helper_sha256', 'generic_602_executable_sha256')}
 
 
 def load(path, name):

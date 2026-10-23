@@ -1,5 +1,55 @@
 # AIR translator on iOS
 
+## Dynamic standalone stages
+
+The request worker also accepts bounded typed vertex/fragment requests from
+its canonical per-owner spool. Admission checks the stock QuartzCore library
+digest, Mali-T720 GPU ID, compiler ABI, identifier, exact scalar/vector byte
+widths and at most64 named plus64 indexed constants. Function names and
+constant combinations are not matched against the602–606 recipes. Known
+pipeline recipes remain available unchanged.
+
+The host regression compiles an actual previously unregistered
+coord0/image17 fragment through AIR, mandatory SPIR-V validation, and the
+dynamic Midgard backend; it publishes an864-byte stage different from every
+602–606 native fragment pin. The same route compiles a standalone vertex and
+tests malformed typed bytes, spoofed library identity, old unsupported-status
+migration and public terminal-failure publication after a real translator
+error. These host results do not prove device pixels or pipeline execution.
+
+The current AIR tool exposes render-pair translation. For a standalone
+fragment request the worker supplies a trusted stock companion vertex and
+vertex descriptor; for a vertex request it supplies a trusted stock fragment
+and its constants, overridden by the requested constants. The selected
+function is actually translated and compiled. Only that selected native stage
+is published. The companion is translation scaffolding, and is explicitly
+recorded in the semantic reflection; it is not silently substituted for the
+requested function or represented as the application's pipeline.
+
+Reflected resource bindings, bounded buffer specialization ranges, texture
+indices and push ranges produce a bounded `A5MIDGARD1` backend manifest. The
+`--dynamic-stage` backend compiles the resulting SPIR-V without the known
+module fingerprint allowlist, retains active NIR validation, and emits actual
+native resource/varying metadata. Unsupported descriptor/specialization
+lowerings fail visibly. Mandatory SPIR-V validation and process/memory/output
+limits remain active.
+
+A root-owned0755 request directory in
+`/private/var/tmp/a5mali-shader-compiled` atomically publishes three root-owned
+0444 files: `receipt.json`, `stage.midgard`, and `reflection.json`. Schema2
+receipts carry the full request/source/stage identity, named/indexed constant
+hashes, native code hash and metadata, reflection hash, and the backend
+`native_abi` report. `stage_compiled=true` always accompanies
+`pipeline_compatible=false`: the provider must independently validate and link
+resources, varyings and pipeline state before submission.
+
+An older trusted `unsupported` status is retried only when the complete request
+now passes this dynamic typed-stage gate (or the existing exact606 pair gate).
+A genuine `failed` status is retained. After a child/compiler failure the
+KeepAlive worker's next scan publishes a schema2 terminal failure receipt with
+`stage_compiled=false` and `error`; it does not fabricate shader bytes or leave
+the consumer waiting forever on an inaccessible root-private status.
+
 ## Native compilation service
 
 `a5shader_compile.m` runs the actual AIR translator, mandatory Khronos
@@ -38,9 +88,10 @@ The 0204 phone log records real 604/605 jobs. Profile606 adds the observed
 coordinate5/image17 combination: a FragmentBuffer1 UV clamp and sampled alpha
 replicated to RGBA. Host compilation and cache admission do not establish606
 phone pixels or successful backboardd startup.
-Unknown functions and pipeline contracts receive
-explicit unsupported results. A compiled stage does not prove an arbitrary
-Metal pipeline can draw.
+Unrecognized pipeline recipes retain explicit unsupported results; standalone
+typed functions can enter the dynamic stage path above. Translation or
+lowering failures publish a terminal error. A compiled stage does not prove
+an arbitrary Metal pipeline can draw.
 
 Build the explicit no-timeout translator with `build_air_no_timeout.py`, the
 Midgard tools with `build_midgard_ios.py`, and the validator with

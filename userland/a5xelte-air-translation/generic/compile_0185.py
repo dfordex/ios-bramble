@@ -145,7 +145,7 @@ def make_backend(out):
     target = out / 'backend'
     target.mkdir()
     for name in ('misc_compile.py', 'misc_resource_lowering.h',
-                 'misc_native_rt.h'):
+                 'misc_native_rt.h', 'misc_dynamic.h'):
         shutil.copyfile(base / name, target / name)
     original = (base / 'misc_backend.c').read_text()
     anchor = '   pan_preprocess_nir(nir,inputs.gpu_id);'

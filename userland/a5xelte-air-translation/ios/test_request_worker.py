@@ -63,6 +63,8 @@ def main():
                  'metallib', 'fragment-capture', 'work-dir'):
         p.add_argument('--' + name, type=Path, required=True)
     p.add_argument('--vertex-capture', type=Path)
+    p.add_argument('--dynamic-capture', type=Path,
+                   help='new non-profiled fragment constant request to compile without native pins')
     p.add_argument('--other-known', type=Path, required=True)
     p.add_argument('--additional-known', type=Path, action='append', default=[],
                    help='remaining installed exact generic contracts')
@@ -196,6 +198,100 @@ def main():
     finally:
         stop(service)
         output.close()
+    if a.dynamic_capture is not None:
+        captured = json.loads(a.dynamic_capture.read_text())
+        dynamic_body = dict(function(base, 'fragment', captured), owner_uid=uid)
+        dynamic_id = sha(canonical(dynamic_body))
+        dynamic_status = cache / 'request-status' / f'{dynamic_id}.json'
+        dynamic_status.write_bytes(canonical({'schema': 1, 'request_id': dynamic_id,
+            'status': 'unsupported', 'reason': 'previous package cannot compile dynamic stages'}))
+        dynamic_status.chmod(0o600)
+        enqueue(uid_dir, dynamic_body)
+        with (work / 'dynamic.log').open('w') as log:
+            service = subprocess.Popen([str(runner), '--serve'], stdout=log, stderr=subprocess.STDOUT)
+            try:
+                dynamic_result = published / dynamic_id
+                wait_for(dynamic_result / 'receipt.json', service)
+                record = json.loads((dynamic_result / 'receipt.json').read_text())
+                assert record['schema'] == 2 and record['kind'] == 'dynamic-stage'
+                assert record['stage'] == 'fragment' and record['stage_compiled'] is True
+                assert record['pipeline_compatible'] is False and record['request_id'] == dynamic_id
+                assert record['function'] == dynamic_body['function']
+                assert record['named_constants_sha256'] == sha(canonical(dynamic_body['named_constants']))
+                assert record['indexed_constants_sha256'] == sha(canonical(dynamic_body['indexed_constants']))
+                assert set(p.name for p in dynamic_result.iterdir()) == {'receipt.json', 'stage.midgard', 'reflection.json'}
+                for key in ('native', 'reflection'):
+                    meta = record[key]; data = (dynamic_result / meta['file']).read_bytes()
+                    assert len(data) == meta['bytes'] and sha(data) == meta['sha256']
+                for path in dynamic_result.iterdir():
+                    assert path.stat().st_mode & 0o777 == 0o444 and path.stat().st_uid == uid
+                assert not dynamic_status.exists()
+                known_hashes = {json.loads(path.read_text())['midgard']['frag']['sha256']
+                    for path in tools.glob('generic*.json')}
+                assert record['native']['sha256'] not in known_hashes, 'dynamic test must compile an unregistered stage'
+                reflection = json.loads((dynamic_result / 'reflection.json').read_text())
+                assert reflection['compilation_context']['selected_native_stage_only'] is True
+                assert record['native_abi']['schema'] == 1
+                # The same unpinned path compiles an actual vertex stage;
+                # its fragment companion supplies translation scaffolding only.
+                vertex_body = dict(base, owner_uid=uid, stage='vertex',
+                    function=known['vertex_function'],
+                    named_constants=known['vertex_constants'], indexed_constants=[])
+                vertex_id = enqueue(uid_dir, vertex_body)
+                vertex_path = published / vertex_id / 'receipt.json'
+                wait_for(vertex_path, service)
+                vertex_record = json.loads(vertex_path.read_text())
+                assert vertex_record['schema'] == 2 and vertex_record['stage'] == 'vertex'
+                assert vertex_record['stage_compiled'] is True and vertex_record['pipeline_compatible'] is False
+                assert vertex_record['native']['bytes'] == 2192
+                # Malformed copied bytes and a spoofed library cannot enter
+                # the dynamic compiler even if the spool object is owned.
+                for bad in ('bytes', 'source'):
+                    bad_body = json.loads(json.dumps(dynamic_body))
+                    if bad == 'bytes':
+                        bad_body['named_constants'][0]['raw'] = 'zz'
+                    else:
+                        bad_body['metallib_sha256'] = '0' * 64
+                    bad_id = enqueue(uid_dir, bad_body)
+                    bad_path = cache / 'request-status' / f'{bad_id}.json'
+                    wait_for(bad_path, service, 20)
+                    assert json.loads(bad_path.read_text())['status'] == 'unsupported'
+                    assert not (published / bad_id).exists()
+                print(json.dumps({'dynamic_stage_host_end_to_end': True,
+                    'request_id': dynamic_id, 'native': record['native'],
+                    'receipt': str(dynamic_result / 'receipt.json'),
+                    'device_verified': False}, indent=2))
+            finally:
+                stop(service)
+        # Genuine translator errors survive restart and become public terminal
+        # failure receipts, so a provider can stop waiting for absent code.
+        invalid_body = dict(dynamic_body, function='a5_function_does_not_exist')
+        invalid_id = enqueue(uid_dir, invalid_body)
+        with (work / 'dynamic-failure.log').open('w') as log:
+            service = subprocess.Popen([str(runner), '--serve'], stdout=log, stderr=subprocess.STDOUT)
+            try:
+                if service.wait(timeout=45) == 0:
+                    raise AssertionError('nonexistent AIR function unexpectedly compiled')
+            finally:
+                if service.poll() is None:
+                    stop(service)
+        failed_record = json.loads((cache / 'request-status' / f'{invalid_id}.json').read_text())
+        assert failed_record['status'] == 'failed'
+        with (work / 'dynamic-failure-restart.log').open('w') as log:
+            service = subprocess.Popen([str(runner), '--serve'], stdout=log, stderr=subprocess.STDOUT)
+            try:
+                failure_path = published / invalid_id / 'receipt.json'
+                wait_for(failure_path, service, 20)
+                failure = json.loads(failure_path.read_text())
+                assert failure['stage_compiled'] is False and failure['pipeline_compatible'] is False
+                assert failure['request_id'] == invalid_id and isinstance(failure['error'], str)
+                assert set(path.name for path in failure_path.parent.iterdir()) == {'receipt.json'}
+                assert json.loads((cache / 'request-status' / f'{invalid_id}.json').read_text()) == failed_record
+                if service.poll() is not None:
+                    raise AssertionError('failed dynamic stage restarted compilation')
+            finally:
+                stop(service)
+        print('dynamic stage unsupported migration, semantic publication and public terminal failure: PASS')
     if a.stale_fragment is not None:
         if known['profile_id'] != 603:
             p.error('--stale-fragment requires profile 603')

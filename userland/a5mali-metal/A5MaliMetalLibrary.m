@@ -5,6 +5,13 @@
 #import "A5MaliRestrictedDevice.h"
 #import "A5MaliCompiledRegistry.h"
 #import "A5MaliShaderCompileRequest.h"
+#import "A5MaliDynamicShaderCache.h"
+#import "A5MaliDynamicPipeline.h"
+#include <errno.h>
+#include <time.h>
+#ifndef A5_MALI_DYNAMIC_SHADER_COMPILER
+#define A5_MALI_DYNAMIC_SHADER_COMPILER 0
+#endif
 #import <CommonCrypto/CommonDigest.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -338,12 +345,15 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
     MTLFunctionType _functionType;
     uint32_t _specializationProfileID;
     NSDictionary *_compileRequestPayload;
+    A5MaliDynamicShaderCacheEntry *_dynamicShader;
 }
 - (instancetype)initWithLibrary:(A5MaliMetalLibrary *)library
                            name:(NSString *)name
                            type:(MTLFunctionType)type;
 - (instancetype)initWithLibrary:(A5MaliMetalLibrary *)library name:(NSString *)name
     type:(MTLFunctionType)type specializationProfileID:(uint32_t)profileID;
+- (instancetype)initWithLibrary:(A5MaliMetalLibrary *)library
+    dynamicShader:(A5MaliDynamicShaderCacheEntry *)entry;
 @end
 
 @implementation A5MaliRestrictedDevice (ExactQuartzCoreLibrary)
@@ -604,6 +614,34 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
             }
         }
         logFunctionSpecialization(name,constants);
+#if A5_MALI_DYNAMIC_SHADER_COMPILER
+        MTLFunctionType stage=0;
+        if([name hasPrefix:@"fixed_vert_"]||[name containsString:@"_vert"])stage=MTLFunctionTypeVertex;
+        else if([name hasPrefix:@"fixed_frag_"]||[name containsString:@"_frag"])stage=MTLFunctionTypeFragment;
+        NSDictionary *payload=stage?A5MaliShaderCompileFunctionPayload(name,stage,constants,error):nil;
+        NSString *requestID=nil;
+        if(payload && A5MaliForwardShaderCompileRequest(payload,&requestID,error)!=A5MaliShaderForwardFailed){
+            unsigned ticks=0;
+            for(;;){
+                NSError *failure=nil;
+                A5MaliDynamicShaderCacheEntry *entry=A5MaliLoadDynamicShaderStage(requestID,payload,&failure);
+                if(entry){
+                    if(error)*error=nil;
+                    fprintf(stderr,"A5XELTE Metal dynamic: function=%s stage=%u bytes=%u accepted=1\n",
+                        name.UTF8String,entry.stage,entry.shader->byteCount);
+                    return [[A5MaliMetalFunction alloc]initWithLibrary:self dynamicShader:entry];
+                }
+                if(failure.code!=ENOENT){if(error)*error=failure;return nil;}
+                if(!(ticks++%100))fprintf(stderr,"A5XELTE Metal dynamic: function=%s phase=waiting request=%s\n",
+                    name.UTF8String,requestID.UTF8String);
+                /* Synchronous Metal specialization cannot return a placeholder.
+                 * Wait outside provider/resource locks for actual compiled code
+                 * or a root-published terminal failure. No compile time limit. */
+                struct timespec pause={0,100000000};
+                while(nanosleep(&pause,&pause)&&errno==EINTR){}
+            }
+        }
+#endif
         if (error) *error = libraryError(@"no compiled AIR function-constant variant matches");
         return nil;
     }
@@ -637,6 +675,17 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
     }
     return self;
 }
+- (instancetype)initWithLibrary:(A5MaliMetalLibrary *)library dynamicShader:(A5MaliDynamicShaderCacheEntry *)entry
+{
+    if(!library||![entry isMemberOfClass:A5MaliDynamicShaderCacheEntry.class])return nil;
+    if((self=[super init])){
+        _library=library;_name=entry.functionName;_functionType=entry.stage;
+        _dynamicShader=entry;_specializationProfileID=A5MaliDynamicProfileID;
+        _compileRequestPayload=entry.functionPayload;
+    }
+    return self;
+}
+- (A5MaliDynamicShaderCacheEntry *)dynamicShader { return _dynamicShader; }
 - (NSString *)name { return _name; }
 - (MTLFunctionType)functionType { return _functionType; }
 - (A5MaliMetalLibrary *)library { return _library; }
@@ -754,6 +803,9 @@ static NSString *compiledDescriptorMismatch(const A5MaliCompiledProfile *p,
     }
     return nil;
 }
+
+NSString *A5MaliCompiledDescriptorMismatch(const A5MaliCompiledProfile *p,MTLRenderPipelineDescriptor *d)
+{ return compiledDescriptorMismatch(p,d); }
 
 static BOOL specializationIdentityMatches(A5MaliMetalFunction *function,
     const A5MaliCompiledProfile *profile,MTLFunctionType stage)

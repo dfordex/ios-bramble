@@ -424,11 +424,320 @@ static BOOL a5PublishedCurrentOrRetire603(NSString *key, NSDictionary *known)
     return NO;
 }
 
-/* A previously unsupported request may become executable after a recipe
- * upgrade. Retry only the newly added, exact 606 function pair. Status files
- * remain root-private, bounded and non-linkable; failed/other statuses remain
- * terminal. No arbitrary provider request can erase another status. */
-static BOOL a5HasTerminalRequestStatus(NSString *key, NSDictionary *known)
+/* Dynamic stage compilation is independent of the reviewed executable
+ * pipeline recipes. It publishes native code and reflection, never a blanket
+ * claim that an arbitrary pipeline can execute. */
+static BOOL a5Unsigned(id value,uint64_t maximum)
+{
+    return [value isKindOfClass:NSNumber.class]&&
+        CFGetTypeID((__bridge CFTypeRef)value)!=CFBooleanGetTypeID()&&
+        !CFNumberIsFloatType((__bridge CFNumberRef)value)&&
+        [value longLongValue]>=0&&[value unsignedLongLongValue]<=maximum;
+}
+static BOOL a5Identifier(id value)
+{
+    if(![value isKindOfClass:NSString.class]||![value length]||[value length]>128)return NO;
+    const char *name=[value UTF8String];
+    for(unsigned i=0;name[i];++i)if(!((name[i]>='a'&&name[i]<='z')||
+        (name[i]>='A'&&name[i]<='Z')||name[i]=='_'||(i&&name[i]>='0'&&name[i]<='9')))return NO;
+    return YES;
+}
+static NSUInteger a5ConstantWidth(NSUInteger type)
+{
+    if(type>=3&&type<=6)return 4*(type-2);
+    if(type>=16&&type<=19)return 2*(type-15);
+    if(type>=29&&type<=36)return 4*(1+(type-29)%4);
+    if(type>=37&&type<=44)return 2*(1+(type-37)%4);
+    if(type>=45&&type<=56)return 1+(type-45)%4;
+    if(type>=81&&type<=88)return 8*(1+(type-81)%4);
+    return 0;
+}
+static BOOL a5DynamicConstants(id array,BOOL indexed)
+{
+    if(![array isKindOfClass:NSArray.class]||[array count]>64)return NO;
+    NSMutableSet *seen=[NSMutableSet set];NSString *key=indexed?@"index":@"name";
+    for(NSDictionary *item in array){
+        if(!a5ExactKeys(item,@[key,@"type",@"bytes",@"raw"])||
+            !a5Unsigned(item[@"type"],88)||!a5Unsigned(item[@"bytes"],32))return NO;
+        NSUInteger type=[item[@"type"] unsignedIntegerValue],width=a5ConstantWidth(type);
+        NSString *raw=item[@"raw"];
+        if(!width||[item[@"bytes"] unsignedIntegerValue]!=width||
+            ![raw isKindOfClass:NSString.class]||raw.length!=width*2||
+            (indexed?!a5Unsigned(item[key],65535):!a5Identifier(item[key]))||
+            [seen containsObject:item[key]])return NO;
+        [seen addObject:item[key]];
+        for(NSUInteger i=0;i<raw.length;++i){unichar c=[raw characterAtIndex:i];
+            if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')))return NO;}
+        if(type>=53&&type<=56)for(NSUInteger i=0;i<width;++i)
+            if(![[raw substringWithRange:NSMakeRange(i*2,2)] isEqual:@"00"]&&
+                ![[raw substringWithRange:NSMakeRange(i*2,2)] isEqual:@"01"])return NO;
+    }
+    return YES;
+}
+static BOOL a5DynamicRequest(NSDictionary *request,NSString *librarySHA)
+{
+    return a5ExactKeys(request,@[@"schema",@"kind",@"source_library",@"metallib_sha256",
+        @"gpu_id",@"compiler_abi",@"stage",@"function",@"named_constants",
+        @"indexed_constants",@"owner_uid",@"request_id"])&&
+        a5Unsigned(request[@"schema"],1)&&[request[@"schema"] isEqual:@1]&&
+        [request[@"kind"] isEqual:@"function"]&&[request[@"source_library"] isEqual:@"quartzcore"]&&
+        [request[@"metallib_sha256"] isEqual:librarySHA]&&
+        [request[@"gpu_id"] isEqual:@"07201000"]&&
+        a5Unsigned(request[@"compiler_abi"],1)&&[request[@"compiler_abi"] isEqual:@1]&&
+        ( [request[@"stage"] isEqual:@"vertex"]||[request[@"stage"] isEqual:@"fragment"] )&&
+        a5Identifier(request[@"function"])&&
+        a5DynamicConstants(request[@"named_constants"],NO)&&
+        a5DynamicConstants(request[@"indexed_constants"],YES);
+}
+static NSArray *a5DynamicConstantArguments(NSArray *named,NSArray *indexed)
+{
+    NSMutableArray *result=[NSMutableArray array];
+    for(NSArray *list in @[named,indexed])for(NSDictionary *item in list){
+        NSUInteger type=[item[@"type"] unsignedIntegerValue],components=1,unit=1;
+        NSString *kind=nil;
+        if(type>=3&&type<=6){kind=@"float";components=type-2;unit=4;}
+        else if(type>=16&&type<=19){kind=@"half";components=type-15;unit=2;}
+        else if(type>=29&&type<=36){kind=type<33?@"int":@"uint";components=1+(type-29)%4;unit=4;}
+        else if(type>=37&&type<=44){kind=type<41?@"short":@"ushort";components=1+(type-37)%4;unit=2;}
+        else if(type>=45&&type<=56){kind=type<49?@"char":type<53?@"uchar":@"bool";components=1+(type-45)%4;}
+        else if(type>=81&&type<=88){kind=type<85?@"long":@"ulong";components=1+(type-81)%4;unit=8;}
+        if(!kind)fail(@"unsupported dynamic constant data type");
+        NSMutableArray *values=[NSMutableArray array];NSString *raw=item[@"raw"];
+        for(NSUInteger c=0;c<components;++c){uint64_t bits=0;
+            for(NSUInteger j=0;j<unit;++j){unsigned byte=0;
+                [[NSScanner scannerWithString:[raw substringWithRange:NSMakeRange((c*unit+j)*2,2)]] scanHexInt:&byte];
+                bits|=(uint64_t)byte<<(j*8);}
+            NSString *value;
+            if([kind isEqual:@"bool"])value=bits?@"true":@"false";
+            else if([kind isEqual:@"float"]||[kind isEqual:@"half"])
+                value=[NSString stringWithFormat:@"0x%llx",(unsigned long long)bits];
+            else if([@[@"char",@"short",@"int",@"long"] containsObject:kind]){
+                if(unit<8&&(bits&(UINT64_C(1)<<(unit*8-1))))bits|=UINT64_MAX<<(unit*8);
+                value=[NSString stringWithFormat:@"%lld",(long long)(int64_t)bits];
+            }else value=[NSString stringWithFormat:@"%llu",(unsigned long long)bits];
+            [values addObject:value];
+        }
+        NSString *typeName=components==1?kind:[kind stringByAppendingFormat:@"%lu",(unsigned long)components];
+        id key=item[@"name"]?:[item[@"index"] stringValue];
+        [result addObjectsFromArray:@[@"--constant",[NSString stringWithFormat:@"%@:%@:%@",key,typeName,
+            [values componentsJoinedByString:@","]]]];
+    }
+    return result;
+}
+static NSDictionary *a5DynamicIdentity(NSDictionary *request,BOOL success)
+{
+    return @{@"schema":@2,@"kind":@"dynamic-stage",@"request_id":request[@"request_id"],
+        @"source_library":@"quartzcore",@"metallib_sha256":request[@"metallib_sha256"],
+        @"gpu_id":@"07201000",@"compiler_abi":@1,@"stage":request[@"stage"],
+        @"function":request[@"function"],@"stage_compiled":@(success),@"pipeline_compatible":@NO,
+        @"named_constants_sha256":digest(a5Canonical(request[@"named_constants"])),
+        @"indexed_constants_sha256":digest(a5Canonical(request[@"indexed_constants"]))};
+}
+static void a5PublishDynamic(NSDictionary *request,NSDictionary *receipt,NSDictionary *files)
+{
+    NSString *key=request[@"request_id"],*final=[publishedRoot stringByAppendingPathComponent:key];
+    if([NSFileManager.defaultManager fileExistsAtPath:final])return;
+    NSString *work=[publishedRoot stringByAppendingPathComponent:
+        [@".dynamic-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    if(![NSFileManager.defaultManager createDirectoryAtPath:work withIntermediateDirectories:NO
+        attributes:@{NSFilePosixPermissions:@0700} error:NULL])fail(@"cannot create dynamic publication");
+    NSMutableDictionary *all=[files mutableCopy];all[@"receipt.json"]=a5Canonical(receipt);
+    for(NSString *name in all){NSString *path=[work stringByAppendingPathComponent:name];
+        writeData(all[name],path);if(chmod(path.fileSystemRepresentation,0444))fail(@"cannot protect dynamic publication");
+        int fd=open(path.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+        if(fd<0||fsync(fd)||close(fd))fail(@"cannot sync dynamic stage file");}
+    if(chmod(work.fileSystemRepresentation,0755))fail(@"cannot protect dynamic publication directory");
+    int fd=open(work.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0||fsync(fd)||close(fd)||rename(work.fileSystemRepresentation,final.fileSystemRepresentation))
+        fail(@"cannot publish dynamic stage");
+    fd=open(publishedRoot.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0||fsync(fd)||close(fd))fail(@"cannot sync dynamic publication root");
+}
+static void a5DynamicFailure(NSDictionary *request,NSString *reason)
+{
+    NSMutableDictionary *receipt=[a5DynamicIdentity(request,NO) mutableCopy];receipt[@"error"]=reason;
+    a5PublishDynamic(request,receipt,@{});
+    fprintf(stderr,"A5XELTE shader compiler: STAGE FAILED stage=%s request=%s reason=%s\n",
+        [request[@"stage"] UTF8String],[request[@"request_id"] UTF8String],reason.UTF8String);
+}
+
+static NSNumber *a5DynamicBufferSize(NSDictionary *reflection,NSString *title,NSDictionary *slot)
+{
+    if(![slot[@"stage"] isEqual:title]||![slot[@"class"] isEqual:@"Buffer"]||
+        !a5Unsigned(slot[@"index"],30))fail(@"invalid reflected dynamic buffer slot");
+    for(NSArray *entry in reflection[@"interface"][@"slots"]){
+        if(entry.count!=2)fail(@"invalid reflected interface slot");
+        if(![entry[0] isEqual:slot])continue;
+        NSDictionary *buffer=entry[1][@"Buffer"],*window=buffer[@"window"][@"Bounded"];
+        if(![buffer[@"access"] isEqual:@{@"read":@YES,@"write":@NO}]||
+            ![buffer[@"form"] isEqual:@{@"Descriptor":@"UniformWords"}]||
+            ![window[@"start"] isEqual:@0]||!a5Unsigned(window[@"len"],4096)||
+            ![window[@"len"] unsignedIntegerValue])fail(@"unsupported readonly dynamic buffer window");
+        return window[@"len"];
+    }
+    fail(@"dynamic buffer specialization has no reflected slot");return nil;
+}
+static NSString *a5DynamicABI(NSDictionary *reflection,NSString *stage)
+{
+    NSString *title=[stage isEqual:@"vertex"]?@"Vertex":@"Fragment";
+    NSString *shortStage=[stage isEqual:@"vertex"]?@"vert":@"frag";
+    uint32_t mask=[stage isEqual:@"vertex"]?1:16;
+    if(![reflection[@"kind"] isEqual:@"render"]||
+        ![reflection[@"layout"] isKindOfClass:NSDictionary.class]||
+        ![reflection[@"interface"] isKindOfClass:NSDictionary.class]||
+        [reflection[@"interface"][@"needs_pointer_translation"] boolValue]||
+        [reflection[@"interface"][@"needs_handle_translation"] boolValue])
+        fail(@"dynamic stage requires reflected bounded descriptor resources");
+    NSMutableString *manifest=[NSMutableString stringWithFormat:@"A5MIDGARD1\nstage %@\n",stage];
+    NSUInteger pushBytes=0;
+    for(NSDictionary *range in reflection[@"layout"][@"push_constants"]){
+        if(!a5Unsigned(range[@"stages"],31)||!a5Unsigned(range[@"offset"],80)||
+            !a5Unsigned(range[@"size"],80))fail(@"invalid reflected push range");
+        if(([range[@"stages"] unsignedIntValue]&mask)!=0){
+            NSUInteger end=[range[@"offset"] unsignedIntegerValue]+[range[@"size"] unsignedIntegerValue];
+            if(end>80||end%4)fail(@"dynamic push constants exceed aligned80 bytes");pushBytes=MAX(pushBytes,end);}
+    }
+    [manifest appendFormat:@"push_bytes %lu\n",(unsigned long)pushBytes];
+    unsigned resources=0,textures=0;
+    if([reflection[@"layout"][@"sets"] count]!=1)fail(@"dynamic stage requires exactly descriptor set0");
+    for(NSDictionary *set in reflection[@"layout"][@"sets"]){
+        if(![set[@"set"] isEqual:@0]||[set[@"flags"] unsignedIntegerValue])fail(@"dynamic stage only supports descriptor set0");
+        for(NSDictionary *binding in set[@"bindings"]){
+            if(!a5Unsigned(binding[@"stages"],31))fail(@"invalid reflected binding stage");
+            if(!([binding[@"stages"] unsignedIntValue]&mask))continue;
+            if(!a5Unsigned(binding[@"binding"],30)||![binding[@"count"] isEqual:@1]||
+                [binding[@"flags"] unsignedIntegerValue]||++resources>32)fail(@"dynamic binding count/index exceeds ABI");
+            NSUInteger index=[binding[@"binding"] unsignedIntegerValue],type=[binding[@"ty"] unsignedIntegerValue];
+            if(type==6){
+                if(index>=7)fail(@"dynamic native UBO table overflow");
+                NSNumber *bytes=a5DynamicBufferSize(reflection,title,binding[@"source"][@"Buffer"]);
+                [manifest appendFormat:@"binding %lu uniform %@\n",(unsigned long)index,bytes];
+            }else if(type==7&&[binding[@"source"] isEqual:@{@"Synthetic":@{@"stage":title,@"binding":@"ConstantBlob"}}]){
+                [manifest appendFormat:@"binding %lu storage 0\n",(unsigned long)index];
+            }else if(type==1){
+                NSDictionary *source=binding[@"source"][@"CombinedTextureSampler"];
+                NSDictionary *texture=source[@"texture"],*sampler=source[@"sampler"];
+                NSDictionary *textureInfo=nil;
+                for(NSArray *slot in reflection[@"interface"][@"slots"])
+                    if(slot.count==2&&[slot[0] isEqual:texture])textureInfo=slot[1][@"Texture"];
+                if(textures>=4||![texture[@"stage"] isEqual:title]||
+                    ![textureInfo[@"texture_type"] isEqual:@"Type2D"]||
+                    ![textureInfo[@"sampled_type"] isEqual:@"Float"]||
+                    [textureInfo[@"depth_compare"] boolValue]||
+                    ![textureInfo[@"access"] isEqual:@{@"sample":@YES,@"read":@NO,@"write":@NO}]||
+                    [sampler[@"compare"] boolValue]||[sampler[@"integer"] boolValue]||
+                    [sampler[@"cube_gradient"] boolValue]||[sampler[@"raw"] boolValue])
+                    fail(@"unsupported dynamic sampled texture ABI");
+                [manifest appendFormat:@"texture %lu %u\n",(unsigned long)index,textures++];}
+            else fail(@"dynamic descriptor kind requires a new lowering");
+        }
+    }
+    NSDictionary *selected=nil;
+    for(NSDictionary *entry in reflection[@"stages"])if([entry[@"stage"] isEqual:shortStage]){
+        if(selected)fail(@"duplicate reflected stage");selected=entry;}
+    if(!selected||![selected[@"entry_point"] isEqual:@"main"]||
+        [selected[@"stage_flags"] unsignedIntegerValue]||selected[@"required_subgroup_size"]!=NSNull.null)
+        fail(@"requested stage execution model unsupported");
+    unsigned specs=0;
+    for(NSDictionary *constant in selected[@"specialization"][@"constants"]){
+        if(!a5Unsigned(constant[@"id"],65535)||![constant[@"size"] isEqual:@4]||++specs>16)
+            fail(@"dynamic specialization shape exceeds ABI");
+        NSDictionary *key=constant[@"key"];NSNumber *value=nil;
+        NSDictionary *range=key[@"RangeAtBindOffset"];
+        if(range){value=a5DynamicBufferSize(reflection,title,range);
+        }else if(key[@"SamplerState"]){
+            NSDictionary *sampler=key[@"SamplerState"];
+            if(![sampler[@"slot"][@"stage"] isEqual:title]||
+                !a5Unsigned(sampler[@"slot"][@"index"],15)||
+                ![sampler[@"slot"][@"class"] isEqual:@"Sampler"]||
+                ![sampler[@"fields"] isEqual:@2147483655]||
+                ![constant[@"unread_bits"] isEqual:@4294967288])fail(@"invalid sampler specialization");
+            /* Normalized coordinates with run-time sampler filtering/address
+             * parameters. The chosen word is retained in the root receipt. */
+            value=@0;
+        }
+        if(!value)fail(@"dynamic specialization key requires a new lowering");
+        [manifest appendFormat:@"spec %@ %@\n",constant[@"id"],value];
+    }
+    return manifest;
+}
+static void a5CompileDynamic(NSString *self,NSDictionary *request,NSDictionary *scaffold)
+{
+    NSString *key=request[@"request_id"],*stage=request[@"stage"];
+    NSString *final=[publishedRoot stringByAppendingPathComponent:key];
+    if([NSFileManager.defaultManager fileExistsAtPath:final])return;
+    activeRequestKey=key;
+    NSString *work=[cacheRoot stringByAppendingPathComponent:
+        [@".stage-work-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    if(![NSFileManager.defaultManager createDirectoryAtPath:work withIntermediateDirectories:NO
+        attributes:@{NSFilePosixPermissions:@0700} error:NULL])fail(@"cannot create dynamic stage workspace");
+    activeWork=work;
+    BOOL vertex=[stage isEqual:@"vertex"];
+    NSString *prefix=[work stringByAppendingPathComponent:@"shader"];
+    NSString *meta=[work stringByAppendingPathComponent:@"reflection.json"];
+    NSString *packing=[work stringByAppendingPathComponent:@"packing0.json"];
+    writeData(a5Canonical(scaffold[@"configured_vertex_packing0"]),packing);
+    /* The translator currently exposes a render-pair CLI. A trusted stock
+     * companion supplies stage-link scaffolding; only the requested stage is
+     * compiled/published and the companion is not an executable-pipeline claim. */
+    NSMutableDictionary *constants=[NSMutableDictionary dictionary];
+    if(vertex)for(NSDictionary *item in scaffold[@"fragment_constants"])constants[item[@"name"]]=item;
+    for(NSDictionary *item in request[@"named_constants"])constants[item[@"name"]]=item;
+    NSArray *named=[[constants allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){return [a[@"name"] compare:b[@"name"]];}];
+    NSMutableArray *air=[NSMutableArray arrayWithArray:@[
+        [installed stringByAppendingPathComponent:@"metal2vulkan"],sourceLibrary,
+        [prefix stringByAppendingString:@".spv"],@"--profile",[installed stringByAppendingPathComponent:@"profile.json"],
+        @"--function",vertex?request[@"function"]:scaffold[@"vertex_function"],
+        @"--fragment",vertex?scaffold[@"fragment_function"]:request[@"function"],
+        @"--color-format",@"0:BGRA8Unorm",@"--vertex-descriptor",packing,@"--emit-meta",meta,@"--no-timeout"]];
+    [air addObjectsFromArray:a5DynamicConstantArguments(named,request[@"indexed_constants"])];
+    setenv("METAL2VULKAN_SPIRV_VAL",[installed stringByAppendingPathComponent:@"spirv-val"].fileSystemRepresentation,1);
+    run(self,air,[work stringByAppendingPathComponent:@"air.log"]);
+    NSString *text=[[NSString alloc]initWithData:regularData([work stringByAppendingPathComponent:@"air.log"],8*1024*1024) encoding:NSUTF8StringEncoding];
+    if(![text containsString:@"spirv-val vulkan1.2: PASS"])fail(@"dynamic SPIR-V validation did not run");
+    NSDictionary *reflection=readJSON(meta);
+    NSString *manifest=a5DynamicABI(reflection,stage),*abiPath=[work stringByAppendingPathComponent:@"ABI.txt"];
+    writeData([manifest dataUsingEncoding:NSUTF8StringEncoding],abiPath);
+    NSString *shortStage=vertex?@"vert":@"frag";
+    NSString *nativePath=[work stringByAppendingPathComponent:@"stage.midgard"];
+    NSString *infoPath=[work stringByAppendingPathComponent:@"info.json"];
+    run(self,@[[installed stringByAppendingPathComponent:@"midgard-generic602"],@"--dynamic-stage",stage,
+        [prefix stringByAppendingFormat:@".%@.spv",shortStage],nativePath,abiPath,infoPath],
+        [work stringByAppendingPathComponent:@"midgard.log"]);
+    NSData *native=regularData(nativePath,1024*1024);NSDictionary *info=readJSON(infoPath);
+    NSDictionary *stats=info[@"native_info"];
+    if(![info[@"schema"] isEqual:@1]||![info[@"stage"] isEqual:stage]||
+        ![stats isKindOfClass:NSDictionary.class]||![stats[@"bytes"] isEqual:@(native.length)]||
+        !a5Unsigned(stats[@"first_tag"],15)||![stats[@"first_tag"] unsignedIntegerValue]||
+        [stats[@"first_tag"] unsignedIntegerValue]!=(((const uint8_t*)native.bytes)[0]&15)||
+        !a5Unsigned(stats[@"work_regs"],32)||!a5Unsigned(stats[@"tls"],1024*1024)||
+        !a5Unsigned(stats[@"wls"],1024*1024))fail(@"dynamic native compiler metadata differs from code");
+    NSMutableDictionary *semantic=[reflection mutableCopy];NSMutableArray *stages=[NSMutableArray array];
+    for(NSDictionary *entry in reflection[@"stages"]){NSMutableDictionary *clean=[entry mutableCopy];
+        clean[@"spirv"]=[NSString stringWithFormat:@"shader.%@.spv",entry[@"stage"]];[stages addObject:clean];}
+    semantic[@"stages"]=stages;
+    semantic[@"compilation_context"]=@{@"kind":@"render-pair-scaffold",@"requested_stage":stage,
+        @"requested_function":request[@"function"],@"companion_function":vertex?scaffold[@"fragment_function"]:scaffold[@"vertex_function"],
+        @"selected_native_stage_only":@YES,@"native_manifest":manifest,
+        @"translation_named_constants":named,@"translation_indexed_constants":request[@"indexed_constants"],
+        @"vertex_descriptor":scaffold[@"configured_vertex_packing0"]};
+    NSData *reflectionData=a5Canonical(semantic);
+    NSMutableDictionary *receipt=[a5DynamicIdentity(request,YES) mutableCopy];
+    receipt[@"native"]=@{@"file":@"stage.midgard",@"bytes":@(native.length),@"sha256":digest(native),
+        @"first_tag":stats[@"first_tag"],@"work_registers":stats[@"work_regs"],@"tls_bytes":stats[@"tls"],@"wls_bytes":stats[@"wls"]};
+    receipt[@"reflection"]=@{@"file":@"reflection.json",@"bytes":@(reflectionData.length),@"sha256":digest(reflectionData)};
+    receipt[@"native_abi"]=info;
+    a5PublishDynamic(request,receipt,@{@"stage.midgard":native,@"reflection.json":reflectionData});
+    [NSFileManager.defaultManager removeItemAtPath:work error:NULL];activeWork=nil;activeRequestKey=nil;
+    fprintf(stderr,"A5XELTE shader compiler: STAGE PUBLISHED stage=%s function=%s bytes=%lu request=%s\n",
+        stage.UTF8String,[request[@"function"] UTF8String],(unsigned long)native.length,key.UTF8String);
+}
+
+/* An earlier unsupported request may become executable after a compiler
+ * upgrade. Retry only an exact606 pair or a complete validated dynamic-stage
+ * request. Status files remain root-private, bounded and non-linkable;
+ * genuine failed/other statuses remain terminal. */
+static BOOL a5HasTerminalRequestStatus(NSString *key, NSDictionary *known, NSDictionary *dynamicRequest)
 {
     NSString *folder=[cacheRoot stringByAppendingPathComponent:@"request-status"];
     int directory=open(folder.fileSystemRepresentation,
@@ -445,7 +754,7 @@ static BOOL a5HasTerminalRequestStatus(NSString *key, NSDictionary *known)
     if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_uid!=geteuid()||
         st.st_nlink!=1||(st.st_mode&07777)!=0600||st.st_size<=0||st.st_size>16384)
         fail(@"untrusted existing request status");
-    if(![known[@"profile_id"] isEqual:@606]){close(fd);close(directory);return YES;}
+    if(!dynamicRequest&&![known[@"profile_id"] isEqual:@606]){close(fd);close(directory);return YES;}
     NSMutableData *bytes=[NSMutableData dataWithLength:(NSUInteger)st.st_size];
     uint8_t *cursor=bytes.mutableBytes;size_t left=bytes.length;
     while(left){ssize_t n=read(fd,cursor,left);if(n<0&&errno==EINTR)continue;
@@ -458,7 +767,12 @@ static BOOL a5HasTerminalRequestStatus(NSString *key, NSDictionary *known)
         ![record[@"status"] isKindOfClass:NSString.class]||
         ![record[@"reason"] isKindOfClass:NSString.class])
         fail(@"untrusted existing request status identity");
-    if(![record[@"status"] isEqual:@"unsupported"]){close(directory);return YES;}
+    if(![record[@"status"] isEqual:@"unsupported"]){
+        close(directory);
+        if(dynamicRequest&&[record[@"status"] isEqual:@"failed"])
+            a5DynamicFailure(dynamicRequest,record[@"reason"]);
+        return YES;
+    }
     struct stat current;
     if(fstatat(directory,name.fileSystemRepresentation,&current,AT_SYMLINK_NOFOLLOW)||
         current.st_dev!=st.st_dev||current.st_ino!=st.st_ino||
@@ -466,7 +780,8 @@ static BOOL a5HasTerminalRequestStatus(NSString *key, NSDictionary *known)
         current.st_size!=st.st_size||
         unlinkat(directory,name.fileSystemRepresentation,0)||fsync(directory)||close(directory))
         fail(@"cannot retire unsupported 606 request status");
-    fprintf(stderr,"A5XELTE shader compiler: RETRY newly supported profile=606 request=%s\n",key.UTF8String);
+    fprintf(stderr,"A5XELTE shader compiler: RETRY newly supported %s request=%s\n",
+        dynamicRequest?"dynamic-stage":"profile=606",key.UTF8String);
     return NO;
 }
 
@@ -477,7 +792,13 @@ static void a5HandleRequest(NSString *self, NSDictionary *request,
     for (NSDictionary *candidate in knownProfiles) {
         if (a5KnownProfile(request,candidate)) { known = candidate; break; }
     }
-    if (a5HasTerminalRequestStatus(key,known)) return;
+    NSDictionary *scaffold=nil;
+    for(NSDictionary *candidate in knownProfiles)if([candidate[@"profile_id"] isEqual:@603])scaffold=candidate;
+    BOOL dynamic=scaffold&&a5DynamicRequest(request,scaffold[@"metallib_sha256"]);
+    if(dynamic&&[NSFileManager.defaultManager fileExistsAtPath:
+        [publishedRoot stringByAppendingPathComponent:key]])return;
+    if (a5HasTerminalRequestStatus(key,known,dynamic?request:nil)) return;
+    if(dynamic){a5CompileDynamic(self,request,scaffold);return;}
     if ([known[@"profile_id"] isEqual:@603]) {
         if(a5PublishedCurrentOrRetire603(key,known))return;
     } else if ([NSFileManager.defaultManager fileExistsAtPath:

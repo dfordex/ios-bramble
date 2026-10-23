@@ -40,6 +40,7 @@ typedef struct {
  * Home's two constexpr samplers are the actual translated linear-clamp states.
  * Generic texture profile603 uses the snapshotted Sampler0 and accepts only
  * its separately compiled ClampToEdge specialization. */
+int A5MaliDynamicRuntimeProfileSupported(const A5MaliCompiledProfile *);
 int A5MaliEncodeRuntimeMiscPass(const A5RuntimeMiscDraw *, void *, size_t);
 #ifdef __cplusplus
 }
