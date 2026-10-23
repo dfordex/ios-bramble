@@ -591,3 +591,8 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **0207c candidate:** FollowdownstreamWTCNTreloadfromexistingWTDATduringcopy/zero/cacheclean,pollingandframebufferclear. Retainconfiguration,logtimerdata/countandDSIM/DCSsubsteps. Actualhelpers12,800ASanUBSanchecksplus65,536reloadcasespass; ARMv8-Aloadercompile/linkpass. BOOT31,420,432bytes; entirekernel/ADT/argumentsandDTBHremainidenticalto0207. Hardwaretimerreload/DSIM/XNUentrypending. See[0207c](docs/a5xelte-0207c-loader-keepalive.md).
 
 - **0207c installed:** Source8ba5b86pushed; exactrecovery/model/TWRP/BOOTp10/capacityguards pass. Full31,420,432bytewriteacknowledged,synccomplete,rebootrequested. NoBOOTbackup/newreadback/hash/fullroottransfer. TimerreloadandDSIM/XNUcheckpointpendingphysicalfeedback.
+
+## 2026-10-23 — 0207c concrete MMU-off alignment defect; 0207d
+
+- **Physical/state and ISA evidence:** Reservedmarker0x1f0ec, status5/all10segments, SCTLR0x30c5183e(A1/M0), displayphase79=5 narrowsstopafterDSIMreturn/beforefirstcolumncommandcompletion. LinkedcolumnPA0x402066fa(mod4=2); actualdcs_longoffset0xf60executesldr w14,[x0]. Clangcombinedfourordinarybyteloads; MMU-offalignmentfaultisaconcretebuilddefect. FinalexceptionPCnotcaptured; watchdogresetwaslateroutcome. Priorb/ctimermitigationsdidnotrepairit.
+- **0207d:** Actualloaderbuildscriptnowuses-mstrict-aligninallCunits. LinkedfivebyteDCSloadsgatepasses; previouscELFisrejectedforwidenedunalignedsourceaccess. ActualscriptARMv8-Abuildpasses; Image10,336bytes; existing12,800copy+65,536reloadASanUBSanchecksremainpassing. BOOT31420432bytes; kernel/ADT/arguments/DTBHbyte-identicalto0207. Physicalbootpending. See[0207d](docs/a5xelte-0207d-loader-strict-alignment.md).
