@@ -748,3 +748,5 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 -62queuedfilesalsoexposeindependent64pendingquota defect: completed/terminalfilesneverretire. Strictboundedterminal-retirementimplemented/tested;64pendingpreserved,64terminalfreequota,300rotationsbounded64slots/8MiB,producerlocknonblocking. See[full readout](docs/a5xelte-0216-log-review.md).
 
 - **0217 built:** XNUmake0,31,940,624byteBOOT; exact0216loader/ADT/safeDTBH,selectedFDT41fde800..41ff8800.22persistentstages/final230,608bytesignedworkerembedded;actualcachepreflightpass. Optionaltests0,nativeGPU4CPU/32-sectorpathunchanged. PhysicalUI/inputresultpending.
+
+- **0217 installed:** guardedp10writeacknowledges31,940,624bytes/sync0/rebootrequested;noBOOTbackup/readback/fullUSERDATA.22cachepublications/newcompilerinstalledduringboot;physicalUI/inputandcompilerservicephasepending. See[installation](docs/a5xelte-0217-install.md).
