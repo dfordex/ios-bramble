@@ -1,0 +1,11 @@
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -73,7 +73,7 @@
+ 	static int chan;
+ 	if (!PE_parse_boot_argn("sweetsample", sweet_sample_names, sizeof(sweet_sample_names))) {
+ 		#if defined(ARM64_BOARD_CONFIG_A5XELTE)
+-		strlcpy(sweet_sample_names, "SpringBoard,backboardd,PosterBoard,assetsd,usermanagerd,deleted,misagent", sizeof(sweet_sample_names));
++		strlcpy(sweet_sample_names, "SpringBoard,backboardd,PosterBoard,assetsd,usermanagerd,deleted,misagent,a5shader-compile", sizeof(sweet_sample_names));
+ #else
+ 		strlcpy(sweet_sample_names, "SpringBoard,backboardd", sizeof(sweet_sample_names));
+ #endif

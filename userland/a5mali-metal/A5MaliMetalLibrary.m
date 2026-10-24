@@ -267,6 +267,7 @@ static void logConstantArray(NSArray *array,BOOL indexed,unsigned request)
     }
 }
 
+#if !A5_MALI_DYNAMIC_SHADER_COMPILER
 static void forwardFunctionSpecialization(NSString *name,MTLFunctionConstantValues *values)
 {
     MTLFunctionType stage=0;
@@ -283,9 +284,13 @@ static void forwardFunctionSpecialization(NSString *name,MTLFunctionConstantValu
             boundedFunctionIdentifier(name).UTF8String,(long)result,requestID.UTF8String?:"unavailable");
 }
 
+#endif
+
 static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *values)
 {
+#if !A5_MALI_DYNAMIC_SHADER_COMPILER
     forwardFunctionSpecialization(name,values);
+#endif
     static atomic_uint requests;
     unsigned request=atomic_fetch_add_explicit(&requests,1,memory_order_relaxed);
     if(request>=4)return;
@@ -619,9 +624,9 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
         if([name hasPrefix:@"fixed_vert_"]||[name containsString:@"_vert"])stage=MTLFunctionTypeVertex;
         else if([name hasPrefix:@"fixed_frag_"]||[name containsString:@"_frag"])stage=MTLFunctionTypeFragment;
         NSDictionary *payload=stage?A5MaliShaderCompileFunctionPayload(name,stage,constants,error):nil;
-        NSString *requestID=nil;
-        if(payload && A5MaliForwardShaderCompileRequest(payload,&requestID,error)!=A5MaliShaderForwardFailed){
-            unsigned ticks=0;
+        NSString *requestID=payload?A5MaliShaderCompileRequestID(payload,error):nil;
+        if(requestID){
+            unsigned ticks=0;BOOL queued=NO;
             for(;;){
                 NSError *failure=nil;
                 A5MaliDynamicShaderCacheEntry *entry=A5MaliLoadDynamicShaderStage(requestID,payload,&failure);
@@ -632,8 +637,18 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
                     return [[A5MaliMetalFunction alloc]initWithLibrary:self dynamicShader:entry];
                 }
                 if(failure.code!=ENOENT){if(error)*error=failure;return nil;}
-                if(!(ticks++%100))fprintf(stderr,"A5XELTE Metal dynamic: function=%s phase=waiting request=%s\n",
-                    name.UTF8String,requestID.UTF8String);
+                if(!queued){
+                    NSString *forwardedID=nil;
+                    A5MaliShaderForwardResult forwarded=A5MaliForwardShaderCompileRequest(payload,&forwardedID,error);
+                    if(forwarded==A5MaliShaderForwardFailed)return nil;
+                    if(![forwardedID isEqual:requestID]){
+                        if(error)*error=libraryError(@"compiler request identity changed");
+                        return nil;
+                    }
+                    queued=forwarded==A5MaliShaderForwardQueued||forwarded==A5MaliShaderForwardAlreadyQueued;
+                }
+                if(!(ticks++%100))fprintf(stderr,"A5XELTE Metal dynamic: function=%s phase=%s request=%s\n",
+                    name.UTF8String,queued?"waiting":"enqueue-busy",requestID.UTF8String);
                 /* Synchronous Metal specialization cannot return a placeholder.
                  * Wait outside provider/resource locks for actual compiled code
                  * or a root-published terminal failure. No compile time limit. */

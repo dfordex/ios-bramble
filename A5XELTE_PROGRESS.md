@@ -750,3 +750,11 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **0217 built:** XNUmake0,31,940,624byteBOOT; exact0216loader/ADT/safeDTBH,selectedFDT41fde800..41ff8800.22persistentstages/final230,608bytesignedworkerembedded;actualcachepreflightpass. Optionaltests0,nativeGPU4CPU/32-sectorpathunchanged. PhysicalUI/inputresultpending.
 
 - **0217 installed:** guardedp10writeacknowledges31,940,624bytes/sync0/rebootrequested;noBOOTbackup/readback/fullUSERDATA.22cachepublications/newcompilerinstalledduringboot;physicalUI/inputandcompilerservicephasepending. See[installation](docs/a5xelte-0217-install.md).
+
+## 2026-10-24 — 0217 producer lock stall;0218 correction
+
+- Fullflush53/412,111logicalbytes;CB2–6complete,nopanic/CRASH;3GPU-presentintervals,HIDhead10,240/full0. Compilerstarts/scans/retires14;new1888Binstalledbutruntimeacceptancenotcaptured.
+- Actualshippedproviderreturnoffset549f0isblockingflockLOCK_EXat549ec;CAfactorycaller1649c.0217retirementholdsUIDlockthroughslowprivate/durableI/O,retainedclaimconsistent;workerexactsyscallnotcaptured.
+-0218cache-before-queue,validatedpureidentity,nonblockingBusy/retryandearlyretirementunlock. Realstage/factoryheld-locktest/requestquota+concurrency/22publicationretirement/diagnostics/iOSWerrorsignaturespass. Compilersampleradded. See[readout](docs/a5xelte-0217-log-review.md).
+
+- **0218 built/installed:** XNUmake0;31,940,624byteBOOTwithupdated926,656Bprovider/230,608Bworker,22cacheoutputs,explicitoptionaltests0. Exact0217loader/ADT/safeDTBHverified;guardedp10writeacknowledgesallbytes/sync0/rebootrequested. Nobackup/readback/fullUSERDATA. PhysicalinteractiveUI/workerrecoverypending. See[installation](docs/a5xelte-0218-install.md).

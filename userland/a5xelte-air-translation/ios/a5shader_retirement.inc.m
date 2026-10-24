@@ -207,17 +207,22 @@ static BOOL a5RetireCompletedRequest(int directory,const char *name,uid_t uid,NS
     !a5RetireRequest(request,scanned,uid,key)||
     ![[key stringByAppendingString:@".request.json"]isEqual:[NSString stringWithUTF8String:name]]||
     !a5RetireTerminal(request,knownProfiles))return NO;
- int lock=openat(directory,".lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC);struct stat st;
- BOOL safe=lock>=0&&!fstat(lock,&st)&&S_ISREG(st.st_mode)&&st.st_uid==uid&&
-  (st.st_mode&07777)==0600&&st.st_nlink==1&&st.st_size==0;
- if(!safe||flock(lock,LOCK_EX|LOCK_NB)){if(lock>=0)close(lock);return NO;}
+ /* Root-private preparation/recovery may fsync and read publications. Do it
+  * before taking a producer lock, keeping slow I/O outside that critical section. */
+ serviceCheckpoint("retire-prepare-begin",key,nil);
  int root=open(cacheRoot.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
  BOOL ok=a5RetireDir(root,0700);
  if(ok&&mkdirat(root,"retirement-claims",0700)&&errno!=EEXIST)ok=NO;
  int claims=ok?openat(root,"retirement-claims",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC):-1;
  ok=ok&&a5RetireDir(claims,0700)&&!fsync(root)&&a5RetireRecoverClaim(claims,knownProfiles);
+ if(root>=0)close(root);
+ if(!ok){if(claims>=0)close(claims);return NO;}
+ int lock=openat(directory,".lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC);struct stat st;
+ BOOL safe=lock>=0&&!fstat(lock,&st)&&S_ISREG(st.st_mode)&&st.st_uid==uid&&
+  (st.st_mode&07777)==0600&&st.st_nlink==1&&st.st_size==0;
+ if(!safe||flock(lock,LOCK_EX|LOCK_NB)){if(lock>=0)close(lock);close(claims);return NO;}
  struct stat before;NSData *bytes=ok?a5RetireRead(directory,name,uid,0600,A5RetireMax,&before):nil;
- ok=ok&&[bytes isEqual:scanned]&&a5RetireRequest(a5RetireJSON(bytes),bytes,uid,key)&&a5RetireTerminal(request,knownProfiles);
+ ok=ok&&[bytes isEqual:scanned]&&a5RetireRequest(a5RetireJSON(bytes),bytes,uid,key);
 #ifdef A5_SHADER_RETIREMENT_HOST_TEST
  if(ok&&a5RetireBeforeClaim)a5RetireBeforeClaim(directory,name);
 #endif
@@ -225,12 +230,18 @@ static BOOL a5RetireCompletedRequest(int directory,const char *name,uid_t uid,NS
   * before this operation is claimed but fails identity validation and stays in
   * the private claim. A new producer leaf after it is never touched. */
  NSString *claim=ok?a5RetireClaimName(request,&before):nil;
- if(ok)ok=!renameat(directory,name,claims,claim.fileSystemRepresentation)&&!fsync(directory)&&!fsync(claims);
+ if(ok)ok=!renameat(directory,name,claims,claim.fileSystemRepresentation);
+ /* The identity-bound leaf is now private. No durable I/O or publication
+  * validation runs while the UID lock is held. The service cache lock still
+  * serializes the claim; producer inode mutations are revalidated below. */
+ close(lock);lock=-1;
+ serviceCheckpoint("retire-unlocked",key,nil);
+ if(ok)ok=!fsync(directory)&&!fsync(claims);
  #ifdef A5_SHADER_RETIREMENT_HOST_TEST
  if(ok&&a5RetireAfterClaim)a5RetireAfterClaim(directory,name);
 #endif
  if(ok)ok=a5RetireClaim(claims,claim.fileSystemRepresentation,knownProfiles);
- if(claims>=0)close(claims);if(root>=0)close(root);close(lock);
+ if(claims>=0)close(claims);
  if(ok){static unsigned logs;if(logs++<64)fprintf(stderr,"A5XELTE shader compiler: RETIRED request=%s uid=%u archive_slots=64\n",key.UTF8String,uid);}
  return ok;
 }

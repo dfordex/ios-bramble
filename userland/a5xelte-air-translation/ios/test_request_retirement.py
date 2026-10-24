@@ -51,6 +51,7 @@ static void replaceLeaf(int dir,const char *name){
  int fd=openat(dir,name,O_WRONLY|O_CREAT|O_EXCL,0600);write(fd,"replacement",11);close(fd);
 }
 static void newLeaf(int dir,const char *name){
+ int lock=openat(dir,".lock",O_RDWR);if(lock<0||flock(lock,LOCK_EX|LOCK_NB))abort();close(lock);
  int fd=openat(dir,name,O_WRONLY|O_CREAT|O_EXCL,0600);write(fd,"new pending leaf",16);close(fd);
 }
 int main(int argc,char **argv){@autoreleasepool{
@@ -214,7 +215,7 @@ int main(int argc,char **argv){@autoreleasepool{if(argc!=2)return 90;
     recovered = subprocess.run([str(runner), 'recover', str(queue)], capture_output=True)
     assert recovered.returncode == 1 and claims[0].exists()
     assert (queue / '.saved-original').read_bytes() == canonical(row)
-    result = {'pending64_preserved': True, 'provider_quota_unchanged': True, 'completed64_allow_next_request': True, 'retired_batch': 300, 'archive_slots': 64, 'archive_limit_bytes': 8 * 1024 * 1024, 'partial_scratch_recovered': True, 'genuine_publications_validated': valid_publications, 'public_failure_required': True, 'unsafe_files_refused': True, 'producer_lock_nonblocking_retry': True, 'replacement_claim_preserved': True, 'valid_stale_claim_recovered': True, 'new_leaf_after_claim_preserved': True, 'corrupt_publication_refused': True, 'device_runtime_verified': False}
+    result = {'pending64_preserved': True, 'provider_quota_unchanged': True, 'completed64_allow_next_request': True, 'retired_batch': 300, 'archive_slots': 64, 'archive_limit_bytes': 8 * 1024 * 1024, 'partial_scratch_recovered': True, 'genuine_publications_validated': valid_publications, 'public_failure_required': True, 'unsafe_files_refused': True, 'producer_lock_nonblocking_retry': True, 'replacement_claim_preserved': True, 'valid_stale_claim_recovered': True, 'new_leaf_after_claim_preserved': True, 'producer_lock_released_before_durable_claim_io': True, 'corrupt_publication_refused': True, 'device_runtime_verified': False}
     (work / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))
 

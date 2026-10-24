@@ -287,12 +287,11 @@ static BOOL equalFile(int fd,NSData *data)
         if(n<0&&errno==EINTR)continue;if(n<=0||memcmp(b,(const uint8_t *)data.bytes+offset,(size_t)n))return NO;offset+=(size_t)n;}
     return YES;
 }
-A5MaliShaderForwardResult A5MaliForwardShaderCompileRequest(NSDictionary *payload,
-    NSString **requestID,NSError **error)
+static NSData *requestData(NSDictionary *payload,NSString **requestID,NSError **error)
 {
     if(error)*error=nil;if(requestID)*requestID=nil;
     if(![payload isKindOfClass:NSDictionary.class]){
-        reject(error,@"invalid compiler request envelope");return A5MaliShaderForwardFailed;
+        reject(error,@"invalid compiler request envelope");return nil;
     }
     BOOL function=[payload[@"kind"] isEqual:@"function"];
     BOOL valid=function?(functionPayload(payload,@"vertex")||functionPayload(payload,@"fragment")):
@@ -303,14 +302,29 @@ A5MaliShaderForwardResult A5MaliForwardShaderCompileRequest(NSDictionary *payloa
     if(!valid||![payload[@"schema"] isEqual:@1]||![payload[@"source_library"] isEqual:@"quartzcore"]||
         ![payload[@"metallib_sha256"] isEqual:sourceSHA]||![payload[@"gpu_id"] isEqual:@"07201000"]||
         ![payload[@"compiler_abi"] isEqual:@1]||payload[@"request_id"]||payload[@"owner_uid"]){
-        reject(error,@"invalid compiler request envelope");return A5MaliShaderForwardFailed;
+        reject(error,@"invalid compiler request envelope");return nil;
     }
     uid_t uid=geteuid();NSMutableDictionary *body=[payload mutableCopy];body[@"owner_uid"]=@(uid);
     NSData *canonical=[NSJSONSerialization dataWithJSONObject:body options:NSJSONWritingSortedKeys error:error];
-    if(!canonical||canonical.length>kMaxRequestBytes-128){reject(error,@"request exceeds128KiB");return A5MaliShaderForwardFailed;}
+    if(!canonical||canonical.length>kMaxRequestBytes-128){reject(error,@"request exceeds128KiB");return nil;}
     NSString *key=sha256(canonical);body[@"request_id"]=key;
     NSData *data=[NSJSONSerialization dataWithJSONObject:body options:NSJSONWritingSortedKeys error:error];
-    if(!data||data.length>kMaxRequestBytes){reject(error,@"request exceeds128KiB");return A5MaliShaderForwardFailed;}
+    if(!data||data.length>kMaxRequestBytes){reject(error,@"request exceeds128KiB");return nil;}
+    if(requestID)*requestID=key;
+    return data;
+}
+NSString *A5MaliShaderCompileRequestID(NSDictionary *payload,NSError **error)
+{
+    NSString *key=nil;
+    return requestData(payload,&key,error)?key:nil;
+}
+A5MaliShaderForwardResult A5MaliForwardShaderCompileRequest(NSDictionary *payload,
+    NSString **requestID,NSError **error)
+{
+    if(requestID)*requestID=nil;
+    NSString *key=nil;NSData *data=requestData(payload,&key,error);
+    if(!data)return A5MaliShaderForwardFailed;
+    uid_t uid=geteuid();
     int root=-1,dir=-1,lock=-1,file=-1;BOOL created=NO;NSString *temp=nil;
     NSString *owner=[NSString stringWithFormat:@"%u",uid];
     NSString *name=[key stringByAppendingString:@".request.json"];
@@ -326,7 +340,11 @@ A5MaliShaderForwardResult A5MaliForwardShaderCompileRequest(NSDictionary *payloa
     dir=openat(root,owner.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
     if(dir<0||fstat(dir,&st)||!S_ISDIR(st.st_mode)||st.st_uid!=uid||(st.st_mode&0777)!=0700)goto done;
     lock=openat(dir,".lock",O_RDWR|O_CREAT|O_NOFOLLOW,0600);
-    if(!safeFile(lock,uid)||flock(lock,LOCK_EX))goto done;
+    if(!safeFile(lock,uid))goto done;
+    if(flock(lock,LOCK_EX|LOCK_NB)){
+        if(errno==EWOULDBLOCK||errno==EAGAIN)result=A5MaliShaderForwardBusy;
+        goto done;
+    }
     file=openat(dir,name.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW);
     if(file>=0){
         if(!safeFile(file,uid)||!equalFile(file,data)){reason=@"existing request identity/content mismatch";goto done;}

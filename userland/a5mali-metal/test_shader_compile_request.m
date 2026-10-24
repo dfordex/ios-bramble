@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <unistd.h>
 #include <stdatomic.h>
 @interface MTLLinkedFunctions (A5MaliRequestTestLinkedSPI)
@@ -101,8 +102,10 @@ int main(void)
         MTLRenderPipelineDescriptor *withPrivate=[d copy];withPrivate.vertexLinkedFunctions=linked;
         assert(!A5MaliShaderCompilePipelinePayload(withPrivate,vertex,fragment,&error)&&error);
 
+        NSString *identity=A5MaliShaderCompileRequestID(pipeline,&error);
+        assert(identity.length==64&&!error&&[NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:NULL].count==0);
         NSString *key=nil;A5MaliShaderForwardResult result=A5MaliForwardShaderCompileRequest(pipeline,&key,&error);
-        assert(result==A5MaliShaderForwardQueued&&key.length==64&&!error);
+        assert(result==A5MaliShaderForwardQueued&&[key isEqual:identity]&&!error);
         NSString *path=requestPath(key);struct stat before,after;
         assert(!lstat(path.fileSystemRepresentation,&before)&&(before.st_mode&0777)==0600);
         NSData *stored=[NSData dataWithContentsOfFile:path];
@@ -113,6 +116,12 @@ int main(void)
         assert([digest(canonical) isEqual:key]);
         assert(A5MaliForwardShaderCompileRequest(pipeline,NULL,&error)==A5MaliShaderForwardAlreadyQueued&&!error);
         assert(!lstat(path.fileSystemRepresentation,&after)&&before.st_ino==after.st_ino);
+        int held=open([[uidPath()stringByAppendingPathComponent:@".lock"]fileSystemRepresentation],O_RDWR);
+        assert(held>=0&&!flock(held,LOCK_EX|LOCK_NB));
+        NSString *busyID=nil;
+        assert(A5MaliForwardShaderCompileRequest(pipeline,&busyID,&error)==A5MaliShaderForwardBusy&&!error&&[busyID isEqual:key]);
+        assert([A5MaliShaderCompileRequestID(pipeline,&error)isEqual:key]&&!error);
+        close(held);
         NSDictionary *changed=A5MaliShaderCompilePipelinePayload(d,vertex,fragment,&error);NSString *other=nil;
         assert(A5MaliForwardShaderCompileRequest(changed,&other,&error)==A5MaliShaderForwardQueued&&![other isEqual:key]);
 
@@ -143,7 +152,11 @@ int main(void)
         atomic_uint *queuedPtr=&queued,*alreadyPtr=&already,*failedPtr=&failed;
         dispatch_apply(16,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^(size_t i){
             (void)i;@autoreleasepool {
-                A5MaliShaderForwardResult r=A5MaliForwardShaderCompileRequest(pipeline,NULL,NULL);
+                A5MaliShaderForwardResult r;
+                unsigned attempts=0;
+                do {r=A5MaliForwardShaderCompileRequest(pipeline,NULL,NULL);
+                    if(r==A5MaliShaderForwardBusy)usleep(1000);
+                }while(r==A5MaliShaderForwardBusy&&++attempts<10000);
                 if(r==A5MaliShaderForwardQueued)atomic_fetch_add(queuedPtr,1);
                 else if(r==A5MaliShaderForwardAlreadyQueued)atomic_fetch_add(alreadyPtr,1);
                 else atomic_fetch_add(failedPtr,1);
