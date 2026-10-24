@@ -38,4 +38,4 @@ All21 exact captured function requests (2vertex/19fragment) have now been compil
 
 ## Status
 
-Source/host verification and provider compilation pass. Physical DS4 filtering, lock-screen interaction and the exact final pipeline rejection remain device checkpoints. No0215 write has occurred at this documentation checkpoint.
+Source/host verification and provider compilation pass. Full XNU make exits0. The82-file incremental payload is40,950,796raw /9,925,794packed bytes and passes the actual kernel installer preflight. BOOT0215 is31,924,240bytes with a fresh31,256,496-byte real kernel,21compiled publications and47physical fixtures; the prior45fixtures and working loader/ADT/DTBH are unchanged. Four cores and32-sector storage batches remain selected. Physical DS4 filtering, lock-screen interaction and the exact final pipeline rejection remain device checkpoints. No0215 write has occurred at this documentation checkpoint.
