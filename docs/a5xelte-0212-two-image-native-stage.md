@@ -69,7 +69,7 @@ missing parents, modes/UID/GID, altered requests, byte corruption and unknown
 publication content. Cache records are independent of the optional app gate.
 Clean patch replay matches staged source exactly. Final25-file payload is
 40,685,870raw /9,847,146packed bytes and passes real preflight. Repository
-validation203patches/41Python/10shell and diff whitespace checks pass.
+validation203patches/41Python/10shell passes.
 
 The final focused test also preserves single-UV split-color.xy/zw and admits
 scalar-split UV1 with split color. Four rehashed metadata negatives reject unknown
@@ -84,3 +84,13 @@ provider, updated compiler and both complete native publications. It retains
 four tested CPUs,32-sector eMMC batches and all42 GPU cases. These are offline
 checks; no physical pixel/backboardd/home-screen result is claimed yet. The previous four pixel failures and independent PosterBoard
 state assertion remain open.
+
+
+## Installed0212
+
+Sourcebe5650a was committed and pushed before installation. Recovery/model/TWRP,
+BOOT p10 mapping and32MiB capacity guards passed. Direct source-offset-zero
+streaming acknowledged31,741,968bytes in2.24seconds; sync completed and reboot
+was requested. No BOOT backup, post-write device readback/hash or whole USERDATA
+transfer occurred. Physical42-case output, live stage acceptance and subsequent
+backboardd/home UI progression remain pending the next phone log.
