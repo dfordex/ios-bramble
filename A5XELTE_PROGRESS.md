@@ -724,3 +724,9 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **0215 full build ready:** XNUmakeexit0;82-filepayload40,950,796raw/9,925,794packedactualkernelpreflightpass. BOOT31,924,240bytesfits33,554,432capacity;47physicalcases/prior45unchanged,21compiledstages,exactworkingloader/ADT/DTBH. Deviceinstallationpending; finalpipelineabortnotclaimedfixed.
 
 - **0215 installed:** guardedTWRP/model/BOOTp10/capacitypass;directoffset0writeacknowledges31,924,240bytes,sync0,rebootrequested. NoBOOTbackup/readback/hash/fullUSERDATAtransfer.21cachepublicationsinstallduringboot; actualcachehits/DS4physicalpixels andfinalpipelinefailurependingnextcapture.
+
+## 2026-10-24 — 0215 early boot regression
+
+- User reportsSamsung-logo reboot. SYSTEMflush151still0214; loaderstatus10=-1beforeinitrdlookup, noXNUentrymarker. S-BootprintsDTupdatefailed thenwatchdogreset.
+- AddedpayloadmovesselectedDTBheader41fed800→4200e800, intoramdiskrelocationtarget42000000. Confirmedstaticstagingconflict; firmwarecopyorderingunrecovered. Loader/DTBHcontentunchanged;32MiBcapacitycheckwasinsufficient.
+-0215b packer rearrangesonlyequal-sizedDTBHblobslots/entryoffsets andguardswhole-selected-FDTstagingrange; kernel/loader/ADT/arguments/21cacheoutputs/47fixturesunchanged. Physicalcorrectionpending. See[layout report](docs/a5xelte-0215-boot-layout.md).
