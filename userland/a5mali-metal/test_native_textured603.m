@@ -31,22 +31,22 @@ _Static_assert(sizeof(Vertex)==48,"actual stock packing0");
  * level offset addition rather than assuming every texture starts at VA. */
 @interface SourceTexture:A5MaliMetalTexture
 @property(nonatomic,strong)A5MaliMetalTexture *backing;
-@property(nonatomic)BOOL wrongType;
+@property(nonatomic)BOOL wrongType,wrongFormat,noUsage,noBacking,extraMip;
 @end
 @implementation SourceTexture
 - (A5MaliRestrictedDevice *)device{return self.backing.device;}
-- (A5MaliSurface *)privateSurface{return self.backing.privateSurface;}
+- (A5MaliSurface *)privateSurface{return self.noBacking?nil:self.backing.privateSurface;}
 - (A5MaliSurface *)surfaceForLevel:(NSUInteger)level memorylessLease:(A5MaliTexturePassBacking *)lease
 {return level==0&&!lease?self.backing.privateSurface:nil;}
 - (A5MaliTexturePassBacking *)passBacking{return nil;}
 - (NSUInteger)width{return 32;}
 - (NSUInteger)height{return 16;}
-- (MTLPixelFormat)pixelFormat{return MTLPixelFormatBGRA8Unorm;}
+- (MTLPixelFormat)pixelFormat{return self.wrongFormat?MTLPixelFormatBGR5A1Unorm:MTLPixelFormatBGRA8Unorm;}
 - (MTLTextureType)textureType{return self.wrongType?MTLTextureType1D:MTLTextureType2D;}
-- (NSUInteger)mipmapLevelCount{return 1;}
+- (NSUInteger)mipmapLevelCount{return self.extraMip?2:1;}
 - (NSUInteger)sampleCount{return 1;}
 - (NSUInteger)arrayLength{return 1;}
-- (MTLTextureUsage)usage{return MTLTextureUsageShaderRead;}
+- (MTLTextureUsage)usage{return self.noUsage?0:MTLTextureUsageShaderRead;}
 - (MTLStorageMode)storageMode{return MTLStorageModeShared;}
 - (BOOL)getLevelLayout:(A5MaliTextureLevelLayout *)l level:(NSUInteger)level
 {if(level)return NO;*l=(A5MaliTextureLevelLayout){32,16,256,128,4096};return YES;}
@@ -149,7 +149,7 @@ static A5MaliReadSurfCandidate *pipeline(A5MaliRestrictedDevice *device,State *s
     }
     A5MaliReadSurfCandidate *result=[device newRenderPipelineStateWithDescriptor:d error:&error];assert(result&&!error);return result;
 }
-typedef NS_ENUM(unsigned,Fault){Good,MissingSampler,MissingTexture,MissingUVTransform,WrongSamplerState,WrongSourceType,SourceAlias,WrongSourceDevice,ShortLOD};
+typedef NS_ENUM(unsigned,Fault){Good,MissingSampler,MissingTexture,MissingUVTransform,WrongSamplerState,WrongSourceType,SourceAlias,WrongSourceDevice,ShortLOD,WrongSourceFormat,MissingBacking,WrongUsage,ExtraMip};
 static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,A5MaliRestrictedDevice*other,id p,
  A5MaliMetalTexture*target,SourceTexture*source,State*s,Fault fault)
 {
@@ -182,7 +182,8 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,A5MaliRestrictedDevice
  if(fault==WrongSourceDevice){actual=[SourceTexture new];actual.backing=[other hostTestTextureWithResource:
   (A5MaliResource){0x100000002,64,32,256,A5MaliRead}];}
  if(fault!=MissingTexture)[r setFragmentTexture:fault==SourceAlias?target:actual atIndex:3];
- source.wrongType=fault==WrongSourceType;
+ source.wrongType=fault==WrongSourceType;source.wrongFormat=fault==WrongSourceFormat;
+ source.noBacking=fault==MissingBacking;source.noUsage=fault==WrongUsage;source.extraMip=fault==ExtraMip;
  A5MaliPrivateBuffer*indices=nil;
  if(s->indexSize){indices=[d newBufferWithLength:16+6*s->indexSize options:0];assert(indices.contents);
   memset(indices.contents,0,indices.length);
@@ -221,12 +222,12 @@ int main(void)
   [b commit];[b waitUntilCompleted];assert(b.status==MTLCommandBufferStatusCompleted&&!b.error&&s.submits==before+1);
   assert(b.privateBuffer.completedFence.tilerFence==1900+s.submits*2&&b.privateBuffer.completedFence.fragmentFence==1901+s.submits*2);
  }
- for(Fault f=MissingSampler;f<=ShortLOD;++f){s.indexSize=0;unsigned before=s.submits;
+ for(Fault f=MissingSampler;f<=ExtraMip;++f){s.indexSize=2;unsigned before=s.submits;
   A5MaliMetalBuffer*b=encode(d,other,p,target,source,&s,f);[b commit];[b waitUntilCompleted];
   assert(b.status==MTLCommandBufferStatusError&&b.error&&s.submits==before);
   assert(!b.privateBuffer.completedFence.tilerFence&&!b.privateBuffer.completedFence.fragmentFence);
  }
- source.wrongType=NO;s.failSubmit=YES;unsigned before=s.submits;
+ source.wrongType=source.wrongFormat=source.noBacking=source.noUsage=source.extraMip=NO;s.failSubmit=YES;unsigned before=s.submits;
  A5MaliMetalBuffer*b=encode(d,other,p,target,source,&s,Good);[b commit];[b waitUntilCompleted];
  assert(b.status==MTLCommandBufferStatusError&&b.error.code==kIOReturnTimeout&&s.submits==before+1);
  assert(!b.privateBuffer.completedFence.tilerFence&&!b.privateBuffer.completedFence.fragmentFence);

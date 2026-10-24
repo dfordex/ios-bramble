@@ -974,6 +974,63 @@ static void a5HandleRequest(NSString *self, NSDictionary *request,
 
 #include "a5shader_retirement.inc.m"
 
+/* A fixed snapshot may take long enough for a compositor to enqueue a new
+ * function. Recheck names between old handlers, reading only unseen leaves.
+ * Both per-UID enumeration and total newly inspected leaves are bounded64.
+ * Presence checks affect ordering only; identity and dynamic admission remain
+ * mandatory before the existing handler can compile anything. */
+static unsigned a5DispatchArrivingFunctions(NSString *self,NSArray *profiles,int rootfd,
+    NSMutableSet *seen,unsigned *remaining)
+{
+    if(!*remaining)return 0;
+    NSString *librarySHA=nil;
+    for(NSDictionary *profile in profiles)if([profile[@"profile_id"] isEqual:@603])librarySHA=profile[@"metallib_sha256"];
+    if(!librarySHA)return 0;
+    /* openat creates an independent directory position; dup would share the
+     * initial reader's end-of-directory offset on HFS. */
+    int scanfd=openat(rootfd,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    DIR *users=scanfd>=0?fdopendir(scanfd):NULL;
+    if(!users){if(scanfd>=0)close(scanfd);return 0;}
+    unsigned dispatched=0;struct dirent *user;
+    while(*remaining&&(user=readdir(users))){
+        NSString *component=[NSString stringWithUTF8String:user->d_name];
+        if(!component.length||[component rangeOfCharacterFromSet:
+            [NSCharacterSet.decimalDigitCharacterSet invertedSet]].location!=NSNotFound)continue;
+        unsigned long long number=strtoull(user->d_name,NULL,10);if(number>UINT32_MAX)continue;
+        uid_t uid=(uid_t)number;
+        int dir=openat(rootfd,user->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+        struct stat st;
+        if(dir<0||fstat(dir,&st)||!S_ISDIR(st.st_mode)||st.st_uid!=uid||(st.st_mode&0777)!=0700){
+            if(dir>=0)close(dir);continue;}
+        DIR *files=fdopendir(dup(dir));if(!files){close(dir);continue;}
+        unsigned count=0;struct dirent *entry;
+        while(*remaining&&count<64&&(entry=readdir(files))){
+            NSString *name=[NSString stringWithUTF8String:entry->d_name];
+            if(![name hasSuffix:@".request.json"]||name.length!=77)continue;
+            NSString *key=[name substringToIndex:64];if(!a5HexDigest(key))continue;
+            count++;
+            if([seen containsObject:key])continue;
+            [seen addObject:key];(*remaining)--;
+            NSData *bytes=a5ReadRequest(dir,entry->d_name,uid);
+            NSDictionary *request=bytes?[NSJSONSerialization JSONObjectWithData:bytes options:0 error:NULL]:nil;
+            if(![request isKindOfClass:NSDictionary.class]||![request[@"request_id"] isEqual:key]||
+                ![request[@"owner_uid"] isEqual:@(uid)])continue;
+            NSMutableDictionary *body=[request mutableCopy];[body removeObjectForKey:@"request_id"];
+            NSData *canonical=a5Canonical(body);
+            if(!canonical||![digest(canonical) isEqual:key]||!a5DynamicRequest(request,librarySHA))continue;
+            if([NSFileManager.defaultManager fileExistsAtPath:[publishedRoot stringByAppendingPathComponent:key]])continue;
+            serviceCheckpoint("arriving-function",key,request[@"stage"]);
+            a5HandleRequest(self,request,profiles,key);dispatched++;
+        }
+        closedir(files);close(dir);
+    }
+    closedir(users);return dispatched;
+}
+#ifdef A5_SHADER_SCAN_HOST_TEST
+static void (*a5ScanAfterSnapshot)(void);
+static void (*a5ScanBeforeOldHandler)(NSDictionary *);
+#endif
+
 static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfiles)
 {
     static unsigned scans;
@@ -998,6 +1055,8 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
      * old statuses or archive completed work. Paths below are scheduling hints
      * only; the existing handler and retirement helper still decide trust. */
     NSMutableArray<NSDictionary *> *snapshots=[NSMutableArray array];
+    NSMutableSet *seen=[NSMutableSet set];
+    NSMutableDictionary *uidCandidates=[NSMutableDictionary dictionary];
     struct dirent *user;
     while ((user=readdir(users))) {
         NSString *component = [NSString stringWithUTF8String:user->d_name];
@@ -1028,6 +1087,7 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
             if (!a5HexDigest(key)) continue;
             count++;
             candidates++;
+            [seen addObject:key];
             NSData *bytes = a5ReadRequest(uidfd,entry->d_name,uid);
             if (!bytes) { readRejected++; continue; }
             id parsed = [NSJSONSerialization JSONObjectWithData:bytes options:0 error:NULL];
@@ -1043,9 +1103,14 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
                 @"request":request,@"bytes":bytes}];
         }
         if(count==64)capped++;
+        uidCandidates[component]=@(count);
         closedir(files); close(uidfd);
     }
     closedir(users);
+#ifdef A5_SHADER_SCAN_HOST_TEST
+    if(a5ScanAfterSnapshot)a5ScanAfterSnapshot();
+#endif
+    unsigned arrivalBudget=64,arrivals=0;
     NSMutableArray<NSDictionary *> *freshFunctions=[NSMutableArray array],
         *statusFunctions=[NSMutableArray array],*publishedFunctions=[NSMutableArray array],
         *otherRequests=[NSMutableArray array];
@@ -1064,15 +1129,27 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
     for(NSArray *batch in @[freshFunctions,statusFunctions,publishedFunctions,otherRequests])
         for(NSDictionary *snapshot in batch){
             NSDictionary *request=snapshot[@"request"];
+            if(batch!=freshFunctions){
+                arrivals+=a5DispatchArrivingFunctions(self,knownProfiles,rootfd,seen,&arrivalBudget);
+#ifdef A5_SHADER_SCAN_HOST_TEST
+                if(a5ScanBeforeOldHandler)a5ScanBeforeOldHandler(request);
+#endif
+            }
             handled++;
             a5HandleRequest(self,request,knownProfiles,request[@"request_id"]);
         }
-    /* Archival is off the dispatch path and gets at most one candidate per
-     * completed scan, including failed/contended attempts. The helper takes a
-     * fresh locked snapshot and authenticates the durable result again. */
+    arrivals+=a5DispatchArrivingFunctions(self,knownProfiles,rootfd,seen,&arrivalBudget);
+    /* Slow archival fsync cannot be interrupted by a later UI request. Do it
+     * only at quota pressure (63/64 leaves), after a final fresh-work check.
+     * A scan that dispatched arriving work defers archival to the next scan.
+     * One candidate/attempt maximum still uses the fresh locked helper. */
     for(NSDictionary *snapshot in snapshots){
+        if(arrivals||!arrivalBudget)break;
+        if([uidCandidates[snapshot[@"user"]] unsignedIntValue]<63)continue;
         NSDictionary *request=snapshot[@"request"];
         if(!a5RetireTerminal(request,knownProfiles))continue;
+        arrivals+=a5DispatchArrivingFunctions(self,knownProfiles,rootfd,seen,&arrivalBudget);
+        if(arrivals||!arrivalBudget)break;
         int uidfd=openat(rootfd,[snapshot[@"user"] fileSystemRepresentation],
             O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
         if(uidfd>=0){

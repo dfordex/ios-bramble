@@ -115,17 +115,16 @@ int main(int argc,char **argv){
     (work / 'scan.log').write_text(scan)
     summaries = [line for line in scan.splitlines() if ': SCAN scan=' in line]
     assert len(summaries) == 8 and 'SCAN scan=9 ' not in scan, scan
-    for index, line in enumerate(summaries):
-        # The valid unsupported request is durably retired on the first scan.
-        # Unsafe/malformed leaves keep exercising their unchanged rejection gates.
+    for line in summaries:
+        # Below quota pressure, completed leaves stay queued without archival
+        # fsync; unsafe/malformed leaves keep exercising their rejection gates.
         for field in ('users=1', 'users_rejected=0',
-                      'candidates=5' if index == 0 else 'candidates=4',
+                      'candidates=5',
                       'read_rejected=1', 'json_rejected=1', 'identity_rejected=1',
-                      'digest_rejected=1', 'handled=1' if index == 0 else 'handled=0',
+                      'digest_rejected=1', 'handled=1',
                       'capped_users=0'):
             assert field in line, line
-    assert scan.count('RETIRED request=' + key) == 1, scan
-    assert not path.exists(), 'terminal request must stop consuming the UID quota'
+    assert 'RETIRED request=' not in scan and path.exists(), scan
     assert scan.count('UNSUPPORTED request=' + key) == 1, scan
     status = json.loads((cache / 'request-status' / (key + '.json')).read_bytes())
     assert status['status'] == 'unsupported' and not list(published.iterdir())
