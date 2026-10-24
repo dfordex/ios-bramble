@@ -685,3 +685,11 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 
 - **Read-only full capture:** SYSTEMflush142/all990,796bytes/10,307lines/nooverwrite; selected8HFSstage/requestfiles+2launchdconfigs. No write/reboot. Newtwo-textureGPUcase4096/4096passes;total38/42, oldfourfailuresunchanged. Actual1328FS+2592VSaccepted/linked; phonecompilerpublishesfiveadditionalfragments withobservedexec/exit0.
 - **Runtime:**32loggednativesubmitsstatus0/MMU0, sixrecordedCBresultsCompleted/error0; actualblur100/104jobsrun. Userseesclock, thenbutton-associatedspinner/restart. HIDeventsdelivered. Two backboarddMetalpipelineaborts: compiled2240color-onlyorderedfetch and176constant/noinput/nofetchFSrejecttextured-onlycombinedABI. SpringBoardAttention4099followssecondproviderabort; actuallaunchdservicebelongsbackboardd, noindependentAttentionfixjustified. Implementgenuineuntexturedcolor/constantnativepaths next. See[full0212readout](docs/a5xelte-0212-log-review.md) and[Attentionchain](docs/a5xelte-0212-attention-crash-chain.md).
+
+
+## 2026-10-24 — 0213 admits actual untextured native fragments
+
+- **Implementation:** NewauthenticatedFragmentColorOnly mapsrealfloat4colorfromcompact/full/dualVS toFSVAR0, withnoinventedtextures/samplers. NoInputs nowindependentofactualfetch; realinputattachment/UBO/push/IO/sideeffectcontractsremain. Actual2240/176phoneprogramsrecompilebyteidenticalonMac. NoAttentionchanges; priorSBconnectionexceptionfollowsbackboarddproviderdeath.
+- **Local gates:** ActualnewFunction/factory/Query17/Submit18/emittercopy+sourceover, compact602/full603/dualcolorplanes, uniform/alias/fenceandmalformedIO/flag/liveness/fetchnegativespass.18nativewrappers/finaliOScompile andsignedproviderpass.31filepayload40,707,850raw/9,854,181packedactualpreflightpass.44physicalcasesretainold42andaddindependent2240orderedcolor/176constantoracles; devicepixelsandwake/buttonprogressionpending. See[0213](docs/a5xelte-0213-untextured-native-fragments.md).
+
+- **0213 final local build:** Prioractual2448fetchand2592/1328pairregressionsalsopass; fullXNUexit0. BOOT31,776,784bytesfits32MiB, exact0212loader/ADT, finalsignedprovider/verifiedcompiler/fourcompletepublicationsand44casesembedded;4cores/32blockstorageunchanged. Physicalpixel/buttontransitionresultpending.

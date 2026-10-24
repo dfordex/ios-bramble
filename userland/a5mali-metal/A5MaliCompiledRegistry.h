@@ -40,7 +40,9 @@ enum { A5MaliProfileFixedViewport = 1, A5MaliProfileNearestSampler = 2,
        /* Native VS exports position, point-size and color; no UV varying. */
        A5MaliProfileVertexColorOnly = 16384,
        A5MaliProfileVertexTwoUV = 32768,
-       A5MaliProfileFragmentTwoUV = 65536 };
+       A5MaliProfileFragmentTwoUV = 65536,
+       /* Untextured FS reads only the exported float4 colour at native VAR0. */
+       A5MaliProfileFragmentColorOnly = 131072 };
 enum { A5MaliDynamicProfileID = 65536 };
 
 typedef struct {

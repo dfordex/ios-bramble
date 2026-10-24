@@ -149,7 +149,7 @@ static BOOL vertexABI(A5MaliDynamicShaderCacheEntry *e,const A5MaliCompiledProfi
     if(![e.reflection[@"vertex_input"] isEqual:want]){*reason=@"vertex.reflected-Metal-packing";return NO;}
     *colorOnly=compact;*twoUV=dual;return YES;
 }
-static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch,BOOL *position,BOOL *noInputs,BOOL *twoUV,NSString **reason) {
+static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch,BOOL *position,BOOL *noInputs,BOOL *twoUV,BOOL *colorOnly,NSString **reason) {
     *reason=@"fragment.native-attributes-or-sampled-count";
     NSDictionary *n=e.nativeABI[@"native_info"];
     if(!interfaceABI(e)||e.stage!=A5MaliStageFragment||[n[@"attributes"] unsignedIntValue]||
@@ -164,8 +164,10 @@ static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch
     NSArray *live=e.nativeABI[@"live_textures"];
     *reason=@"fragment.native-texture-liveness-or-no-input-fetch";
     if(![live isKindOfClass:NSArray.class]||
-       (*noInputs?(textureCount||live.count||![e.nativeABI[@"framebuffer_fetch"] boolValue]):
-                   (!textureCount||!live.count)))return NO;
+       (textureCount?(!live.count||*noInputs):live.count))return NO;
+    /* Untextured VAR0 is the colour exported by the compact QC vertex ABI.
+     * Its exact vec4 lanes/base are checked below; zero textures never imply UV. */
+    *colorOnly=!textureCount&&!*noInputs;
     unsigned mask33=0;*twoUV=NO;
     for(NSDictionary *r in io){
         unsigned loc=[r[@"location"] unsignedIntValue],c=[r[@"component"] unsignedIntValue],n=[r[@"components"] unsignedIntValue];
@@ -178,7 +180,10 @@ static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch
     *position=NO;for(NSDictionary *r in io)if([r[@"location"] unsignedIntValue]==0)*position=YES;
     *color=NO;for(NSDictionary *r in io)if([r[@"location"] unsignedIntValue]==(*twoUV?34u:33u))*color=YES;
     unsigned selectedLocations[4],selectedBases[4],selectedMasks[4],count=0;
-    if(*twoUV){
+    if(*colorOnly){
+        *color=YES;*twoUV=NO;*position=NO;
+        selectedLocations[count]=32;selectedBases[count]=0;selectedMasks[count++]=15;
+    }else if(*twoUV){
         selectedLocations[count]=32;selectedBases[count]=0;selectedMasks[count++]=3;
         selectedLocations[count]=33;selectedBases[count]=1;selectedMasks[count++]=3;
         if(*color){selectedLocations[count]=34;selectedBases[count]=2;selectedMasks[count++]=15;}
@@ -222,13 +227,13 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     if(!A5MaliShaderCompilePipelinePayload(d,vf.compileRequestPayload,ff.compileRequestPayload,error))return nil;
     const A5MaliCompiledProfile *vp=vs?NULL:A5MaliCompiledProfileForID(vf.specializationProfileID);
     const A5MaliCompiledProfile *fp=fs?NULL:A5MaliCompiledProfileForID(ff.specializationProfileID);
-    BOOL color=NO,fetch=NO,position=NO,noInputs=NO,vertexColorOnly=NO,vertexTwoUV=NO,fragmentTwoUV=NO;
+    BOOL color=NO,fetch=NO,position=NO,noInputs=NO,vertexColorOnly=NO,vertexTwoUV=NO,fragmentTwoUV=NO,fragmentColorOnly=NO;
     NSString *predicate=nil;
     BOOL vertexOK=vertexABI(vs,vp,&vertexColorOnly,&vertexTwoUV,&predicate);
-    BOOL fragmentOK=vertexOK&&(fs?fragmentABI(fs,&color,&fetch,&position,&noInputs,&fragmentTwoUV,&predicate):
+    BOOL fragmentOK=vertexOK&&(fs?fragmentABI(fs,&color,&fetch,&position,&noInputs,&fragmentTwoUV,&fragmentColorOnly,&predicate):
         staticFragmentABI(fp,&color));
     if(vertexOK&&!fs&&!fragmentOK)predicate=@"fragment.static-native-ABI";
-    if(vertexOK&&fragmentOK&&vertexColorOnly&&!noInputs){
+    if(vertexOK&&fragmentOK&&vertexColorOnly&&!noInputs&&!fragmentColorOnly){
         fragmentOK=NO;predicate=@"link.fragment-UV-input-not-exported-by-vertex";
     }
     if(vertexOK&&fragmentOK&&fragmentTwoUV&&!vertexTwoUV){
@@ -276,7 +281,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     e->_profile=(A5MaliCompiledProfile){.profileID=A5MaliDynamicProfileID,.name="dynamic-reflected-QC",
         .vertexName=e->_vertexName.UTF8String,.fragmentName=e->_fragmentName.UTF8String,
         .colorFormats={80},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
-            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0)|(vertexTwoUV?A5MaliProfileVertexTwoUV:0)|(fragmentTwoUV?A5MaliProfileFragmentTwoUV:0),.passes=&e->_pass,.passCount=1,
+            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0)|(vertexTwoUV?A5MaliProfileVertexTwoUV:0)|(fragmentTwoUV?A5MaliProfileFragmentTwoUV:0)|(fragmentColorOnly?A5MaliProfileFragmentColorOnly:0),.passes=&e->_pass,.passCount=1,
         .resources=e->_resources,.resourceCount=resourceCount,.pushFields=e->_pushes,.pushFieldCount=pushCount,
         .attributes=e->_attributes,.attributeCount=4,.layouts=&e->_layout,.layoutCount=1,
         .attachmentContracts=e->_attachments,.attachmentContractCount=2,.immutableSamplers=e->_samplers,.immutableSamplerCount=immutableCount};

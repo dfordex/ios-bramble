@@ -353,7 +353,7 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
 static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(p->profileID!=A5MaliDynamicProfileID||
     !(p->flags&A5MaliProfileDynamicStages)||
-    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV))||
+    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV|A5MaliProfileFragmentColorOnly))||
     !(p->flags&A5MaliProfileSourceOverBlend)||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
@@ -402,13 +402,16 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
   }else return 0;
  }
  if(!!(p->flags&A5MaliProfileFramebufferFetch)!=(fetches==1))return 0;
- if((p->flags&A5MaliProfileVertexColorOnly)&&(!(p->flags&A5MaliProfileFragmentNoInputs)||(p->flags&A5MaliProfileVertexTwoUV)))return 0;
+ if((p->flags&A5MaliProfileVertexColorOnly)&&(!(p->flags&(A5MaliProfileFragmentNoInputs|A5MaliProfileFragmentColorOnly))||(p->flags&A5MaliProfileVertexTwoUV)))return 0;
  if((p->flags&A5MaliProfileFragmentTwoUV)&&(!(p->flags&A5MaliProfileVertexTwoUV)||(p->flags&A5MaliProfileFragmentNoInputs)))return 0;
  if(p->flags&A5MaliProfileFragmentNoInputs){
-  /* No sampled-resource fallback: this path executes the reflected ordered
-   * attachment load, with real FS UBOs and no FS interpolant descriptors. */
-  if(!(p->flags&A5MaliProfileFramebufferFetch)||textures||samplers||
-     (p->flags&(A5MaliProfileDynamicColorVarying|A5MaliProfileFragmentPosition)))return 0;
+  /* Constant and ordered-fetch shaders both have genuine empty interpolant
+   * tables. Fetch is independently matched to a real input-attachment above. */
+  if(textures||samplers||
+     (p->flags&(A5MaliProfileDynamicColorVarying|A5MaliProfileFragmentPosition|A5MaliProfileFragmentColorOnly)))return 0;
+ }else if(p->flags&A5MaliProfileFragmentColorOnly){
+  if(textures||samplers||!(p->flags&A5MaliProfileDynamicColorVarying)||
+     (p->flags&(A5MaliProfileFragmentPosition|A5MaliProfileFragmentTwoUV)))return 0;
  }else if(!textures||textures!=samplers)return 0;
  for(unsigned i=0;i<4;i++)if((textures&(1u<<i))&&textureBindings[i]!=samplerBindings[i])return 0;
  unsigned immutableMask=0,constantMask=0;
@@ -562,11 +565,11 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
     attr(d,VS_VARY+24,3,MALI_RGBA32UI,0x688,0);
     buf(d,VS_VARY_BUFS+48,VA+colorData,16,r->vertexCount*16);
    }
-   if(!(p->flags&A5MaliProfileFragmentNoInputs)){
+   if(!(p->flags&(A5MaliProfileFragmentNoInputs|A5MaliProfileFragmentColorOnly))){
     attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);
     buf(d,FS_VARY_BUFS,VA+VARY_DATA,8,r->vertexCount*8);
    }
-   unsigned colorSlot=(p->flags&A5MaliProfileFragmentTwoUV)?2:1;
+   unsigned colorSlot=(p->flags&A5MaliProfileFragmentColorOnly)?0:(p->flags&A5MaliProfileFragmentTwoUV)?2:1;
    if(p->flags&A5MaliProfileFragmentTwoUV){
     attr(d,FS_VARY+8,1,MALI_RG32F,RG_SWIZZLE,0);
     buf(d,FS_VARY_BUFS+16,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
@@ -715,6 +718,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   if(p->flags&A5MaliProfileFragmentTwoUV)rs.shader.varying_count=(p->flags&A5MaliProfileDynamicColorVarying)?3:2;
   if(p->flags&A5MaliProfileFragmentPosition)rs.shader.varying_count=(p->flags&A5MaliProfileFragmentTwoUV)?4:3;
   if(p->flags&A5MaliProfileFragmentNoInputs)rs.shader.varying_count=0;
+  if(p->flags&A5MaliProfileFragmentColorOnly)rs.shader.varying_count=1;
   MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
  }
  if(p->flags&(A5MaliProfileInlineSourceOver|A5MaliProfileFramebufferFetch)){
@@ -733,6 +737,8 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   struct MALI_DRAW draw;MALI_DRAW_unpack((const struct mali_draw_packed*)(d+0x140),&draw);
   if(p->flags&A5MaliProfileFragmentNoInputs){
    draw.textures=0;draw.samplers=0;draw.varyings=0;draw.varying_buffers=0;
+  }else if(p->flags&A5MaliProfileFragmentColorOnly){
+   draw.textures=0;draw.samplers=0;
   }else{
    draw.textures=r->descriptorGPUVA+DYNAMIC_TEX_TABLE;draw.samplers=r->descriptorGPUVA+DYNAMIC_SAMPLERS;
   }

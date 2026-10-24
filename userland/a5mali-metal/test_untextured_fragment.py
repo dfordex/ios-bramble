@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""Exercise the actual untextured color/fetch and constant cache through factory and emitter.
+
+Requires private actual QuartzCore shaders. No GPU job is submitted. No fixture
+or source Apple binary is written into the repository.
+"""
+import argparse
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('registry', 'mesa-build', 'publication', 'request', 'metallib', 'output'):
+        parser.add_argument('--'+name, type=Path, required=True)
+    parser.add_argument('--fixture', type=Path)
+    parser.add_argument('--vertex-publication', type=Path)
+    parser.add_argument('--vertex-request', type=Path)
+    a = parser.parse_args()
+    if bool(a.vertex_publication) != bool(a.vertex_request):
+        parser.error('vertex publication and request must be supplied together')
+    here = Path(__file__).resolve().parent
+    family = here.parent / 'a5xelte-air-translation/families'
+    out = a.output.resolve()
+    if here in out.parents or out == here:
+        parser.error('private generated artifacts must remain outside the source tree')
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "requests").mkdir(exist_ok=True)
+    (out / "requests").chmod(0o1777)
+    identity = json.loads(a.request.read_text())['request_id']
+    if len(identity) != 64 or any(c not in '0123456789abcdef' for c in identity):
+        parser.error('request must have its real canonical identity')
+    publication = out / 'publication'
+    publication.mkdir(exist_ok=True)
+    stage = publication / identity
+    if stage.exists():
+        shutil.rmtree(stage)
+    shutil.copytree(a.publication.resolve(), stage)
+    for path in (publication, stage):
+        path.chmod(0o755)
+    for path in stage.iterdir():
+        if path.is_file():
+            path.chmod(0o444)
+    spec = importlib.util.spec_from_file_location('fetch_runtime_build', family / 'build_runtime_encoder.py')
+    module = importlib.util.module_from_spec(spec)
+    import sys
+    sys.path.insert(0, str(family))
+    spec.loader.exec_module(module)
+    objects = []
+    for name in ('runtime_encode', 'runtime_misc_encode', 'runtime_clear', 'runtime_path_encode', 'runtime_resource_ops'):
+        obj = out / (name+'.o')
+        module.compile_runtime(a.mesa_build.resolve(), obj, 'host', family/(name+'.c'))
+        objects.append(str(obj))
+    helper = out / 'fetch-emitter-test.o'
+    module.compile_runtime(a.mesa_build.resolve(), helper, 'host', here/'test_untextured_fragment.c')
+    objects.append(str(helper))
+    sources = ['A5MaliBridge.c', 'A5MaliNative.c', 'A5MaliNativeUpload.c', 'A5MaliCommandBuffer.m',
+               'A5MaliRestrictedDevice.m', 'A5MaliMetalAPI.m', 'A5MaliMetalTexture.m',
+               'A5MaliNativeTextureOps.m', 'A5MaliShaderCompiledCache.m', 'A5MaliShaderCompileRequest.m',
+               'A5MaliMetalLibrary.m', 'A5MaliDynamicShaderCache.m', 'A5MaliDynamicPipeline.m',
+               'A5MaliMetalDeviceResources.m', 'A5MaliResourceDependencies.m', 'test_untextured_fragment.m']
+    exe = out / 'fetch-test'
+    command = ['clang', '-fobjc-arc', '-fblocks', '-Wall', '-Wextra', '-Werror',
+               '-DA5_MALI_HOST_TEST', '-DA5_MALI_REQUIRE_COMPILED_REGISTRY=1',
+               '-DA5_MALI_DYNAMIC_SHADER_COMPILER=1', '-DA5_DYNAMIC_SHADER_CACHE_HOST_TEST=1',
+               '-DA5_DYNAMIC_SHADER_CACHE_TEST_ROOT="'+str(publication)+'"',
+               '-DA5_SHADER_REQUEST_HOST_TEST=1',
+               '-DA5_SHADER_REQUEST_TEST_ROOT="'+str(out/'requests')+'"',
+               '-I'+str(a.registry.resolve()), *[str(here/x) for x in sources], *objects,
+               '-framework', 'Foundation', '-framework', 'IOSurface', '-framework', 'IOKit',
+               '-framework', 'Metal', '-o', str(exe)]
+    subprocess.run(command, check=True)
+    env = dict(os.environ, A5_MALI_STOCK_QUARTZCORE_METALLIB=str(a.metallib.resolve()))
+    for vertex in ('602', '603'):
+        runenv=dict(env,A5_TEST_VERTEX_PROFILE=vertex)
+        if a.fixture and vertex=='602':
+            a.fixture.parent.mkdir(parents=True,exist_ok=True)
+            runenv['A5_UNTEXTURED_FIXTURE']=str(a.fixture.resolve())
+        subprocess.run([str(exe),str(a.request.resolve())],env=runenv,check=True)
+    if a.vertex_request:
+        vertex_identity=json.loads(a.vertex_request.read_text())['request_id']
+        vertex_stage=publication / vertex_identity
+        if vertex_stage.exists():
+            shutil.rmtree(vertex_stage)
+        shutil.copytree(a.vertex_publication.resolve(), vertex_stage)
+        vertex_stage.chmod(0o755)
+        for path in vertex_stage.iterdir():
+            if path.is_file():
+                path.chmod(0o444)
+        subprocess.run([str(exe), str(a.request.resolve())], env=dict(env,
+            A5_TEST_VERTEX_PROFILE='602' if json.loads((a.vertex_publication/'receipt.json').read_text())['native_abi']['native_info']['attributes']==2 else '603', A5_TEST_DYNAMIC_VERTEX_REQUEST=str(a.vertex_request.resolve())), check=True)
+    if a.fixture:
+        import hashlib
+        fixture=a.fixture.resolve()
+        raw=fixture.read_bytes()
+        receipt=json.loads((a.publication/'receipt.json').read_text())
+        code=(a.publication/'stage.midgard').read_bytes()
+        assert raw[0x8000:0x8000+len(code)]==code and len(raw)==0x40000
+        if len(code)==2240:
+            # Actual optimized NIR reads targetRGBA, unpremultiplies RGB,
+            # evaluates half4 cubic coefficients at FragmentBuffer1+128,
+            # mixes toward that scalar by interpolated colour alpha, and
+            # re-premultiplies by target alpha. The authored cubic is f(L)=1;
+            # two quads have alpha 1/4 and 3/4. Target BGRA starts32/64/96/128.
+            pixels=bytes(c for y in range(32) for x in range(32)
+                         for c in ([56,80,104,128] if x<16 else [104,112,120,128]))
+            oracle='Actual optimized NIR cubic f(L)=1: targetRGB*(1-vertexAlpha)+targetAlpha*vertexAlpha, targetAlpha preserved; two authored quads alpha1/4 and3/4'
+            name='actual_untextured_color_ordered_fetch'
+        elif len(code)==176:
+            # Actual optimized NIR loads ColorWriteRule then ANDs all four
+            # result lanes with zero. It never loads the framebuffer/colour.
+            pixels=bytes(4096)
+            oracle='Actual optimized NIR writes transparent zero RGBA for every fragment; nonzero target initialization distinguishes execution from no-op'
+            name='actual_untextured_constant_no_fetch'
+        else:
+            raise ValueError('independent pixel oracle unavailable for native stage')
+        expected=fixture.with_suffix('.expected.bin');expected.write_bytes(pixels)
+        assert len(pixels)==4096 and raw[0x3e000:0x3f000]!=pixels
+        digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+        case={'name':name,'payload':str(fixture),'payload_sha256':digest(fixture),'size':len(raw),
+              'outputs':[{'name':'pixels','offset':0x3e000,'bytes':4096,'expected':str(expected),
+                          'expected_sha256':digest(expected),'element_bytes':1,'tolerance':1}],
+              'immutable':[{'offset':0x39000,'bytes':0x5000},{'offset':0x3f000,'bytes':4096}],
+              'oracle':oracle,'shader_sha256':receipt['native']['sha256']}
+        fixture.with_suffix('.manifest.json').write_text(json.dumps({'cases':[case],
+            'reference':'Exact phone-published shader and authenticated factory; independent optimized-NIR output oracle',
+            'pixel_result':'pending physical GPU execution'},indent=2)+'\n')
+    print('PASS actual untextured color/fetch and constant factory/emitter and malformed native IO; GPU pixels not tested')
+
+
+if __name__ == '__main__':
+    main()
