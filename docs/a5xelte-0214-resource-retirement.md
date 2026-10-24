@@ -20,4 +20,10 @@ Repeat resource tests: `A5_MALI_MESA_BUILD=/path/to/released-mesa/buildtools too
 
 ## Build/device status
 
-The31-file incremental payload passes real kernel installer preflight. All45 physical cases are embedded: the prior44 payload, expected and mask SHA256 pins are unchanged, and the actual602 source-over case is appended. A small host-only BOOT reference preserves the exact previously working0207d loader, ADT and DTBH; its dummy kernel must never be flashed. Full XNU rebuild and final BOOT packaging remain pending because this Mac ran out of disk space. The legacy local build files are cloud placeholders; the required source, provider, tests and packaging inputs have been restored independently. Source is restored in a clean temporary checkout. No prior working checkpoint or user files were removed. This is not yet a flashed0214 image or proof that the phone accepts the new602 state.
+All45 physical cases are embedded: the prior44 payload, expected and mask SHA256 pins are unchanged, and the actual602 source-over case is appended. The incremental31-file payload passes the real kernel installer preflight (40,707,850 raw /9,854,676 packed bytes).
+
+After space became available, pinned libdispatch1415.140.2 was rebuilt for Cortex-A53 with the donor XNU exported headers first in its search path. The archive disassembly has no LSE operations. Availability121 and actual Xcode MIG tools are staged locally. Full XNU make exits0; the missing debugger `python` executable was supplied by a local wrapper invoking the existing Python3. No kernel checks were bypassed.
+
+The final BOOT is31,789,072bytes, below the33,554,432-byte partition capacity. Its real freshly linked31,120,904-byte unstripped kernel contains the exact signed new provider, the verified existing compiler and45 GPU cases. Working0207d loader, ADT and DTBH bytes are unchanged. Four CPUs and32-sector storage batches remain selected.
+
+Build and offline packaging pass. Phone installation and physical602 pixel/button-transition results are separate checkpoints.
