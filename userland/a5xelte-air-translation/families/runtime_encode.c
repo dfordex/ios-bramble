@@ -92,11 +92,8 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
  if(!p||!(p->profileID==99||(p->profileID>=100&&p->profileID<=108))||
     p->passCount!=1||!p->passes||p->passes[0].logicalTarget||p->resourceCount>16||p->pushFieldCount>16)
   return A5RuntimeUnsupported;
- /* Released-backend filter-specialization equivalence has been proved for
-  * the actual installed100..108 programs. DS4/99 retains its original
-  * nearest contract until its private SPIR-V can be checked separately. */
- if(p->profileID==99&&(r->sourceSampler.minFilter||r->sourceSampler.magFilter))
-  return A5RuntimeUnsupported;
+ /* Filtering is native sampler state. Preserve the authenticated DS4/blur
+  * program and the actual caller min/mag request in the released v4 sampler. */
  const A5MaliCompiledPass*pass=p->passes;
  const A5MaliCompiledShader*vs=&pass->vertex,*fs=&pass->fragment;
  if(!vs->bytes||!fs->bytes||!vs->byteCount||vs->byteCount>FCODE-VCODE||

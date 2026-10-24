@@ -31,6 +31,63 @@ static NSError *unsupported(NSString *reason) {
     return [NSError errorWithDomain:@"com.orhunnx.a5xelte.dynamic-pipeline"
         code:ENOTSUP userInfo:@{NSLocalizedDescriptionKey:reason}];
 }
+/* Generic pipeline receipts can be exhausted by startup warmup. Keep every
+ * dynamic composition failure visible through its own bounded terminal gate,
+ * including failures after valid stage IO. Only metadata/reasons are logged. */
+static A5MaliDynamicPipelineEntry *rejectPipeline(A5MaliMetalFunction *vertex,
+    A5MaliMetalFunction *fragment,NSString *predicate,NSError *failure,NSError **error) {
+    static unsigned diagnostics=0;
+    if(__atomic_fetch_add(&diagnostics,1,__ATOMIC_RELAXED)<48){
+        NSString *reason=[[failure.localizedDescription?:@"unsupported dynamic pipeline"
+            stringByReplacingOccurrencesOfString:@"\n" withString:@" "]
+            stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
+        if(reason.length>160)reason=[reason substringToIndex:160];
+        A5MaliDynamicShaderCacheEntry *fs=fragment.dynamicShader;
+        fprintf(stderr,
+            "A5XELTE Metal dynamic link: rejected predicate=%s vertex=%s vertex_profile=%u vertex_dynamic=%u fragment=%s fragment_profile=%u fragment_dynamic=%u fs_inputs=%lu fs_textures=%u fs_samplers=%u vertex_request=%s fragment_request=%s reason=%s\n",
+            predicate.UTF8String?:"unknown",vertex.name.UTF8String?:"unavailable",
+            vertex.specializationProfileID,!!vertex.dynamicShader,
+            fragment.name.UTF8String?:"unavailable",fragment.specializationProfileID,!!fs,
+            (unsigned long)[fs.nativeABI[@"inputs"] count],
+            [fs.nativeABI[@"native_info"][@"textures"] unsignedIntValue],
+            [fs.nativeABI[@"native_info"][@"samplers"] unsignedIntValue],
+            vertex.dynamicShader.requestID.UTF8String?:"static-or-unavailable",
+            fs.requestID.UTF8String?:"static-or-unavailable",reason.UTF8String);
+    }
+    if(error)*error=failure;
+    return nil;
+}
+/* The shared validator is authoritative. Explain its generic vertex failure
+ * only after rejection, so the terminal dynamic receipt identifies the first
+ * actual packing difference even after generic startup logging is exhausted. */
+static NSString *descriptorRejection(const A5MaliCompiledProfile *profile,
+    MTLRenderPipelineDescriptor *descriptor,NSString *reason) {
+    if(![reason isEqual:@"vertex attribute/layout contract differs"])return reason;
+    MTLVertexDescriptor *vertex=descriptor.vertexDescriptor;
+    for(unsigned i=0;i<31;++i){
+        const A5MaliCompiledVertexAttribute *want=NULL;
+        for(unsigned j=0;j<profile->attributeCount;++j)
+            if(profile->attributes[j].index==i)want=profile->attributes+j;
+        MTLVertexAttributeDescriptor *actual=vertex.attributes[i];
+        if(actual.format!=(want?want->format:MTLVertexFormatInvalid)||
+           (want&&(actual.offset!=want->offset||actual.bufferIndex!=want->bufferIndex)))
+            return [NSString stringWithFormat:
+                @"vertex attribute%u actual={format:%lu,offset:%lu,buffer:%lu} expected={format:%u,offset:%u,buffer:%u}",
+                i,(unsigned long)actual.format,(unsigned long)actual.offset,
+                (unsigned long)actual.bufferIndex,want?want->format:0,
+                want?want->offset:0,want?want->bufferIndex:0];
+    }
+    for(unsigned i=0;i<profile->layoutCount;++i){
+        const A5MaliCompiledVertexLayout *want=profile->layouts+i;
+        MTLVertexBufferLayoutDescriptor *actual=vertex.layouts[want->index];
+        if(actual.stride!=want->stride||actual.stepFunction!=want->stepFunction||actual.stepRate!=want->stepRate)
+            return [NSString stringWithFormat:
+                @"vertex layout%u actual={stride:%lu,step:%lu,rate:%lu} expected={stride:%u,step:%u,rate:%u}",
+                want->index,(unsigned long)actual.stride,(unsigned long)actual.stepFunction,
+                (unsigned long)actual.stepRate,want->stride,want->stepFunction,want->stepRate];
+    }
+    return reason;
+}
 /* Merge constant lanes from optimized NIR records; distinct source loads may
  * repeat one lane. A different hardware base or an unknown semantic rejects. */
 static BOOL ioShape(NSArray *records,const unsigned *locations,const unsigned *bases,
@@ -220,11 +277,13 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     id v=d.vertexFunction,f=d.fragmentFunction;
     if(![v isMemberOfClass:A5MaliMetalFunction.class]||![f isMemberOfClass:A5MaliMetalFunction.class]||
        [v library]!=[f library]||[v device]!=[f device]||[v functionType]!=MTLFunctionTypeVertex||
-       [f functionType]!=MTLFunctionTypeFragment){if(error)*error=unsupported(@"dynamic stages require authenticated same-library functions");return nil;}
+       [f functionType]!=MTLFunctionTypeFragment){return rejectPipeline(nil,nil,@"functions.authentication",unsupported(@"dynamic stages require authenticated same-library functions"),error);}
     A5MaliMetalFunction *vf=v,*ff=f;
     A5MaliDynamicShaderCacheEntry *vs=vf.dynamicShader,*fs=ff.dynamicShader;
     if(!vs&&!fs)return nil;
-    if(!A5MaliShaderCompilePipelinePayload(d,vf.compileRequestPayload,ff.compileRequestPayload,error))return nil;
+    NSError *snapshotError=nil;
+    if(!A5MaliShaderCompilePipelinePayload(d,vf.compileRequestPayload,ff.compileRequestPayload,&snapshotError))
+        return rejectPipeline(vf,ff,@"pipeline.source-snapshot",snapshotError,error);
     const A5MaliCompiledProfile *vp=vs?NULL:A5MaliCompiledProfileForID(vf.specializationProfileID);
     const A5MaliCompiledProfile *fp=fs?NULL:A5MaliCompiledProfileForID(ff.specializationProfileID);
     BOOL color=NO,fetch=NO,position=NO,noInputs=NO,vertexColorOnly=NO,vertexTwoUV=NO,fragmentTwoUV=NO,fragmentColorOnly=NO;
@@ -239,17 +298,10 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     if(vertexOK&&fragmentOK&&fragmentTwoUV&&!vertexTwoUV){
         fragmentOK=NO;predicate=@"link.second-fragment-UV-not-exported-by-vertex";
     }
-    if(!vertexOK||!fragmentOK){
-        static unsigned diagnostics=0;
-        if(__atomic_fetch_add(&diagnostics,1,__ATOMIC_RELAXED)<48)fprintf(stderr,
-            "A5XELTE Metal dynamic link: rejected predicate=%s vertex=%s vertex_profile=%u vertex_dynamic=%u fragment=%s fragment_profile=%u fragment_dynamic=%u fs_inputs=%lu fs_textures=%u fs_samplers=%u\n",
-            predicate.UTF8String?:"unknown",vf.name.UTF8String,vf.specializationProfileID,!!vs,
-            ff.name.UTF8String,ff.specializationProfileID,!!fs,
-            (unsigned long)[fs.nativeABI[@"inputs"] count],
-            [fs.nativeABI[@"native_info"][@"textures"] unsignedIntValue],
-            [fs.nativeABI[@"native_info"][@"samplers"] unsignedIntValue]);
-        if(error)*error=unsupported([NSString stringWithFormat:@"compiled stage IO ABI rejected: %@ (vertex profile%u fragment profile%u)",predicate,vf.specializationProfileID,ff.specializationProfileID]);return nil;
-    }
+    if(!vertexOK||!fragmentOK)
+        return rejectPipeline(vf,ff,predicate,unsupported([NSString stringWithFormat:
+            @"compiled stage IO ABI rejected: %@ (vertex profile%u fragment profile%u)",
+            predicate,vf.specializationProfileID,ff.specializationProfileID]),error);
     A5MaliDynamicPipelineEntry *e=[A5MaliDynamicPipelineEntry new];
     e->_owners=@[vs?:v,fs?:f];e->_vertexName=[vf.name copy];e->_fragmentName=[ff.name copy];
     e->_pass=(A5MaliCompiledPass){.passID=A5MaliDynamicProfileID,
@@ -262,11 +314,11 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
         const A5MaliCompiledResource *rs=entry?entry.resources:p->resources;
         const A5MaliCompiledPushField *ps=entry?entry.pushFields:p->pushFields;
         for(unsigned i=0;i<nr;++i)if(rs[i].stage==stage){
-            if(resourceCount==16){if(error)*error=unsupported(@"too many dynamic resources");return nil;}
+            if(resourceCount==16)return rejectPipeline(vf,ff,@"resources.count",unsupported(@"too many dynamic resources"),error);
             e->_resources[resourceCount++]=rs[i];
         }
         for(unsigned i=0;i<np;++i)if(ps[i].stage==stage){
-            if(pushCount==16){if(error)*error=unsupported(@"too many dynamic push fields");return nil;}
+            if(pushCount==16)return rejectPipeline(vf,ff,@"push-fields.count",unsupported(@"too many dynamic push fields"),error);
             e->_pushes[pushCount++]=ps[i];
         }
     }
@@ -276,7 +328,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i){unsigned over=c==1&&i==0;
         e->_attachments[c].attachments[i]=(A5MaliCompiledAttachmentState){15,over,0,0,1,over?5u:0u,1,over?5u:0u};}
     unsigned immutableCount=fs?fs.immutableSamplerCount:0;
-    if(immutableCount>4){if(error)*error=unsupported(@"too many immutable samplers");return nil;}
+    if(immutableCount>4)return rejectPipeline(vf,ff,@"immutable-samplers.count",unsupported(@"too many immutable samplers"),error);
     if(immutableCount)memcpy(e->_samplers,fs.immutableSamplers,immutableCount*sizeof(e->_samplers[0]));
     e->_profile=(A5MaliCompiledProfile){.profileID=A5MaliDynamicProfileID,.name="dynamic-reflected-QC",
         .vertexName=e->_vertexName.UTF8String,.fragmentName=e->_fragmentName.UTF8String,
@@ -286,12 +338,13 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
         .attributes=e->_attributes,.attributeCount=4,.layouts=&e->_layout,.layoutCount=1,
         .attachmentContracts=e->_attachments,.attachmentContractCount=2,.immutableSamplers=e->_samplers,.immutableSamplerCount=immutableCount};
 #if __has_include("A5MaliCompiledRegistryData.inc") || defined(A5_MALI_REQUIRE_COMPILED_REGISTRY)
-    if(!A5MaliDynamicRuntimeProfileSupported(&e->_profile)){if(error)*error=unsupported(@"dynamic resource graph is outside native emitter bounds");return nil;}
+    if(!A5MaliDynamicRuntimeProfileSupported(&e->_profile))
+        return rejectPipeline(vf,ff,@"emitter.resource-graph",unsupported(@"dynamic resource graph is outside native emitter bounds"),error);
 #else
-    if(error)*error=unsupported(@"native descriptor backend unavailable");return nil;
+    return rejectPipeline(vf,ff,@"emitter.backend",unsupported(@"native descriptor backend unavailable"),error);
 #endif
     NSString *mismatch=A5MaliCompiledDescriptorMismatch(&e->_profile,d);
-    if(mismatch){if(error)*error=unsupported(mismatch);return nil;}
+    if(mismatch)return rejectPipeline(vf,ff,@"descriptor.contract",unsupported(descriptorRejection(&e->_profile,d,mismatch)),error);
     static unsigned acceptedDiagnostics=0;
     if(__atomic_fetch_add(&acceptedDiagnostics,1,__ATOMIC_RELAXED)<32)fprintf(stderr,
         "A5XELTE Metal dynamic link: accepted vertex=%s vertex_profile=%u vertex_dynamic=%u vertex_abi=%s fragment=%s fragment_profile=%u fragment_dynamic=%u fs_no_inputs=%u fetch=%u\n",

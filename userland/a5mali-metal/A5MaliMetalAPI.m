@@ -10,6 +10,8 @@
 #import "A5MaliShaderCompileRequest.h"
 #import "A5MaliShaderCompiledCache.h"
 #import "A5MaliDynamicPipeline.h"
+#import "A5MaliDynamicShaderCache.h"
+#import "A5MaliPipelineDiagnostics.h"
 #import "A5MaliNative.h"
 #import "A5MaliNativeUpload.h"
 #include "../a5xelte-air-translation/families/runtime_encode.h"
@@ -161,6 +163,26 @@ static NSString *pipelineLogText(NSString *value)
     NSString *flat=[[value stringByReplacingOccurrencesOfString:@"\n" withString:@" "]
         stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
     return flat.length>160?[flat substringToIndex:160]:flat;
+}
+/* Keep terminal failures visible after accepted warmup pipelines consume
+ * the generic descriptor receipt limit. SPI entry rejects use this same bound. */
+void A5MaliLogPipelineRejection(const char *phase,MTLRenderPipelineDescriptor *descriptor,
+    MTLPipelineOption options,NSString *reason)
+{
+    static atomic_uint messages;
+    if(atomic_fetch_add_explicit(&messages,1,memory_order_relaxed)>=48)return;
+    A5MaliMetalFunction *vertex=nil,*fragment=nil;
+    if([descriptor isKindOfClass:MTLRenderPipelineDescriptor.class]){
+        id v=descriptor.vertexFunction,f=descriptor.fragmentFunction;
+        if([v isMemberOfClass:A5MaliMetalFunction.class])vertex=v;
+        if([f isMemberOfClass:A5MaliMetalFunction.class])fragment=f;
+    }
+    fprintf(stderr,"A5XELTE Metal pipeline terminal: phase=%s options=%llu vertex=%s fragment=%s vertex_request=%s fragment_request=%s reason=%s\n",
+        phase,(unsigned long long)options,pipelineLogText(vertex.name).UTF8String,
+        pipelineLogText(fragment.name).UTF8String,
+        vertex.dynamicShader.requestID.UTF8String?:"static-or-unavailable",
+        fragment.dynamicShader.requestID.UTF8String?:"static-or-unavailable",
+        pipelineLogText(reason).UTF8String);
 }
 static void logPipelineDecision(A5MaliRestrictedDevice *device,
     MTLRenderPipelineDescriptor *descriptor,uint32_t profile,BOOL accepted,NSString *reason)
@@ -452,6 +474,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         rejection=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali" code:kIOReturnUnsupported
             userInfo:@{NSLocalizedDescriptionKey:reason}];
     }
+    A5MaliLogPipelineRejection("factory",descriptor,0,rejection.localizedDescription);
     logPipelineDecision(self,descriptor,profileID,NO,rejection.localizedDescription);
     if(error)*error=rejection;
     return nil;
@@ -1316,7 +1339,6 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         else if(!(destination.usage&MTLTextureUsageRenderTarget))resourceReason="target-usage";
         else if(!sampler||sampler.device!=_buffer.device)resourceReason="sampler-device";
         else if(!A5MaliRuntimeBlurSamplerSupported(&sourceSampler))resourceReason="sampler-state";
-        else if(profile->profileID==99&&(sourceSampler.minFilter||sourceSampler.magFilter))resourceReason="unverified-DS4-linear";
         else if((profile->flags&A5MaliProfileFixedViewport)&&
             (viewport.originX!=0||viewport.originY!=0||viewport.width!=1080||viewport.height!=1920||
              viewport.znear!=0||viewport.zfar!=1))resourceReason="fixed-viewport";

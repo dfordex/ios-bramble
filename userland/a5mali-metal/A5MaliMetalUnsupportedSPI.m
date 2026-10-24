@@ -3,6 +3,7 @@
  * STOCK_ACCEPTANCE_ABI.md; opaque caller storage is never written speculatively.
  */
 #import "A5MaliMetalDeviceResources.h"
+#import "A5MaliPipelineDiagnostics.h"
 
 typedef struct { uint32_t words[3]; } A5MaliShaderSampleBuffer;
 typedef struct {
@@ -57,7 +58,9 @@ static void rejectSPI(NSString *operation)
 {
     if (reflection) *reflection = nil;
     if (options) {
-        if (error) *error = spiUnsupported(@"render pipeline reflection options");
+        NSError *failure=spiUnsupported(@"render pipeline reflection options");
+        A5MaliLogPipelineRejection("options-reflection",descriptor,options,failure.localizedDescription);
+        if (error) *error = failure;
         return nil;
     }
     return [self newRenderPipelineStateWithDescriptor:descriptor error:error];
@@ -76,7 +79,9 @@ static void rejectSPI(NSString *operation)
 {
     if (!handler) return;
     if (options) {
-        handler(nil, nil, spiUnsupported(@"render pipeline reflection options"));
+        NSError *failure=spiUnsupported(@"render pipeline reflection options");
+        A5MaliLogPipelineRejection("async-options-reflection",descriptor,options,failure.localizedDescription);
+        handler(nil, nil, failure);
         return;
     }
     NSError *error = nil;

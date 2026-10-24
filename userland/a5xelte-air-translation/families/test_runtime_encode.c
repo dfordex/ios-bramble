@@ -94,11 +94,8 @@ static void check_sampler(const A5MaliCompiledProfile*p){
   d.sourceSampler=(A5RuntimeBlurSampler){.valid=1,.minFilter=min,.magFilter=mag,
    .normalizedCoordinates=1,.maxAnisotropy=1,.lodMaxClamp=1000};
   assert(A5MaliRuntimeBlurSamplerSupported(&d.sourceSampler));
-  if(p->profileID==99&&(min||mag)){
-   assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeUnsupported&&zero());
-   continue;
-  }
   assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
+  assert(!memcmp(output+0x4000,p->passes[0].fragment.bytes,p->passes[0].fragment.byteCount));
   pan_unpack((struct mali_sampler_packed*)(output+0x680),SAMPLER,sampler);
   assert(sampler.minify_nearest==!min&&sampler.magnify_nearest==!mag&&sampler.normalized_coordinates);
   assert(sampler.wrap_mode_s==MALI_WRAP_MODE_CLAMP_TO_EDGE&&sampler.wrap_mode_t==MALI_WRAP_MODE_CLAMP_TO_EDGE&&

@@ -21,7 +21,8 @@
 @end
 typedef struct {
     unsigned queries,submits,releases;
-    BOOL badFormat,badFence,badDestinationRead;
+    BOOL badFormat,badFence,badDestinationRead,phoneDimensions;
+    unsigned minFilter,magFilter;
     uint8_t vertex[144],matrix[64],texmat[16],filter[72],edr[2];
     const A5MaliCompiledProfile *profile;
 } Transport;
@@ -43,6 +44,10 @@ static kern_return_t transport(void *opaque,uint32_t selector,const void *input,
             .jobBytes=A5NativeJobBytes,.flags=41};
         r.surfaces[0]=(A5NativeSpan){q->surfaces[0],0x10000000,16384,64,64,256,0x42475241,A5MaliRead};
         r.surfaces[1]=(A5NativeSpan){q->surfaces[1],0x11000000,4096,32,32,128,0x42475241,A5MaliRead|A5MaliWrite};
+        if(t->phoneDimensions){
+            r.surfaces[0]=(A5NativeSpan){q->surfaces[0],0x10000000,560*242,137,242,560,0x42475241,A5MaliRead};
+            r.surfaces[1]=(A5NativeSpan){q->surfaces[1],0x11000000,400*64,100,64,400,0x42475241,A5MaliRead|A5MaliWrite};
+        }
         if(t->badFormat)r.surfaces[0].pixelFormat=0x52476841;
         if(t->badDestinationRead)r.surfaces[1].usage=A5MaliWrite;
         memcpy(output,&r,sizeof(r));*outBytes=sizeof(r);++t->queries;return KERN_SUCCESS;
@@ -55,6 +60,8 @@ static kern_return_t transport(void *opaque,uint32_t selector,const void *input,
     assert(q->vertexOffset==0 && q->tilerOffset==0x100 && q->fragmentOffset==0x200);
     assert(q->readSurfaces==3 && q->writeSurfaces==2 && !q->readBuffers);
     const uint8_t *jobs=(const uint8_t *)input+sizeof(*q);
+    uint32_t samplerWord;memcpy(&samplerWord,jobs+0x680,4);
+    assert((samplerWord&3)==((t->magFilter?0u:1u)|(t->minFilter?0u:2u)));
     const A5MaliCompiledPass *p=t->profile->passes;
     assert(!memcmp(jobs+0x2000,p->vertex.bytes,p->vertex.byteCount));
     assert(!memcmp(jobs+0x4000,p->fragment.bytes,p->fragment.byteCount));
@@ -106,12 +113,14 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     /* QuartzCore A2 keeps an actual disabled RT1 attachment. It must not
      * become a queried/submitted output just because it exists. */
     pass.colorAttachments[1].texture=(id)[device hostTestTextureWithResource:
-        (A5MaliResource){0x100000003,32,32,128,A5MaliWrite}];
+        (A5MaliResource){0x100000003,(uint32_t)destination.width,(uint32_t)destination.height,
+            (uint32_t)destination.width*4,A5MaliWrite}];
     pass.colorAttachments[1].loadAction=MTLLoadActionLoad;
     pass.colorAttachments[1].storeAction=MTLStoreActionStore;
     A5MaliMetalRenderEncoder *r=[buffer renderCommandEncoderWithDescriptor:pass];assert(r);
     /* Valid setter order: viewport precedes pipeline, even on a 32x32 FBO. */
-    [r setViewport:(MTLViewport){0,0,1080,1920,0,1}];
+    [r setViewport:t->phoneDimensions?(MTLViewport){0,0,100,64,0,1}:
+        (MTLViewport){0,0,1080,1920,0,1}];
     [r setRenderPipelineState:pipeline];
     A5MaliPrivateBuffer *vertices=[device newBufferWithLength:161 options:0];assert(vertices);
     memset(vertices.contents,0xa5,161);
@@ -123,8 +132,12 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     memset(inlineFilter,0xff,sizeof(inlineFilter)); /* setBytes owns the old copy */
     [r setFragmentBytes:t->edr length:2 atIndex:6];
     if(samplerMissing)[r setFragmentTexture:source atIndex:3];
-    else [r setFragmentTexture:source atTextureIndex:3 samplerState:[device newSamplerStateWithDescriptor:
-        [MTLSamplerDescriptor new]] atSamplerIndex:0];
+    else {
+        MTLSamplerDescriptor *sampler=[MTLSamplerDescriptor new];
+        sampler.minFilter=t->minFilter;sampler.magFilter=t->magFilter;
+        [r setFragmentTexture:source atTextureIndex:3 samplerState:[device newSamplerStateWithDescriptor:
+            sampler] atSamplerIndex:0];
+    }
     [r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [r endEncoding];
     memcpy((uint8_t *)vertices.contents+17,t->vertex,144); /* visible at commit */
@@ -241,11 +254,28 @@ int main(void)
         [combinedEncoder setFragmentTexture:source atTextureIndex:3 samplerState:nil atSamplerIndex:16];
         [combinedEncoder endEncoding];assert(![combined commitAndWaitUntilSubmitted]);
         assert(combined.status==MTLCommandBufferStatusError&&t.queries==3&&t.submits==1);
+        /* Actual0214 rejection dimensions and all four min/mag combinations
+         * traverse real factory/API/Query17/Submit18 with unchanged DS4 bytes.
+         * Only kernel transport is mocked; these are not physical pixels. */
+        t.badDestinationRead=NO;t.phoneDimensions=YES;
+        A5MaliMetalTexture *phoneSource=[device hostTestTextureWithResource:
+            (A5MaliResource){0x100000001,137,242,560,A5MaliRead}];
+        A5MaliMetalTexture *phoneTarget=[device hostTestTextureWithResource:
+            (A5MaliResource){0x100000002,100,64,400,A5MaliWrite}];
+        unsigned beforeQueries=t.queries,beforeSubmits=t.submits;
+        for(unsigned min=0;min<=1;++min)for(unsigned mag=0;mag<=1;++mag){
+            t.minFilter=min;t.magFilter=mag;
+            b=encode(device,pipeline,phoneSource,phoneTarget,&t,NO,NO);
+            assert([b commitAndWaitUntilSubmitted]);[b waitUntilCompleted];
+            assert(b.status==MTLCommandBufferStatusCompleted&&!b.error);
+        }
+        assert(t.queries==beforeQueries+4&&t.submits==beforeSubmits+4);
+        t.phoneDimensions=NO;t.minFilter=t.magFilter=0;
         /* Missing completion fences quarantine all referenced aliases. Run
          * this last; later commands must never reuse those GPU pages. */
         t.badDestinationRead=NO;t.badFence=YES;b=encode(device,pipeline,source,destination,&t,NO,NO);
         assert(![b commitAndWaitUntilSubmitted]);[b waitUntilCompleted];
-        assert(b.status==MTLCommandBufferStatusError&&t.queries==4&&t.submits==2);
+        assert(b.status==MTLCommandBufferStatusError&&t.queries==8&&t.submits==6);
         puts("native render: authenticated code, caller binding snapshots, mapping epoch, format checks, fences and unsupported state passed (mock transport)");
     }
     return 0;

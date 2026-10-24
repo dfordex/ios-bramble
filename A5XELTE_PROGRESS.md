@@ -713,3 +713,10 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **0214 final build prepared:** Space restored; actual A53firehose/Availability121/MIG prerequisites rebuilt. FullXNUmakeexit0afterlocalPython3debuggerlauncherfix. BOOT31,789,072bytesfits32MiB; freshreal31,120,904bytekernel, exactsignednewprovider/verifiedcompiler/45cases, exactworking0207dloader/ADT/DTBH. Incrementalpayloadpreflightpasses40,707,850raw/9,854,676packed.4cores/32blockstoragepreserved; physicalinstallationpending.
 
 - **0214 installed:** Source3e53d14pushed; guardedrecovery/a5xelte/TWRP/p10/capacitychecks pass. Freshunbufferedoffset0directwriteacknowledges31,789,072bytes;sync0/rebootrequested. NoBOOTbackup/readback/hash/fullUSERDATAtransfer. Actual602blendpixels,resourcepeak/retirementandHome/Power/backboarddstabilitypendingdeviceobservation.
+
+## 2026-10-24 — 0214 full readout and0215 DS4/cache candidate
+
+- Full772,359byte/9,215line capture: actual602source-over4096/4096 passes;41/45physicalcases, four earlier failures remain. No texture/import/map failure or kernel panic. Logical imports reach33/128; key/HID events consumed until backboardd exits.
+- New exact rejection is profile99 DS4linear137x242→100x64. ReleasedMesa sampler-state support added; genuine machinecode reproduced acrossfourfiltermodes, host actualwrapper passes, independentu16/u32fractional/clamp pixelcases prepared.47physicalcasespending.
+- Last actual vertex+fragment pass both recovered complete descriptor states through loader/factory/emitter. Finalbackboardd Metalpipelineabort lacks exactcontract; boundedterminaldiagnosticsadded, no guessed ABIrelaxation. PosterBoard invariant remains separate.
+- Persistentcache already fsyncs files/directories and atomically publishes. All21 exactcapturedfunctionrequests compiled with actualMacworker for nextincrementalpayload, avoiding17new first-compilation waits. Phonecompilerunchanged. No0215writeyet. See[full readout](docs/a5xelte-0214-log-review.md).
