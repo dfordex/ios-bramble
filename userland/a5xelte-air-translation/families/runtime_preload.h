@@ -46,6 +46,7 @@ static int a5_runtime_preload(uint8_t*d,uint64_t va,const A5RuntimeImage*im){
  if(!s||s->bytes>0x400||s->tag!=5||!s->regs||s->regs>4)return A5RuntimeUnsupported;
  switch(im->metalPixelFormat){
  case 80:fmt=MALI_RGBA8_UNORM;sw=0x60a;break;
+ case 43:fmt=MALI_RGB5_A1_UNORM;sw=0x60a;break;
  case 10:fmt=MALI_R8_UNORM;sw=MALI_CHANNEL_R|(MALI_CHANNEL_0<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9);break;
  case 30:fmt=MALI_RG8_UNORM;sw=MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9);break;
  case 55:fmt=MALI_R32F;sw=MALI_CHANNEL_R|(MALI_CHANNEL_0<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9);break;

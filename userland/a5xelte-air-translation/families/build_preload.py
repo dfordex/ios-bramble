@@ -6,7 +6,7 @@ from pathlib import Path
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def build(build,out):
  here=Path(__file__).resolve().parent;out.mkdir(parents=True,exist_ok=True)
- stamp={'source':sha(here/'preload_midgard.c'),'raw_helper':sha(here/'misc_native_rt.h'),'mesa_build':str(build.resolve())}
+ stamp={'generator':sha(Path(__file__)), 'source':sha(here/'preload_midgard.c'),'raw_helper':sha(here/'misc_native_rt.h'),'mesa_build':str(build.resolve())}
  receipt=out/'preload.json';inc=out/'A5MaliPreloadData.inc'
  if receipt.exists() and inc.exists():
   old=json.loads(receipt.read_text())
@@ -20,7 +20,7 @@ def build(build,out):
  ld=shlex.split(lines[-1]);ld[ld.index('-o')+1]=str(exe);ld[ld.index('src/panfrost/a5_t720_copy_shader.p/a5_t720_copy_shader.c.o')]=str(obj)
  subprocess.run(ld,cwd=build,check=True)
  records=[];parts=['/* Generated from our source using released Mesa; no Apple shader bytes. */']
- for fmt in (80,10,30,55,115):
+ for fmt in (80,43,10,30,55,115):
   binary=out/f'preload-{fmt}.midgard';log=subprocess.check_output([str(exe),str(fmt),str(binary)],text=True);print(log.strip())
   values=dict((k,int(v))for k,v in re.findall(r'(\w+)=(\d+)',log));values.update(path=str(binary),sha256=sha(binary));records.append(values)
   parts.append(f'static const uint8_t a5_preload_{fmt}[]={{'+','.join(str(x)for x in binary.read_bytes())+'};')

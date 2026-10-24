@@ -758,3 +758,11 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 -0218cache-before-queue,validatedpureidentity,nonblockingBusy/retryandearlyretirementunlock. Realstage/factoryheld-locktest/requestquota+concurrency/22publicationretirement/diagnostics/iOSWerrorsignaturespass. Compilersampleradded. See[readout](docs/a5xelte-0217-log-review.md).
 
 - **0218 built/installed:** XNUmake0;31,940,624byteBOOTwithupdated926,656Bprovider/230,608Bworker,22cacheoutputs,explicitoptionaltests0. Exact0217loader/ADT/safeDTBHverified;guardedp10writeacknowledgesallbytes/sync0/rebootrequested. Nobackup/readback/fullUSERDATA. PhysicalinteractiveUI/workerrecoverypending. See[installation](docs/a5xelte-0218-install.md).
+
+## 2026-10-24 — 0218 transition exposes packed target43 and another stage wait
+
+- Fullflush90/736,393logicalbytes: previousflockpassed,CB2–8complete,new1888FSaccepted. Backboarddabortsfactorytarget43vs80;SDK43is2-byteBGR5A1. Spinnermatchesprocessrestart.
+- LaterCAthreadwaitsnewfunction;compilerstaysinoldterminalarchival. Exactly1024tee-chunksclipsecondprocesslog;missingCB3tailisnotemitterhangproof.
+-0219implementsactualpackedSFBD/preloadtarget43,keeps80/application-sourceguards;23rdgenuine2128Bstagepassesactualcache/factory/emitter. Freshfunction-firstworker/1retirementscanand4boundeddaemonloglifetimespassfocusedtests. PhysicalUI/format43pixels/newstagepending. See[readout](docs/a5xelte-0218-log-review.md).
+
+- **0219 built/installed:** XNUmake0;31,940,624byteBOOT,926,800Bprovider/230,608Bworker,23stages. Actualpayload/4Ksignatures/factory/preload/scanner/concurrencytests pass. Exact0218loader/ADT/safeDTBH;guardedp10writeacknowledgesallbytes/sync0/rebootrequested. Nobackup/readback/fullUSERDATA. Physicaltarget43/newstage/UItransitionspending. See[installation](docs/a5xelte-0219-install.md).

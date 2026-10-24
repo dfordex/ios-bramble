@@ -50,10 +50,11 @@ static void framebuffer(uint8_t*d,uint64_t VA,unsigned format,const A5RuntimeIma
  u32(d,FB+4,31); /* released v4 local storage, TLS/WLS bothzero */
  pan_section_pack(d+FB,FRAMEBUFFER,PARAMETERS,c){
   c.internal_format=format==2?MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW_VALUE:
-     MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8;
-  c.swizzle=format==0?0x60a:0x688;
+     format==4?MALI_COLOR_BUFFER_INTERNAL_FORMAT_R5G5B5A1:MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8;
+  c.swizzle=format==0||format==4?0x60a:0x688;
   c.color_writeback_format=format==2?MALI_COLOR_FORMAT_2_32B_CHANNELS:
-     format==1?MALI_COLOR_FORMAT_R8:format==3?MALI_COLOR_FORMAT_R8G8:MALI_COLOR_FORMAT_R8G8B8A8;
+     format==1?MALI_COLOR_FORMAT_R8:format==3?MALI_COLOR_FORMAT_R8G8:
+     format==4?MALI_COLOR_FORMAT_R5G5B5A1:MALI_COLOR_FORMAT_R8G8B8A8;
   c.color_block_format=MALI_BLOCK_FORMAT_LINEAR;
   c.color_write_enable=true;
   c.tie_break_rule=MALI_TIE_BREAK_RULE_MINUS_180_IN_0_OUT;
@@ -97,7 +98,7 @@ static void renderer(uint8_t*d,uint64_t VA,int home,int clear,int generic_color,
 static int span(uint64_t a,uint64_t n){return a&&n&&a<(UINT64_C(1)<<40)&&n<=(UINT64_C(1)<<40)-a;}
 static int overlap(uint64_t a,uint64_t n,uint64_t b,uint64_t m){return a<b+m&&b<a+n;}
 static int shader_tag(unsigned t){return t>=2&&t<=15&&t!=6&&t!=7;}
-static unsigned bpp(unsigned f){return f==80?4:f==115?8:(f==1||f==10)?1:f==30?2:0;}
+static unsigned bpp(unsigned f){return f==80?4:f==115?8:(f==1||f==10)?1:(f==30||f==43)?2:0;}
 static int valid_image(const A5RuntimeImage*i){unsigned n=bpp(i->metalPixelFormat);
  return n&&span(i->gpuVA,i->bytes)&&!(i->gpuVA&63)&&i->width&&i->width<=2048&&i->height&&i->height<=2048&&
  i->rowBytes>=i->width*n&&!(i->rowBytes&15)&&(uint64_t)i->rowBytes*i->height<=i->bytes;
@@ -198,7 +199,9 @@ static int dynamic_images(uint8_t*d,const A5RuntimeMiscDraw*m){
       state->sAddressMode,state->tAddressMode,state->rAddressMode,state->normalizedCoordinates,
       1,0,state->lodMinClamp,state->lodMaxClamp};
   }else sm=m->fragmentSamplers+sampler->metalIndex;
-  if((!(sampler->flags&A5MaliResourceImmutableSampler)&&!textured_sampler(sm))||!valid_image(im)||overlap(im->gpuVA,im->bytes,va,SIZE))return A5RuntimeUnsupported;
+  if((!(sampler->flags&A5MaliResourceImmutableSampler)&&!textured_sampler(sm))||!valid_image(im)||
+     (im->metalPixelFormat!=80&&im->metalPixelFormat!=115&&im->metalPixelFormat!=30&&im->metalPixelFormat!=10&&im->metalPixelFormat!=1)||
+     overlap(im->gpuVA,im->bytes,va,SIZE))return A5RuntimeUnsupported;
   for(unsigned j=0;j<p->passCount;j++){
    const A5RuntimeImage*out=m->colorAttachments+p->passes[j].logicalTarget;
    if(overlap(im->gpuVA,im->bytes,out->gpuVA,out->bytes))return A5RuntimeUnsupported;
@@ -360,7 +363,7 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
     !(p->flags&A5MaliProfileSourceOverBlend)||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
-    p->colorFormats[0]!=80||p->viewportWidth||p->viewportHeight||
+    (p->colorFormats[0]!=80&&p->colorFormats[0]!=43)||p->viewportWidth||p->viewportHeight||
     p->attributeCount!=4||!p->attributes||p->layoutCount!=1||!p->layouts||
     !p->resourceCount||p->resourceCount>16||!p->resources||
     !p->pushFieldCount||p->pushFieldCount>16||!p->pushFields||
@@ -699,7 +702,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
    fs->tlsBytes||fs->wlsBytes||!vs->workRegisters||vs->workRegisters>16||!fs->workRegisters||fs->workRegisters>16)return A5RuntimeUnsupported;
  if(dynamic&&(((vs->bytes[0]&15)!=vs->firstTag)||((fs->bytes[0]&15)!=fs->firstTag)))return A5RuntimeUnsupported;
  memcpy(d+VS_CODE,vs->bytes,vs->byteCount);memcpy(d+FS_CODE,fs->bytes,fs->byteCount);
- unsigned fmt=out->metalPixelFormat==115?2:out->metalPixelFormat==10?1:out->metalPixelFormat==30?3:0;
+ unsigned fmt=out->metalPixelFormat==115?2:out->metalPixelFormat==10?1:out->metalPixelFormat==30?3:out->metalPixelFormat==43?4:0;
  framebuffer(d,r->descriptorGPUVA,fmt,out);renderer(d,r->descriptorGPUVA,home,clear,generic_color,generic_textured,p->profileID==604||!!(p->flags&A5MaliProfileDynamicColorVarying),vs->workRegisters,fs->workRegisters,
   p->flags&A5MaliProfileInlineSourceOver?0:r->blend);
  if(dynamic){

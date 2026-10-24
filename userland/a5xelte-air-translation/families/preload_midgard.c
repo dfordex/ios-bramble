@@ -17,7 +17,7 @@ static bool lod(nir_builder*b,nir_intrinsic_instr*i,void*u){
 }
 int main(int argc,char**argv){
  if(argc!=3)return 2;unsigned format=strtoul(argv[1],NULL,10);
- if(format!=80&&format!=10&&format!=30&&format!=55&&format!=115)return 2;
+ if(format!=80&&format!=43&&format!=10&&format!=30&&format!=55&&format!=115)return 2;
  glsl_type_singleton_init_or_ref();
  nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
   pan_get_nir_shader_compiler_options(4,MESA_SHADER_FRAGMENT,false),"a5_v4_colour_preload_%u",format);

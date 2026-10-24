@@ -302,6 +302,12 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
         return rejectPipeline(vf,ff,predicate,unsupported([NSString stringWithFormat:
             @"compiled stage IO ABI rejected: %@ (vertex profile%u fragment profile%u)",
             predicate,vf.specializationProfileID,ff.specializationProfileID]),error);
+    /* These formats share the reflected float4 output ABI. SFBD performs
+     * distinct BGRA8 versus packed BGR5A1 storage conversion; never alias the
+     * descriptor format or infer an sRGB identity from a numeric format. */
+    MTLPixelFormat target=d.colorAttachments[0].pixelFormat;
+    if(target!=MTLPixelFormatBGRA8Unorm&&target!=MTLPixelFormatBGR5A1Unorm)
+        return rejectPipeline(vf,ff,@"descriptor.color0-format",unsupported(@"dynamic target requires BGRA8Unorm or BGR5A1Unorm"),error);
     A5MaliDynamicPipelineEntry *e=[A5MaliDynamicPipelineEntry new];
     e->_owners=@[vs?:v,fs?:f];e->_vertexName=[vf.name copy];e->_fragmentName=[ff.name copy];
     e->_pass=(A5MaliCompiledPass){.passID=A5MaliDynamicProfileID,
@@ -332,7 +338,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     if(immutableCount)memcpy(e->_samplers,fs.immutableSamplers,immutableCount*sizeof(e->_samplers[0]));
     e->_profile=(A5MaliCompiledProfile){.profileID=A5MaliDynamicProfileID,.name="dynamic-reflected-QC",
         .vertexName=e->_vertexName.UTF8String,.fragmentName=e->_fragmentName.UTF8String,
-        .colorFormats={80},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
+        .colorFormats={(uint32_t)target},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
             (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0)|(vertexTwoUV?A5MaliProfileVertexTwoUV:0)|(fragmentTwoUV?A5MaliProfileFragmentTwoUV:0)|(fragmentColorOnly?A5MaliProfileFragmentColorOnly:0),.passes=&e->_pass,.passCount=1,
         .resources=e->_resources,.resourceCount=resourceCount,.pushFields=e->_pushes,.pushFieldCount=pushCount,
         .attributes=e->_attributes,.attributeCount=4,.layouts=&e->_layout,.layoutCount=1,

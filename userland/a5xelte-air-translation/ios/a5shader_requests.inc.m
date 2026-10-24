@@ -993,6 +993,11 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
         fail(@"untrusted shader request spool root");
     DIR *users = fdopendir(dup(rootfd));
     if (!users) fail(@"cannot enumerate request spool");
+    /* Keep the producer's existing64-candidate bound per UID. Finish reading
+     * and authenticating these bounded snapshots before any handler can sync
+     * old statuses or archive completed work. Paths below are scheduling hints
+     * only; the existing handler and retirement helper still decide trust. */
+    NSMutableArray<NSDictionary *> *snapshots=[NSMutableArray array];
     struct dirent *user;
     while ((user=readdir(users))) {
         NSString *component = [NSString stringWithUTF8String:user->d_name];
@@ -1034,14 +1039,50 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
             [body removeObjectForKey:@"request_id"];
             NSData *canonical = a5Canonical(body);
             if (!canonical || ![digest(canonical) isEqual:key]) { digestRejected++; continue; }
-            handled++;
-            a5HandleRequest(self,request,knownProfiles,key);
-            a5RetireCompletedRequest(uidfd,entry->d_name,uid,bytes,request,knownProfiles);
+            [snapshots addObject:@{@"user":component,@"uid":@(uid),@"name":name,
+                @"request":request,@"bytes":bytes}];
         }
         if(count==64)capped++;
         closedir(files); close(uidfd);
     }
-    closedir(users); close(rootfd);
+    closedir(users);
+    NSMutableArray<NSDictionary *> *freshFunctions=[NSMutableArray array],
+        *statusFunctions=[NSMutableArray array],*publishedFunctions=[NSMutableArray array],
+        *otherRequests=[NSMutableArray array];
+    for(NSDictionary *snapshot in snapshots){
+        NSDictionary *request=snapshot[@"request"];NSString *key=request[@"request_id"];
+        if(![request[@"kind"] isEqual:@"function"]){[otherRequests addObject:snapshot];continue;}
+        NSString *publication=[publishedRoot stringByAppendingPathComponent:key];
+        NSString *status=[[cacheRoot stringByAppendingPathComponent:@"request-status"]
+            stringByAppendingPathComponent:[key stringByAppendingString:@".json"]];
+        if([NSFileManager.defaultManager fileExistsAtPath:publication])
+            [publishedFunctions addObject:snapshot];
+        else if([NSFileManager.defaultManager fileExistsAtPath:status])
+            [statusFunctions addObject:snapshot];
+        else [freshFunctions addObject:snapshot];
+    }
+    for(NSArray *batch in @[freshFunctions,statusFunctions,publishedFunctions,otherRequests])
+        for(NSDictionary *snapshot in batch){
+            NSDictionary *request=snapshot[@"request"];
+            handled++;
+            a5HandleRequest(self,request,knownProfiles,request[@"request_id"]);
+        }
+    /* Archival is off the dispatch path and gets at most one candidate per
+     * completed scan, including failed/contended attempts. The helper takes a
+     * fresh locked snapshot and authenticates the durable result again. */
+    for(NSDictionary *snapshot in snapshots){
+        NSDictionary *request=snapshot[@"request"];
+        if(!a5RetireTerminal(request,knownProfiles))continue;
+        int uidfd=openat(rootfd,[snapshot[@"user"] fileSystemRepresentation],
+            O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+        if(uidfd>=0){
+            a5RetireCompletedRequest(uidfd,[snapshot[@"name"] fileSystemRepresentation],
+                [snapshot[@"uid"] unsignedIntValue],snapshot[@"bytes"],request,knownProfiles);
+            close(uidfd);
+        }
+        break;
+    }
+    close(rootfd);
     if(report){
         fprintf(stderr,"A5XELTE shader compiler: SCAN scan=%u users=%u users_rejected=%u candidates=%u read_rejected=%u json_rejected=%u identity_rejected=%u digest_rejected=%u handled=%u capped_users=%u\n",
             scan,usersSeen,usersRejected,candidates,readRejected,jsonRejected,
