@@ -197,7 +197,7 @@ kern_return_t A5MaliImportSurface(A5MaliClient *client,
     uint32_t elementBytes = (reply.format==0x42475241||reply.format==0x52474241) ? 4 :
         reply.format==0x52476841 ? 8 :
         (reply.format==0x41303038||reply.format==0x4c303038) ? 1 :
-        reply.format==0x32433038 ? 2 : reply.format==0x4c303066 ? 4 :
+        (reply.format==0x32433038||reply.format==0x4c413038) ? 2 : reply.format==0x4c303066 ? 4 :
         reply.format==0x52313655 ? 2 : reply.format==0x4c303068 ? 2 :
         reply.format==0x42354131 ? 2 : reply.format==0x32433066 ? 8 : 0;
     if (!elementBytes || !reply.width || !reply.height ||

@@ -1728,7 +1728,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
             }
             A5RuntimeMiscDraw command={.draw={.profile=profile,.vertexCount=(uint32_t)submittedVertexCount,
                 .primitive=primitiveType==MTLPrimitiveTypeTriangle?A5RuntimeTriangle:A5RuntimeTriangleStrip,
-                .blend=sourceOver?A5RuntimeBlendPremultipliedSourceOver:A5RuntimeBlendCopy,
+                .blend=sourceOver?((profile->flags&A5MaliProfileScreenBlend)?A5RuntimeBlendScreen:A5RuntimeBlendPremultipliedSourceOver):A5RuntimeBlendCopy,
                 .scissorX=(uint32_t)scissor.x,.scissorY=(uint32_t)scissor.y,
                 .scissorWidth=(uint32_t)scissor.width,.scissorHeight=(uint32_t)scissor.height,
                 .viewportX=viewport.originX,.viewportY=viewport.originY,.viewportWidth=viewport.width,

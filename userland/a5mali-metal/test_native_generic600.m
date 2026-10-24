@@ -6,6 +6,7 @@
 #import "A5MaliMetalDeviceResources.h"
 #import "A5MaliCompiledRegistry.h"
 #import "A5MaliNative.h"
+extern void A5MaliCheckScreenBlendState(const uint8_t *,unsigned);
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,7 @@ _Static_assert(sizeof(Vertex)==48,"actual QC packing0 stride");
 typedef struct {
     unsigned queries,submits,releases;
     BOOL failSubmit;
+    unsigned blendMode;
     Vertex vertices[4];
     float matrix[16];
     const A5MaliCompiledProfile *profile;
@@ -70,6 +72,7 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
     for(unsigned i=1;i<A5NativeSlots;++i)assert(!q->surfaces[i]);
     for(unsigned i=0;i<A5NativeSlots;++i)assert(!q->buffers[i]);
     const uint8_t *jobs=(const uint8_t *)input+sizeof(*q);
+    A5MaliCheckScreenBlendState(jobs,s->blendMode);
     const A5MaliCompiledPass *pass=s->profile->passes;
     assert(pass->passID==s->profile->profileID&&pass->logicalTarget==0);
     assert(pass->vertex.byteCount==1808&&pass->fragment.byteCount==848);
@@ -223,9 +226,9 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     memcpy(vertices.contents,s->vertices,sizeof(s->vertices)); /* shared buffer captured at commit */
     return command;
 }
-static int run(uint32_t profileID,BOOL blend,BOOL float2)
+static int run(uint32_t profileID,unsigned blend,BOOL float2)
 {
-    State s={0};
+    State s={.blendMode=blend};
     @autoreleasepool{
         s.profile=A5MaliCompiledProfileForID(profileID);assert(s.profile);
         const float xy[4][2]={{0,0},{32,0},{0,32},{32,32}};
@@ -248,7 +251,7 @@ static int run(uint32_t profileID,BOOL blend,BOOL float2)
         if(float2)d.vertexDescriptor.attributes[0].format=MTLVertexFormatFloat2;
         if(blend){
             MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[0];
-            a.blendingEnabled=YES;a.destinationRGBBlendFactor=a.destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
+            a.blendingEnabled=YES;a.destinationRGBBlendFactor=a.destinationAlphaBlendFactor=blend==2?MTLBlendFactorOneMinusSourceColor:MTLBlendFactorOneMinusSourceAlpha;
             /* Reject superficially similar straight-alpha, additive, alpha-only,
              * reverse-subtract and unattached-target states before transport. */
             for(unsigned fault=0;fault<6;++fault){
@@ -264,7 +267,7 @@ static int run(uint32_t profileID,BOOL blend,BOOL float2)
             error=nil;
         }
         A5MaliReadSurfCandidate *pipeline=[device newRenderPipelineStateWithDescriptor:d error:&error];
-        assert(pipeline.sourceOver==blend);
+        assert(pipeline.sourceOver==!!blend);
         const A5MaliCompiledProfile *original=s.profile;s.profile=pipeline.profile;
         assert(s.profile&&s.profile->profileID==original->profileID);
         assert(s.profile->passes==original->passes&&s.profile->resources==original->resources);
@@ -303,4 +306,4 @@ static int run(uint32_t profileID,BOOL blend,BOOL float2)
     return 0;
 }
 
-int main(void) { for(unsigned id=600;id<=602;id++)for(unsigned blend=0;blend<2;blend++)for(unsigned float2=0;float2<2;float2++)assert(!run(id,blend,float2));puts("generic CPF, CPH and specialized-vertex native wrapper paths passed; GPU pixels unverified");return 0; }
+int main(void) { for(unsigned id=600;id<=602;id++)for(unsigned blend=0;blend<3;blend++)for(unsigned float2=0;float2<2;float2++)assert(!run(id,blend,float2));puts("generic CPF, CPH and specialized-vertex native wrapper paths passed; GPU pixels unverified");return 0; }

@@ -44,7 +44,8 @@ enum { A5MaliProfileFixedViewport = 1, A5MaliProfileNearestSampler = 2,
        /* Untextured FS reads only the exported float4 colour at native VAR0. */
        A5MaliProfileFragmentColorOnly = 131072,
        /* UV/procedural fragment with reflected interpolants but no sampled images. */
-       A5MaliProfileFragmentNoTextures = 262144 };
+       A5MaliProfileFragmentNoTextures = 262144,
+       A5MaliProfileScreenBlend = 524288 };
 enum { A5MaliDynamicProfileID = 65536 };
 
 typedef struct {

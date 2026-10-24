@@ -22,6 +22,13 @@ compile_runtime(Path(sys.argv[2]).resolve(),Path(sys.argv[3]).resolve(),'host',P
 PYBUILD
 python3 "$src_dir/../a5xelte-air-translation/families/build_runtime_encoder.py" \
     --mesa-build "$mesa_build" --target host --family resource --output "$out_dir/runtime_resource.o"
+python3 - "$src_dir/../a5xelte-air-translation/families" "$mesa_build" "$out_dir/screen-test.o" <<'PYSCREEN'
+import sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from build_runtime_encoder import compile_runtime
+compile_runtime(Path(sys.argv[2]).resolve(),Path(sys.argv[3]).resolve(),'host',Path(sys.argv[1]).resolve()/'test_runtime_screen_blend.c')
+PYSCREEN
 for test_case in test_native_render test_native_inactive_color1 test_native_indexed_blur test_native_misc test_native_clear test_native_path test_resource_dependency_integration test_phase_diagnostics test_metal_api_selectors test_native_generic600 test_native_indexed602 test_native_textured603 test_native_buffer_texture603 test_native_textured603:604 test_native_textured603:605 test_native_buffer_texture603:604 test_native_buffer_texture603:605 test_native_buffer_texture603:606; do
   test_name=${test_case%%:*}
   test_profile=603
@@ -32,7 +39,7 @@ clang -fobjc-arc -fblocks -DA5_MALI_HOST_TEST -DA5_MALI_REQUIRE_COMPILED_REGISTR
     "$src_dir/A5MaliBridge.c" "$src_dir/A5MaliNative.c" "$src_dir/A5MaliNativeUpload.c" "$src_dir/A5MaliCommandBuffer.m" \
     "$src_dir/A5MaliRestrictedDevice.m" "$src_dir/A5MaliMetalAPI.m" "$src_dir/A5MaliMetalTexture.m" "$src_dir/A5MaliNativeTextureOps.m" \
     "$src_dir/A5MaliShaderCompiledCache.m" "$src_dir/A5MaliDynamicShaderCache.m" "$src_dir/A5MaliDynamicPipeline.m" "$src_dir/A5MaliShaderCompileRequest.m" "$src_dir/A5MaliMetalLibrary.m" "$src_dir/A5MaliMetalDeviceResources.m" "$src_dir/A5MaliResourceDependencies.m" \
-    "$src_dir/$test_name.m" "$out_dir/runtime_encode.o" "$out_dir/runtime_misc_encode.o" "$out_dir/runtime_clear.o" "$out_dir/runtime_path_encode.o" "$out_dir/runtime_resource.o" \
+    "$src_dir/$test_name.m" "$out_dir/runtime_encode.o" "$out_dir/runtime_misc_encode.o" "$out_dir/runtime_clear.o" "$out_dir/runtime_path_encode.o" "$out_dir/runtime_resource.o" "$out_dir/screen-test.o" \
     -framework Foundation -framework IOSurface -framework IOKit -framework Metal \
     -o "$out_dir/$test_output"
 "$out_dir/$test_output"

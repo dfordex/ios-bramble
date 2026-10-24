@@ -276,12 +276,13 @@ static BOOL staticFragmentABI(const A5MaliCompiledProfile *p,BOOL *color) {
 /* Float2 positions use Metal's missing-component rule (z=0,w=1) in
  * the actual native fetch descriptor. Blend adaptation changes only RSD state,
  * never the authenticated program or a shader's inline blend operation. */
-static BOOL sourceOverAttachment(MTLRenderPipelineColorAttachmentDescriptor *a) {
+static BOOL fixedBlendAttachment(MTLRenderPipelineColorAttachmentDescriptor *a) {
     return a.writeMask==MTLColorWriteMaskAll&&a.isBlendingEnabled&&
         a.rgbBlendOperation==MTLBlendOperationAdd&&a.alphaBlendOperation==MTLBlendOperationAdd&&
         a.sourceRGBBlendFactor==MTLBlendFactorOne&&a.sourceAlphaBlendFactor==MTLBlendFactorOne&&
-        a.destinationRGBBlendFactor==MTLBlendFactorOneMinusSourceAlpha&&
-        a.destinationAlphaBlendFactor==MTLBlendFactorOneMinusSourceAlpha;
+        (a.destinationRGBBlendFactor==MTLBlendFactorOneMinusSourceAlpha||
+         a.destinationRGBBlendFactor==MTLBlendFactorOneMinusSourceColor)&&
+        a.destinationAlphaBlendFactor==a.destinationRGBBlendFactor;
 }
 A5MaliDynamicPipelineEntry *A5MaliAdaptCompiledPipeline(MTLRenderPipelineDescriptor *d,
     BOOL *suppliesInactiveColor1,NSError **error) {
@@ -313,11 +314,12 @@ A5MaliDynamicPipelineEntry *A5MaliAdaptCompiledPipeline(MTLRenderPipelineDescrip
         }
         NSError *unused=nil;const A5MaliCompiledProfile *selected=A5MaliSelectCompiledProfile(check,&unused);
         BOOL addBlend=NO;
-        if(selected!=p&&p->colorFormats[0]==80&&sourceOverAttachment(d.colorAttachments[0])&&
+        if(selected!=p&&p->colorFormats[0]==80&&fixedBlendAttachment(d.colorAttachments[0])&&
+            (generic||d.colorAttachments[0].destinationRGBBlendFactor==MTLBlendFactorOneMinusSourceAlpha)&&
             !(p->flags&(A5MaliProfileInlineSourceOver|A5MaliProfileNotExecutable))&&
             p->passCount==1&&p->passes&&p->passes[0].logicalTarget==0){
             /* Use an existing exact copy contract as the authentication proof.
-             * Only ONE / ONE_MINUS_SRC_ALPHA is implemented by the encoder. */
+             * ONE with inverse SRC_ALPHA or inverse per-channel SRC is implemented. */
             MTLRenderPipelineColorAttachmentDescriptor *a0=check.colorAttachments[0];
             a0.blendingEnabled=NO;a0.destinationRGBBlendFactor=a0.destinationAlphaBlendFactor=MTLBlendFactorZero;
             selected=A5MaliSelectCompiledProfile(check,&unused);addBlend=selected==p;
@@ -335,7 +337,9 @@ A5MaliDynamicPipelineEntry *A5MaliAdaptCompiledPipeline(MTLRenderPipelineDescrip
             }
             if(copyContract==p->attachmentContractCount)continue;
             e->_attachments[0]=p->attachmentContracts[copyContract];e->_attachments[1]=e->_attachments[0];
-            e->_attachments[1].attachments[0]=(A5MaliCompiledAttachmentState){15,1,0,0,1,5,1,5};
+            unsigned destination=(unsigned)d.colorAttachments[0].destinationRGBBlendFactor;
+            e->_attachments[1].attachments[0]=(A5MaliCompiledAttachmentState){15,1,0,0,1,destination,1,destination};
+            if(destination==MTLBlendFactorOneMinusSourceColor)e->_profile.flags|=A5MaliProfileScreenBlend;
             e->_profile.attachmentContracts=e->_attachments;e->_profile.attachmentContractCount=2;
             e->_profile.flags|=A5MaliProfileSourceOverBlend;
         }
@@ -441,13 +445,15 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     if(d.vertexDescriptor.attributes[0].format==MTLVertexFormatFloat2)e->_attributes[0].format=29;
     e->_layout=(A5MaliCompiledVertexLayout){1,(uint32_t)stride,1,1};
     for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i){unsigned over=c==1&&i==0;
-        e->_attachments[c].attachments[i]=(A5MaliCompiledAttachmentState){15,over,0,0,1,over?5u:0u,1,over?5u:0u};}
+        unsigned factor=d.colorAttachments[0].isBlendingEnabled&&d.colorAttachments[0].destinationRGBBlendFactor==MTLBlendFactorOneMinusSourceColor?3u:5u;
+        e->_attachments[c].attachments[i]=(A5MaliCompiledAttachmentState){15,over,0,0,1,over?factor:0u,1,over?factor:0u};}
     unsigned immutableCount=fs?fs.immutableSamplerCount:0;
     if(immutableCount>4)return rejectPipeline(vf,ff,@"immutable-samplers.count",unsupported(@"too many immutable samplers"),error);
     if(immutableCount)memcpy(e->_samplers,fs.immutableSamplers,immutableCount*sizeof(e->_samplers[0]));
     e->_profile=(A5MaliCompiledProfile){.profileID=A5MaliDynamicProfileID,.name="dynamic-reflected-QC",
         .vertexName=e->_vertexName.UTF8String,.fragmentName=e->_fragmentName.UTF8String,
         .colorFormats={(uint32_t)target},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
+            (d.colorAttachments[0].isBlendingEnabled&&d.colorAttachments[0].destinationRGBBlendFactor==MTLBlendFactorOneMinusSourceColor?A5MaliProfileScreenBlend:0)|
             (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0)|(vertexTwoUV?A5MaliProfileVertexTwoUV:0)|(fragmentTwoUV?A5MaliProfileFragmentTwoUV:0)|(fragmentColorOnly?A5MaliProfileFragmentColorOnly:0)|
             (fs&&!noInputs&&!fragmentColorOnly&&![fs.nativeABI[@"native_info"][@"textures"] unsignedIntValue]?A5MaliProfileFragmentNoTextures:0),.passes=&e->_pass,.passCount=1,
         .resources=e->_resources,.resourceCount=resourceCount,.pushFields=e->_pushes,.pushFieldCount=pushCount,

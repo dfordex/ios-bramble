@@ -15,6 +15,7 @@ typedef struct {
 } A5MaliTextureAllocationLayout;
 NSUInteger A5MaliTexturePixelBytes(MTLPixelFormat format);
 uint32_t A5MaliTexturePixelCode(MTLPixelFormat format);
+BOOL A5MaliTexturePixelCodeMatches(MTLPixelFormat format,uint32_t code);
 BOOL A5MaliBuildTextureAllocationLayout(MTLTextureDescriptor *descriptor,
     A5MaliTextureAllocationLayout *layout,NSString * _Nullable * _Nullable reason);
 

@@ -24,7 +24,7 @@ BOOL A5MaliRuntimeImageForTexture(A5MaliMetalTexture *t,NSUInteger level,
         ![t getLevelLayout:&l level:level]||!l.width||!l.height||!l.byteLength||
         s->token!=surface.resource.token||!s->gpuVA||s->width!=surface.width||
         s->height!=surface.height||s->rowBytes!=surface.rowBytes||
-        s->pixelFormat!=A5MaliTexturePixelCode(t.pixelFormat)||(s->usage&usage)!=usage||
+        !A5MaliTexturePixelCodeMatches(t.pixelFormat,s->pixelFormat)||(s->usage&usage)!=usage||
         (uint64_t)s->rowBytes*s->height>s->bytes||
         l.byteOffset>s->bytes||l.byteLength>s->bytes-l.byteOffset||
         (uint64_t)l.rowBytes*l.height>l.byteLength||

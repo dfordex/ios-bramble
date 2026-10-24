@@ -70,11 +70,13 @@ uint32_t A5MaliTexturePixelCode(MTLPixelFormat f)
     case MTLPixelFormatRG32Float:return 0x32433066;
     default:return 0;}
 }
+BOOL A5MaliTexturePixelCodeMatches(MTLPixelFormat format,uint32_t code)
+{ return code==A5MaliTexturePixelCode(format)||(format==MTLPixelFormatRG8Unorm&&code==0x4c413038); }
 static MTLPixelFormat formatForCode(uint32_t code)
 {
     const MTLPixelFormat formats[]={70,80,115,1,10,30,55,23,25,43,105};
     for(unsigned i=0;i<sizeof(formats)/sizeof(formats[0]);++i)
-        if(A5MaliTexturePixelCode(formats[i])==code)return formats[i];
+        if(A5MaliTexturePixelCodeMatches(formats[i],code))return formats[i];
     return MTLPixelFormatInvalid;
 }
 static BOOL fail(NSString **reason,NSString *message)
@@ -181,7 +183,7 @@ static A5MaliSurface *newBacking(A5MaliRestrictedDevice*device,MTLTextureDescrip
        d.storageMode!=MTLStorageModeShared||d.mipmapLevelCount!=1||d.textureType!=MTLTextureType2D||
        IOSurfaceGetWidth(surface)!=d.width||IOSurfaceGetHeight(surface)!=d.height||
        IOSurfaceGetBytesPerElement(surface)!=l.bytesPerElement||
-       IOSurfaceGetPixelFormat(surface)!=A5MaliTexturePixelCode(d.pixelFormat)||
+       !A5MaliTexturePixelCodeMatches(d.pixelFormat,IOSurfaceGetPixelFormat(surface))||
        IOSurfaceGetBytesPerRow(surface)<d.width*l.bytesPerElement||(IOSurfaceGetBytesPerRow(surface)&15)||
        IOSurfaceGetBytesPerRow(surface)>32768||IOSurfaceGetAllocSize(surface)>A5MaliSurfaceMaxBytes||
        (uint64_t)IOSurfaceGetBytesPerRow(surface)*d.height>IOSurfaceGetAllocSize(surface)){

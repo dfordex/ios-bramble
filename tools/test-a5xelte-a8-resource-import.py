@@ -15,6 +15,9 @@ test = r'''
 #include <cassert>
 #include <cstdint>
 int main() {
+    assert(a5g3d_resource_format_bytes(0x4c413038) == 2);
+    assert(a5g3d_resource_linear_layout(0x4c413038,2,1152,72,2304,0,167936));
+    assert(!a5g3d_resource_linear_layout(0x4c413038,1,1152,72,2304,0,167936));
     assert(a5g3d_resource_format_bytes(0x52474241) == 4);
     assert(a5g3d_resource_format_bytes(0x42475241) == 4);
     assert(a5g3d_resource_linear_layout(0x52474241,4,37,37,192,0,8192));

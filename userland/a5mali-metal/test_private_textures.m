@@ -5,6 +5,7 @@
 #import "A5MaliRestrictedDevice.h"
 #import "A5MaliMetalDeviceResources.h"
 #import "A5MaliMetalTexture.h"
+#import "A5MaliNativeTextureOps.h"
 #import <IOSurface/IOSurface.h>
 #include <assert.h>
 #include <string.h>
@@ -187,9 +188,28 @@ static void testShared1DAndMipBytes(void)
  }assert(state.releases==state.imports);
 }
 
+static void testLA08External(void){
+ State state={0};@autoreleasepool{
+  NSDictionary*properties=@{(__bridge id)kIOSurfaceWidth:@1152,(__bridge id)kIOSurfaceHeight:@72,
+   (__bridge id)kIOSurfaceBytesPerElement:@2,(__bridge id)kIOSurfaceBytesPerRow:@2304,
+   (__bridge id)kIOSurfaceAllocSize:@167936,(__bridge id)kIOSurfacePixelFormat:@(0x4c413038)};
+  IOSurfaceRef backing=IOSurfaceCreate((__bridge CFDictionaryRef)properties);assert(backing);
+  A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:wire context:&state];
+  MTLTextureDescriptor*desc=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG8Unorm width:1152 height:72 mipmapped:NO];
+  desc.storageMode=MTLStorageModeShared;desc.usage=MTLTextureUsageShaderRead;
+  A5MaliMetalTexture*t=[d newTextureWithDescriptor:desc iosurface:backing plane:0];assert(t&&t.pixelFormat==30);
+  assert(A5MaliTexturePixelCodeMatches(t.pixelFormat,0x4c413038)&&!A5MaliTexturePixelCodeMatches(MTLPixelFormatRGBA8Unorm,0x4c413038));
+  A5NativeSpan span={.token=UINT64_C(0x100000001),.gpuVA=0x20000000,.bytes=167936,.width=1152,.height=72,.rowBytes=2304,.pixelFormat=0x4c413038,.usage=A5MaliRead};
+  A5RuntimeImage image={0};assert(A5MaliRuntimeImageForTexture(t,0,t.privateSurface,&span,A5MaliRead,&image));assert(image.metalPixelFormat==30&&image.rowBytes==2304);
+  uint8_t texel[2]={0x2d,0xe7},out[2]={0};[t replaceRegion:MTLRegionMake2D(1151,71,1,1)mipmapLevel:0 withBytes:texel bytesPerRow:2];
+  [t getBytes:out bytesPerRow:2 fromRegion:MTLRegionMake2D(1151,71,1,1)mipmapLevel:0];assert(!memcmp(texel,out,2));
+  desc.pixelFormat=MTLPixelFormatR16Uint;assert(![d newTextureWithDescriptor:desc iosurface:backing plane:0]);
+  CFRelease(backing);
+ }assert(state.imports==state.releases);
+}
 int main(void)
 {
- testFormat(MTLPixelFormatRGBA8Unorm,0x52474241,4);testFormat(MTLPixelFormatA8Unorm,0x41303038,1);testFormat(MTLPixelFormatBGRA8Unorm,0x42475241,4);testFormat(MTLPixelFormatR8Unorm,0x4c303038,1);
+ testLA08External();testFormat(MTLPixelFormatRGBA8Unorm,0x52474241,4);testFormat(MTLPixelFormatA8Unorm,0x41303038,1);testFormat(MTLPixelFormatBGRA8Unorm,0x42475241,4);testFormat(MTLPixelFormatR8Unorm,0x4c303038,1);
  testFormat(MTLPixelFormatRG8Unorm,0x32433038,2);testFormat(MTLPixelFormatR32Float,0x4c303066,4);
  testFormat(MTLPixelFormatRGBA16Float,0x52476841,8);
  testFormat(MTLPixelFormatR16Uint,0x52313655,2);testFormat(MTLPixelFormatR16Float,0x4c303068,2);
