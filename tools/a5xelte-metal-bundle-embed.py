@@ -30,6 +30,7 @@ MAX_FILE = 2 * 1024 * 1024
 MAX_TOTAL = 4 * 1024 * 1024
 DISPLAY_APPS = ('ClockAngel.app', 'InputUI.app', 'MediaRemoteUI.app',
                 'PaperBoard.app', 'PosterBoard.app', 'PreBoard.app')
+STOCK_APPS = ('Preferences.app', 'MobileTimer.app', 'MobileSafari.app')
 MAX_APP_FILE = 32 * 1024 * 1024
 MAX_ENTRIES = 4096
 
@@ -59,8 +60,10 @@ def xattr_names(path: Path) -> list[str]:
     return [x.decode('utf-8') for x in buf.raw[:size].split(b'\0') if x]
 
 
-def display_app_entries(source: Path):
-    """Exact six bundles; no following links or silently dropping functional xattrs."""
+def display_app_entries(source: Path, names=DISPLAY_APPS):
+    """An exact approved bundle set; preserve metadata and functional xattrs."""
+    if names not in (DISPLAY_APPS, STOCK_APPS):
+        raise ValueError('only the two explicitly approved app sets are supported')
     files, directories = [], []
     attrs, omitted = collections.Counter(), collections.Counter()
     storage_attrs = {'com.apple.decmpfs', 'com.apple.provenance', 'com.apple.quarantine',
@@ -105,8 +108,13 @@ def display_app_entries(source: Path):
     if source.is_symlink() or not source.is_dir():
         raise ValueError('display-apps must name a real Applications directory')
     visit(source, '/Applications', False)
-    for name in DISPLAY_APPS:
+    for name in names:
         app = source / name
+        # Stock 20H392 stages Clock outside /Applications during restore.
+        # Read that exact sibling path, retaining source metadata while the
+        # logical destination remains the explicitly requested app bundle.
+        if names == STOCK_APPS and name == 'MobileTimer.app' and not app.exists():
+            app = source.parent / 'private/var/staged_system_apps/MobileTimer.app'
         if app.is_symlink() or not app.is_dir():
             raise ValueError(f'missing/linked required display bundle: {app}')
         visit(app, '/Applications/' + name)
@@ -280,6 +288,8 @@ def main() -> None:
                         help="current device launchd cache; only add the probe job")
     parser.add_argument('--compiler-dir', type=Path,
                         help='private native compiler package; requires compressed installer patch0172')
+    parser.add_argument('--compiler-backend-only', action='store_true',
+                        help='incremental update: install only generic602 from a complete validated compiler package; existing worker/helpers are required')
     parser.add_argument('--installer-source',type=Path,
                         help='actual staged kernel installer; required for automatic compiler payload preflight')
     parser.add_argument('--compiled-stage',type=Path,action='append',default=[],
@@ -288,9 +298,17 @@ def main() -> None:
                         help='exact canonical function request for each --compiled-stage, in the same order')
     parser.add_argument('--display-apps', type=Path,
                         help='mounted source Applications; embeds only six fixed display bundles, requires installer support')
+    parser.add_argument('--stock-apps', type=Path,
+                        help='mounted source Applications; embeds only Settings, Clock and Safari, requires the explicit stock-app installer policy')
     parser.add_argument('--backboard-ignore-mach-send-errors', action='store_true',
                         help='set verified QuartzCore Mach-send option only in the existing backboardd cached job')
     args = parser.parse_args()
+    if args.compiler_backend_only and not args.compiler_dir:
+        parser.error('--compiler-backend-only requires --compiler-dir')
+    if args.compiler_backend_only and not (args.compiler_dir / 'a5shader/midgard-generic602').is_file():
+        parser.error('incremental backend update requires midgard-generic602')
+    if args.stock_apps and args.display_apps:
+        parser.error('select one fixed app set per incremental payload')
     if len(args.compiled_stage)!=len(args.compiled_request) or len(args.compiled_stage)>32:
         parser.error('each compiled stage needs one exact request; maximum32')
     if args.compiled_stage and not args.installer_source:
@@ -375,13 +393,16 @@ def main() -> None:
             executable = not name.endswith(('.json','.plist'))
             if executable:
                 arm64_macho(data,name)
+            if args.compiler_backend_only and name != 'a5shader/midgard-generic602':
+                continue
             destination = COMPILER_PLIST_DEST if name.endswith('.plist') else '/usr/libexec/' + name
             entries.append((destination,data,0o755 if executable else 0o644))
     entries = [(path, data, mode, 0, 0) for path, data, mode in entries]
     directories = []
     app_xattrs = None
-    if args.display_apps:
-        app_files, directories, app_xattrs = display_app_entries(args.display_apps)
+    selected_apps = STOCK_APPS if args.stock_apps else DISPLAY_APPS
+    if args.display_apps or args.stock_apps:
+        app_files, directories, app_xattrs = display_app_entries(args.stock_apps or args.display_apps, selected_apps)
         entries.extend(app_files)
     compiled_directories=[]
     seen_stages=set()
@@ -391,7 +412,7 @@ def main() -> None:
         seen_stages.add(publication.name);entries.extend(stage_files)
         for directory in stage_dirs:
             if directory not in compiled_directories:compiled_directories.append(directory)
-    extended = bool(args.compiler_dir or args.display_apps or args.compiled_stage)
+    extended = bool(args.compiler_dir or args.display_apps or args.stock_apps or args.compiled_stage)
     limit = 64*1024*1024 if extended else MAX_TOTAL
     if sum(len(data) for _, data, _, _, _ in entries) > limit:
         parser.error(f"payload exceeds {limit}-byte raw bound")
@@ -447,7 +468,7 @@ def main() -> None:
         sys.stderr.write(check.stdout)
 
     print(json.dumps({"output": str(args.output), "files": [{"path": p, "size": len(d), "mode": oct(m), "uid": u, "gid": g, "crc32": f"{zlib.crc32(d):08x}"} for p, d, m, u, g in entries], "bytes": sum(len(d) for _, d, _, _, _ in entries),
-        'packed_bytes':sum(packed_sizes[i] or len(d) for i,(_,d,_,_,_) in enumerate(entries)), 'display_apps': list(DISPLAY_APPS) if args.display_apps else [], 'directories': [{'path':p,'mode':oct(m),'uid':u,'gid':g} for p,m,u,g in directories], 'compiled_stage_count':len(seen_stages), 'compiled_stages':sorted(seen_stages), 'compiled_directory_count':len(compiled_directories), 'compiled_directories':[{'path':p,'mode':oct(m),'uid':u,'gid':g} for p,m,u,g in compiled_directories], 'xattrs': app_xattrs}, indent=2))
+        'packed_bytes':sum(packed_sizes[i] or len(d) for i,(_,d,_,_,_) in enumerate(entries)), 'display_apps': list(selected_apps) if (args.display_apps or args.stock_apps) else [], 'compiler_backend_only':args.compiler_backend_only, 'directories': [{'path':p,'mode':oct(m),'uid':u,'gid':g} for p,m,u,g in directories], 'compiled_stage_count':len(seen_stages), 'compiled_stages':sorted(seen_stages), 'compiled_directory_count':len(compiled_directories), 'compiled_directories':[{'path':p,'mode':oct(m),'uid':u,'gid':g} for p,m,u,g in compiled_directories], 'xattrs': app_xattrs}, indent=2))
 
 
 if __name__ == "__main__":

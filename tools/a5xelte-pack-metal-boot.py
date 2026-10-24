@@ -40,7 +40,7 @@ def argument_parser():
     ap.add_argument('--native-rendering', action='store_true',
                     help='enable the privileged local Metal native queue; requires a compiled registry bundle')
     ap.add_argument('--restore-display-apps', action='store_true',
-                    help='restore the exact six embedded display UI bundles through HFS VFS')
+                    help='restore the explicitly selected embedded UI or stock app set through HFS VFS')
     ap.add_argument('--ui-diagnostics', action='store_true',
                     help='enable bounded UI thread samples and independent exception-output budgets')
     ap.add_argument('--storage-multiblock', action='store_true',
@@ -199,9 +199,14 @@ def main():
     if args.restore_display_apps:
         if not args.install_bundle:
             ap.error('--restore-display-apps requires --install-bundle')
-        if not all(marker in args.kernel.read_bytes() for marker in (
-                b'a5apps_install', b'A5XELTE Apps install: display bundles installed',
-                b'/Applications/PosterBoard.app/PosterBoard')):
+        app_kernel = args.kernel.read_bytes()
+        app_payload = b'/Applications/PosterBoard.app/PosterBoard' in app_kernel or all(
+            marker in app_kernel for marker in (
+                b'/Applications/Preferences.app/Preferences',
+                b'/Applications/MobileTimer.app/MobileTimer',
+                b'/Applications/MobileSafari.app/MobileSafari'))
+        if not app_payload or not all(marker in app_kernel for marker in (
+                b'a5apps_install', b'A5XELTE Apps install: display bundles installed')):
             ap.error('kernel lacks the gated display-app installer')
         required['a5apps_install'] = '1'
     if args.compiler:

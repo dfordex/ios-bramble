@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #import "A5MaliCommandBuffer.h"
+#import "A5MaliNative.h"
+#include <stdio.h>
 
 static NSString *const A5MaliErrorDomain = @"com.orhunnx.a5xelte.mali";
 
@@ -10,10 +12,20 @@ static NSError *a5error(kern_return_t code)
 
 @interface A5MaliDevice () {
     A5MaliClient _client;
-    NSLock *_lock;
+    NSRecursiveLock *_lock;
+    NSHashTable<A5MaliSurface *> *_residentSurfaces;
+    NSMutableSet<A5MaliSurface *> *_operationSurfaces;
+    uint64_t _residencyClock;
+    unsigned _evictions,_reimports,_blockedEvictions;
 }
 - (A5MaliClient *)client;
-- (NSLock *)lock;
+- (NSRecursiveLock *)lock;
+- (void)setupResidency;
+- (kern_return_t)importResourceLocked:(IOSurfaceRef)surface usage:(uint32_t)usage result:(A5MaliResource *)resource;
+- (A5MaliResource)resolveResource:(A5MaliSurface *)surface;
+- (BOOL)evictIdleResourceLocked;
+- (void)beginResourceOperation;
+- (void)endResourceOperation:(BOOL)terminal;
 @end
 
 @interface A5MaliCommandBuffer (PrivateInit)
@@ -28,12 +40,21 @@ static NSError *a5error(kern_return_t code)
     A5MaliDevice *_device;
     IOSurfaceRef _surface;
     A5MaliResource _resource;
+    uint64_t _residentUse;
+    BOOL _residentQuarantined;
 }
 - (instancetype)initWithDevice:(A5MaliDevice *)device
                        surface:(IOSurfaceRef)surface
                       resource:(A5MaliResource)resource;
 - (A5MaliResource)resource;
 - (A5MaliDevice *)device;
+- (A5MaliResource)residentResource;
+- (uint64_t)residentUse;
+- (void)setResidentUse:(uint64_t)use;
+- (BOOL)residentQuarantined;
+- (void)quarantineResident;
+- (BOOL)evictResident:(A5MaliClient *)client;
+- (BOOL)restoreResident:(A5MaliResource)resource;
 @end
 
 typedef NS_ENUM(uint32_t, A5MaliKind) {
@@ -67,7 +88,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
             if (error) *error = a5error(kr);
             return nil;
         }
-        _lock = [NSLock new];
+        [self setupResidency];
     }
     return self;
 }
@@ -81,7 +102,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
             if (error) *error = a5error(kr);
             return nil;
         }
-        _lock = [NSLock new];
+        [self setupResidency];
     }
     return self;
 }
@@ -96,7 +117,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
                 context, commands) != KERN_SUCCESS)
             return nil;
         _client.supportedOperations = operations;
-        _lock = [NSLock new];
+        [self setupResidency];
     }
     return self;
 }
@@ -107,32 +128,105 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
 }
 
 - (A5MaliClient *)client { return &_client; }
-- (NSLock *)lock { return _lock; }
+- (NSRecursiveLock *)lock { return _lock; }
 
-- (A5MaliSurface *)importSurface:(IOSurfaceRef)surface
-                           usage:(uint32_t)usage
-                           error:(NSError * _Nullable * _Nullable)error
+/* Logical texture ownership is independent of bounded kernel residency.
+ * Weak cache entries never own a texture/backing; current synchronous GPU
+ * operations hold strong leases until terminal proof. Eviction drops only an
+ * idle import handle, retaining the caller's original IOSurface pixels. */
+- (void)setupResidency
 {
-    if (!surface) {
-        if (error) *error = a5error(kIOReturnBadArgument);
-        return nil;
+    _lock=[NSRecursiveLock new];
+    _residentSurfaces=[NSHashTable weakObjectsHashTable];
+}
+- (BOOL)evictIdleResourceLocked
+{
+    @autoreleasepool {
+        A5MaliSurface *victim=nil;
+        for(A5MaliSurface *surface in _residentSurfaces.allObjects){
+            if([_operationSurfaces containsObject:surface]||surface.residentQuarantined)continue;
+            if(!victim||surface.residentUse<victim.residentUse)victim=surface;
+        }
+        if(!victim)return NO;
+        if(![victim evictResident:&_client]){
+            [victim quarantineResident];++_blockedEvictions;
+            /* A failed unmap/release leaves its generation resident. Never
+             * count or reuse that slot; try a different safely idle resource. */
+            return [self evictIdleResourceLocked];
+        }
+        [_residentSurfaces removeObject:victim];++_evictions;
+        if(_evictions<=8||!(_evictions%64))fprintf(stderr,
+            "A5XELTE Metal residency: evicted=%u reimported=%u resident=%lu pinned=%lu blocked=%u\n",
+            _evictions,_reimports,(unsigned long)_residentSurfaces.count,
+            (unsigned long)_operationSurfaces.count,_blockedEvictions);
+        return YES;
     }
-    mach_port_t port = IOSurfaceCreateMachPort(surface);
-    if (!MACH_PORT_VALID(port)) {
-        if (error) *error = a5error(kIOReturnBadArgument);
-        return nil;
+}
+- (kern_return_t)importResourceLocked:(IOSurfaceRef)surface usage:(uint32_t)usage result:(A5MaliResource *)resource
+{
+    mach_port_t port=IOSurfaceCreateMachPort(surface);
+    if(!MACH_PORT_VALID(port))return kIOReturnBadArgument;
+    /* The kernel currently publishes128 logical imports and four independent
+     * physical windows. This cache never expands either bound. A smaller test
+     * or future kernel quota also works through its NoResources response. */
+    if(_residentSurfaces.count>=128)[self evictIdleResourceLocked];
+    kern_return_t kr=A5MaliImportSurface(&_client,port,usage,resource);
+    for(unsigned attempt=0;kr==kIOReturnNoResources&&attempt<128;++attempt){
+        if(![self evictIdleResourceLocked])break;
+        kr=A5MaliImportSurface(&_client,port,usage,resource);
     }
-    A5MaliResource resource = {0};
+    mach_port_deallocate(mach_task_self(),port);return kr;
+}
+- (A5MaliSurface *)importSurface:(IOSurfaceRef)surface usage:(uint32_t)usage
+    error:(NSError * _Nullable * _Nullable)error
+{
+    if(!surface){if(error)*error=a5error(kIOReturnBadArgument);return nil;}
     [_lock lock];
-    kern_return_t kr = A5MaliImportSurface(&_client, port, usage, &resource);
-    [_lock unlock];
-    mach_port_deallocate(mach_task_self(), port);
-    if (kr != KERN_SUCCESS) {
-        if (error) *error = a5error(kr);
-        return nil;
-    }
-    return [[A5MaliSurface alloc] initWithDevice:self surface:surface
-                                         resource:resource];
+    @try{
+        A5MaliResource resource={0};
+        kern_return_t kr=[self importResourceLocked:surface usage:usage result:&resource];
+        if(kr){if(error)*error=a5error(kr);return nil;}
+        A5MaliSurface *result=[[A5MaliSurface alloc]initWithDevice:self surface:surface resource:resource];
+        [result setResidentUse:++_residencyClock];[_residentSurfaces addObject:result];
+        if(_operationSurfaces)[_operationSurfaces addObject:result];
+        return result;
+    }@finally{[_lock unlock];}
+}
+- (A5MaliResource)resolveResource:(A5MaliSurface *)surface
+{
+    [_lock lock];
+    @try{
+        A5MaliResource resource=surface.residentResource;
+        if(surface.residentQuarantined){resource.token=0;return resource;}
+        if(!resource.token&&surface.iosurface){
+            A5MaliResource restored={0};
+            kern_return_t kr=[self importResourceLocked:surface.iosurface usage:resource.usage result:&restored];
+            if(kr)return resource;
+            if(![surface restoreResident:restored]){
+                A5MaliReleaseSurface(&_client,&restored);[surface quarantineResident];return resource;
+            }
+            [_residentSurfaces addObject:surface];++_reimports;resource=restored;
+            if(_reimports<=8||!(_reimports%64))fprintf(stderr,
+                "A5XELTE Metal residency: reimported=%u evicted=%u resident=%lu pinned=%lu blocked=%u\n",
+                _reimports,_evictions,(unsigned long)_residentSurfaces.count,
+                (unsigned long)_operationSurfaces.count,_blockedEvictions);
+        }
+        if(surface.iosurface){
+            [surface setResidentUse:++_residencyClock];
+            if(_operationSurfaces)[_operationSurfaces addObject:surface];
+        }
+        return resource;
+    }@finally{[_lock unlock];}
+}
+- (void)beginResourceOperation
+{
+    if(_operationSurfaces)[NSException raise:NSInternalInconsistencyException format:@"nested resource residency operation"];
+    _operationSurfaces=[NSMutableSet new];
+}
+- (void)endResourceOperation:(BOOL)terminal
+{
+    if(!terminal)for(A5MaliSurface *surface in _operationSurfaces)[surface quarantineResident];
+    _operationSurfaces=nil;
 }
 
 - (A5MaliCommandBuffer *)newCommandBuffer
@@ -209,7 +303,25 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
     if (_surface) CFRelease(_surface);
 }
 
-- (A5MaliResource)resource { return _resource; }
+- (A5MaliResource)resource { return [_device resolveResource:self]; }
+- (A5MaliResource)residentResource { return _resource; }
+- (uint64_t)residentUse { return _residentUse; }
+- (void)setResidentUse:(uint64_t)use { _residentUse=use; }
+- (BOOL)residentQuarantined { return _residentQuarantined; }
+- (void)quarantineResident { _residentQuarantined=YES; }
+- (BOOL)evictResident:(A5MaliClient *)client
+{
+    if(!_surface||!_resource.token||_residentQuarantined)return NO;
+    A5MaliResource old=_resource,retired=_resource;
+    if(A5MaliReleaseSurface(client,&retired)!=KERN_SUCCESS)return NO;
+    _resource=old;_resource.token=0;return YES;
+}
+- (BOOL)restoreResident:(A5MaliResource)resource
+{
+    if(_resource.token||_residentQuarantined||!resource.token||resource.width!=_resource.width||
+       resource.height!=_resource.height||resource.rowBytes!=_resource.rowBytes||resource.usage!=_resource.usage)return NO;
+    _resource=resource;return YES;
+}
 - (A5MaliDevice *)device { return _device; }
 - (uint32_t)width { return _resource.width; }
 - (uint32_t)height { return _resource.height; }
@@ -312,6 +424,15 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
     }
     _committed = YES;
     [[_device lock] lock];
+    BOOL success=NO;
+    @try{success=[self executeOperationsLocked:error];}
+    @finally{[[_device lock] unlock];}
+    if(success)[self retireTerminalWork];
+    return success;
+}
+
+- (BOOL)executeOperationsLocked:(NSError * _Nullable * _Nullable)error
+{
     A5MaliClient *client = [_device client];
     BOOL hasNative = NO;
     for (A5MaliOperation *operation in _operations)
@@ -319,6 +440,9 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
     if (!hasNative && (client->supportedOperations & (1U << 6))) {
         for (NSUInteger start = 0; start < _operations.count;
              start += A5MaliBatchMaxCommands) {
+            [_device beginResourceOperation];
+            BOOL terminal=NO;
+            @try{
             const uint32_t count = (uint32_t)MIN(
                 _operations.count - start, A5MaliBatchMaxCommands);
             A5MaliResource source[A5MaliBatchMaxCommands] = {0};
@@ -342,24 +466,28 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
             if (result.completedCount)
                 _completedFence = result.items[
                     result.completedCount - 1].fence;
+            terminal=kr==KERN_SUCCESS;
             if (kr != KERN_SUCCESS) {
-                [[_device lock] unlock];
                 if (error) *error = a5error(kr);
                 return NO;
             }
+            }@finally{[_device endResourceOperation:terminal];}
         }
-        [[_device lock] unlock];
-        [self retireTerminalWork];
         return YES;
     }
     for (A5MaliOperation *operation in _operations) {
+        [_device beginResourceOperation];
+        BOOL terminal=NO;
+        @try{
         A5MaliFence fence = {0};
         kern_return_t kr;
         if (operation.kind == A5MaliKindNative) {
+            A5MaliBeginNativeSubmissionTracking();
             kr = operation.nativeWork ? operation.nativeWork(client, &fence) :
                 kIOReturnBadArgument;
-            if (kr == KERN_SUCCESS && (!fence.fragmentFence ||
-                fence.fragmentFence < fence.tilerFence)) kr = kIOReturnError;
+            if(kr)terminal=!A5MaliNativeSubmissionMayBeActive();
+            else if(!fence.fragmentFence||fence.fragmentFence<fence.tilerFence)kr=kIOReturnError;
+            else terminal=YES;
         } else if (operation.kind == A5MaliKindClear) {
             A5MaliResource destination = operation.destination.resource;
             kr = A5MaliClear([_device client], &destination,
@@ -381,15 +509,14 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
             kr = A5MaliReadSurf([_device client], &source, &destination,
                 &fence);
         }
+        if(operation.kind!=A5MaliKindNative)terminal=kr==KERN_SUCCESS;
         if (kr != KERN_SUCCESS) {
-            [[_device lock] unlock];
             if (error) *error = a5error(kr);
             return NO;
         }
         _completedFence = fence;
+        }@finally{[_device endResourceOperation:terminal];}
     }
-    [[_device lock] unlock];
-    [self retireTerminalWork];
     return YES;
 }
 

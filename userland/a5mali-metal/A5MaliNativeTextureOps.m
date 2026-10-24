@@ -83,7 +83,9 @@ static BOOL encode(A5MaliCommandBuffer *commands,A5MaliMetalTexture *src,
     if(so.x>a.width||so.y>a.height||size.width>a.width-so.x||size.height>a.height-so.y||
         to.x>b.width||to.y>b.height||size.width>b.width-to.x||size.height>b.height-to.y)
         return rejectCopy(src,sl,dst,dl,so,size,to,"bounds");
-    if(source.resource.token==destination.resource.token){
+    if(source==destination || (!source.iosurface&&!destination.iosurface&&
+        source.resource.token==destination.resource.token) || (source.iosurface&&destination.iosurface&&
+        IOSurfaceGetID(source.iosurface)==IOSurfaceGetID(destination.iosurface))){
         uint64_t ae=(uint64_t)a.byteOffset+a.byteLength,be=(uint64_t)b.byteOffset+b.byteLength;
         if(a.byteOffset<be&&b.byteOffset<ae){
             /* A same-level disjoint rectangle is a legal Metal blit, but the

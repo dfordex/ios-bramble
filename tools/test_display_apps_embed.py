@@ -26,7 +26,7 @@ class DisplayAppsTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.apps = self.root / 'Applications'
         self.apps.mkdir()
-        for name in embed.DISPLAY_APPS:
+        for name in embed.DISPLAY_APPS + embed.STOCK_APPS:
             app = self.apps / name
             (app / '_CodeSignature').mkdir(parents=True)
             (app / 'executable').write_bytes(bytes(range(256)) * 16)
@@ -50,6 +50,37 @@ class DisplayAppsTests(unittest.TestCase):
             self.assertEqual(data, original.read_bytes())
             self.assertEqual((mode, uid, gid), (original.stat().st_mode & 0o7777, original.stat().st_uid, original.stat().st_gid))
         self.assertTrue(all('Unrelated' not in row[0] for row in files + dirs))
+
+    def test_stock_apps_are_an_independent_exact_set(self):
+        files, dirs, _ = embed.display_app_entries(self.apps, embed.STOCK_APPS)
+        self.assertEqual(len(files), 6)
+        self.assertEqual(len(dirs), 7)
+        roots = {row[0].split('/')[2] for row in files}
+        self.assertEqual(roots, set(embed.STOCK_APPS))
+        self.assertFalse(roots.intersection(embed.DISPLAY_APPS))
+        for path, data, mode, uid, gid in files:
+            source = self.apps / path.removeprefix('/Applications/')
+            self.assertEqual(data, source.read_bytes())
+            self.assertEqual((mode, uid, gid),
+                (source.stat().st_mode & 0o7777, source.stat().st_uid, source.stat().st_gid))
+        with self.assertRaisesRegex(ValueError, 'approved app sets'):
+            embed.display_app_entries(self.apps, ('Unrelated.app',))
+        (self.apps / embed.STOCK_APPS[0] / 'link').symlink_to('/etc/passwd')
+        with self.assertRaisesRegex(ValueError, 'no links'):
+            embed.display_app_entries(self.apps, embed.STOCK_APPS)
+
+    def test_stock_clock_exact_restore_source(self):
+        staged = self.root / 'private/var/staged_system_apps/MobileTimer.app'
+        staged.parent.mkdir(parents=True)
+        (self.apps / 'MobileTimer.app').rename(staged)
+        files, _, _ = embed.display_app_entries(self.apps, embed.STOCK_APPS)
+        timer = [row for row in files if row[0].startswith('/Applications/MobileTimer.app/')]
+        self.assertEqual(len(timer), 2)
+        for path, data, mode, uid, gid in timer:
+            original = staged / path.removeprefix('/Applications/MobileTimer.app/')
+            self.assertEqual(data, original.read_bytes())
+            self.assertEqual((mode, uid, gid),
+                (original.stat().st_mode & 0o7777, original.stat().st_uid, original.stat().st_gid))
 
     def test_missing_bundle_and_symlink_rejected(self):
         app = self.apps / embed.DISPLAY_APPS[0]

@@ -434,7 +434,17 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage,
       }
    }
    struct a5_dynamic_info dynamic_info={0};
-   fprintf(stderr,"%s: final NIR\n",input);nir_print_shader(nir,stdout);
+   /* A compositor specialization can contain megabytes of pre-optimized NIR
+    * yet emit a kilobyte of native code. Dumping it synchronously to the phone
+    * competes with shader paging and stalls the waiting compositor. Keep all
+    * validation and native metadata; full IR is an explicit compiler-only
+    * diagnostic, never selected by a shader request or a supplied file path.
+    */
+   const char *dump_nir=getenv("A5_MIDGARD_DUMP_NIR");
+   bool dump=dump_nir && !strcmp(dump_nir,"1");
+   fprintf(stderr,"Midgard NIR: stage=%s validation=enabled dump=%u\n",
+      mesa_shader_stage_name(stage),dump);
+   if(dump)nir_print_shader(nir,stdout);
    pan_shader_compile(nir,&inputs,&binary,&info);
    /* Midgard's optimizer eliminates inactive constant-blob/storage branches.
     * Analyze the actual optimized program, never declarations or an earlier

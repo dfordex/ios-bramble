@@ -161,7 +161,12 @@ static void testSameLevelScratchCopy(unsigned failAtSubmit)
  assert(cb.status==(failAtSubmit?MTLCommandBufferStatusError:MTLCommandBufferStatusCompleted));
  assert((cb.error!=nil)==(failAtSubmit!=0));
  assert(cb.privateBuffer.completedFence.fragmentFence==(failAtSubmit==1?0:failAtSubmit==2?1003:1005));
- }assert(s.imports==s.releases);
+ }
+ /* Missing terminal fence quarantines the original allocation through the
+  * device dependency registry. This was already the production policy; the
+  * previous unconditional all-released assertion contradicted it. */
+ if(failAtSubmit)assert(s.releases<s.imports);
+ else assert(s.imports==s.releases);
 }
 static void testSameLevelRejectedOrNoop(BOOL exact)
 {
@@ -223,7 +228,9 @@ static void testMemoryless(BOOL badFence)
   assert(!lease.valid&&!view.privateSurface&&state->submits==1);assert(b.status==(badFence?MTLCommandBufferStatusError:MTLCommandBufferStatusCompleted));completed=YES;}];
  assert(!s.queries&&!s.submits);[cb commit];[cb waitUntilCompleted];assert(completed&&!lease.valid&&!view.privateSurface);
  assert(cb.privateBuffer.completedFence.fragmentFence==(badFence?0:1003));s.lease=nil;
- }assert(s.imports==s.releases);
+ }
+ if(badFence)assert(s.releases<s.imports);
+ else assert(s.imports==s.releases);
 }
 int main(void){testBytesAndIdentity();testPartialCopy(MTLPixelFormatBGR5A1Unorm);testPartialCopy(MTLPixelFormatA8Unorm);testSameLevelScratchCopy(0);testSameLevelScratchCopy(1);testSameLevelScratchCopy(2);testSameLevelRejectedOrNoop(YES);testSameLevelRejectedOrNoop(NO);testMipChain();testLevelClear();testMemoryless(NO);testMemoryless(YES);
  puts("native texture ops: real typed1D storage, subresource bounds/identity, queued partialcopy+samelevel scratchcopy+9mips, epochs/fences and memoryless completion cleanup passed; kernel transport mocked, no GPU pixels claimed");return 0;}

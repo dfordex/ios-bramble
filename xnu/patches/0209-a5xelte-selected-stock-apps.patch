@@ -1,0 +1,22 @@
+--- a/bsd/kern/a5xelte_metal_bundle_installer.inc
++++ b/bsd/kern/a5xelte_metal_bundle_installer.inc
+@@ -187,7 +187,7 @@
+ 	}
+ }
+ 
+-/* Only the six display-related bundles selected by the user. This is not a
++/* Only the six display bundles and three explicitly selected stock apps. Not a
+  * general Applications or root filesystem archive extractor. */
+ static bool
+ a5metal_install_app_path(const char *path, bool directory)
+@@ -195,7 +195,9 @@
+ 	static const char *const roots[] = {
+ 		"/Applications/PosterBoard.app", "/Applications/PaperBoard.app",
+ 		"/Applications/PreBoard.app", "/Applications/InputUI.app",
+-		"/Applications/MediaRemoteUI.app", "/Applications/ClockAngel.app"
++		"/Applications/MediaRemoteUI.app", "/Applications/ClockAngel.app",
++		"/Applications/Preferences.app", "/Applications/MobileTimer.app",
++		"/Applications/MobileSafari.app"
+ 	};
+ 	if (!path || path[0] != '/' || !path[1] || strnlen(path, MAXPATHLEN) == MAXPATHLEN) {
+ 		return false;
