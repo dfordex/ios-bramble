@@ -398,7 +398,16 @@ def main() -> None:
     lines = ["/* Generated local artifact: do not commit. */", "#define A5METAL_PAYLOAD_PRESENT 1"]
     packed_sizes = []
     for index, (_, data, _, _, _) in enumerate(entries):
-        packed = zlib.compress(data,9) if extended else data
+        packed = data
+        if extended:
+            # Keep the original stream as a candidate: tuning can never grow
+            # an entry. All candidates use the same standard zlib wrapper.
+            candidates = [zlib.compress(data,9)]
+            for memory,strategy in ((9,zlib.Z_DEFAULT_STRATEGY),(9,zlib.Z_FILTERED),
+                                    (6,zlib.Z_DEFAULT_STRATEGY),(7,zlib.Z_DEFAULT_STRATEGY)):
+                compressor = zlib.compressobj(9,zlib.DEFLATED,15,memory,strategy)
+                candidates.append(compressor.compress(data) + compressor.flush())
+            packed = min(candidates,key=len)
         compressed = len(packed) < len(data)
         packed = packed if compressed else data
         packed_sizes.append(len(packed) if compressed else 0)

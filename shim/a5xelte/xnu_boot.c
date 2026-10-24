@@ -9,7 +9,27 @@
 
 #define LOG_BASE 0x469ff000UL
 #define RAM_BASE 0x80000000UL
+#ifndef A5XELTE_RAM_MIB
+#define A5XELTE_RAM_MIB 512
+#endif
+#if A5XELTE_RAM_MIB == 512
 #define RAM_END  0xa0000000UL
+#elif A5XELTE_RAM_MIB == 736
+/* Opt-in lab window. Recovered SM-A510F Ax DT/memreserve ranges put the
+ * nearest upper reservation at 0xaec00000; leave 12 MiB below it. This is
+ * not a claim that all installed DRAM is available to XNU. */
+#define RAM_END  0xae000000UL
+/* Only the opt-in build carries this packer-readable capacity contract.
+ * Keeping it conditional preserves the checkpoint's exact 512 MiB binary. */
+static const struct {
+    char magic[8];
+    uint64_t base, end;
+} a5_ram_contract __attribute__((used)) = {
+    { 'A', '5', 'X', 'R', 'A', 'M', '0', '1' }, RAM_BASE, RAM_END
+};
+#else
+#error unsupported A5XELTE_RAM_MIB
+#endif
 #define PAGE_SIZE 4096UL
 #define BOOT_LINE_LENGTH 608
 

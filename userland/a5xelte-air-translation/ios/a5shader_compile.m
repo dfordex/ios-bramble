@@ -183,12 +183,23 @@ static BOOL addAccounting(uint64_t *sum,uint64_t value)
 
 static void run(NSString *self, NSArray<NSString *> *command, NSString *log)
 {
+    (void)self;
     double start = seconds(), lastProgress = start;
     char request[65],stage[65];
     diagnosticToken(activeRequestKey.UTF8String,request);
     diagnosticToken(command[0].lastPathComponent.UTF8String,stage);
-    NSMutableArray<NSString *> *all = [NSMutableArray arrayWithObjects:self, @"--worker", @"--", nil];
-    [all addObjectsFromArray:command];
+    NSString *tool=command.firstObject;
+    if(![tool hasPrefix:[installed stringByAppendingString:@"/"]])
+        fail(@"compiler executable path rejected");
+    /* The dedicated compiler daemon writes only bounded metadata, <=1MiB
+     * native artifacts and <=8MiB tool logs. Apply the same former worker
+     * limit here, so the actual tool and every descendant inherit it. This
+     * process is separate from the compositor; its limits never change.
+     * Direct spawn avoids reloading Foundation/IOKit in a --worker image
+     * before the libSystem-only translator/backend can even start. */
+    struct rlimit file={8ULL*1024*1024,8ULL*1024*1024};
+    if(setrlimit(RLIMIT_FSIZE,&file))fail(@"compiler file limit setup failed");
+    NSArray<NSString *> *all=command;
     char **args = calloc(all.count + 1, sizeof(char *));
     if (!args) fail(@"argument allocation failed");
     for (NSUInteger i = 0; i < all.count; ++i) args[i] = (char *)all[i].UTF8String;
@@ -219,8 +230,8 @@ static void run(NSString *self, NSArray<NSString *> *command, NSString *log)
     error = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
     if (!error) error = posix_spawnattr_setpgroup(&attr, 0);
     pid_t pid = 0;
-    fprintf(stderr,"A5XELTE shader compiler: SPAWN phase=begin parent_pid=%d child_pid=0 request=%s stage=%s\n",getpid(),request,stage);
-    if (!error) error = posix_spawn(&pid, self.fileSystemRepresentation, &actions, &attr, args, childEnvironment);
+    fprintf(stderr,"A5XELTE shader compiler: SPAWN phase=begin parent_pid=%d child_pid=0 request=%s stage=%s direct=1 file_limit_bytes=8388608\n",getpid(),request,stage);
+    if (!error) error = posix_spawn(&pid, tool.fileSystemRepresentation, &actions, &attr, args, childEnvironment);
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attr);
     close(fd); free(args);free(ownedEnvironment);free(childEnvironment);

@@ -6,11 +6,16 @@ mkdir -p outxnu
 : "${CC:=gcc}"
 : "${LD:=ld}"
 : "${OBJCOPY:=objcopy}"
+: "${RAM_MIB:=512}"
+case "$RAM_MIB" in
+    512|736) ;;
+    *) echo "RAM_MIB must be 512 or the opt-in 736" >&2; exit 1 ;;
+esac
 # S-Boot enters with SCTLR_EL1.A=1 and M=0. Unaligned widened loads from
 # byte arrays fault here, even though ordinary arm64 userspace permits them.
 CFLAGS="-c -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -fno-pie -nostdlib -fno-asynchronous-unwind-tables -mgeneral-regs-only -mstrict-align -march=armv8-a -Wall -Wextra -Werror"
 "${CC}" $CFLAGS xnu_boot.S -o outxnu/xnu_boot.o
-"${CC}" $CFLAGS xnu_boot.c -o outxnu/xnu_boot_c.o
+"${CC}" $CFLAGS -DA5XELTE_RAM_MIB="$RAM_MIB" xnu_boot.c -o outxnu/xnu_boot_c.o
 "${CC}" $CFLAGS display_console.c -o outxnu/display_console.o
 "${CC}" $CFLAGS ../fdt.c -o outxnu/fdt.o
 "${LD}" -static -T xnu_boot.ld --build-id=none outxnu/xnu_boot.o outxnu/xnu_boot_c.o outxnu/display_console.o outxnu/fdt.o -o outxnu/xnu_boot.elf
