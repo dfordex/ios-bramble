@@ -48,7 +48,7 @@ static BOOL diagnosticTake(atomic_uint *counter,unsigned limit)
     }
     return NO;
 }
-static atomic_uint encoderDiagnosticCount,commitDiagnosticCount,nativePhaseDiagnosticCount;
+static atomic_uint encoderDiagnosticCount,commitDiagnosticCount,nativePhaseDiagnosticCount,nativeFailureDiagnosticCount;
 static atomic_uint commandDiagnosticNext,queueCreationDiagnosticCount,bufferCreationDiagnosticCount,unretainedDiagnosticCount;
 static atomic_uint copyRejectionDiagnosticCount;
 static atomic_uint protectionDiagnosticCount;
@@ -65,7 +65,7 @@ static void logQueuePhase(const char *phase,unsigned bufferID,BOOL created,atomi
 }
 static __attribute__((unused)) void logNativePhase(unsigned bufferID,const char *phase,uint32_t profile,kern_return_t result)
 {
-    if(diagnosticTake(&nativePhaseDiagnosticCount,128))fprintf(stderr,
+    if(result?diagnosticTake(&nativeFailureDiagnosticCount,64):diagnosticTake(&nativePhaseDiagnosticCount,128))fprintf(stderr,
         "A5XELTE Metal native phase: cb=%u phase=%s profile=%u result=%x\n",bufferID,phase,profile,(unsigned)result);
 }
 
@@ -247,6 +247,17 @@ static void logPipelineDecision(A5MaliRestrictedDevice *device,
 @interface A5MaliReadSurfCandidate (PrivateInit)
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device;
 @end
+/* Keep the actual failure through asynchronous command completion. A generic
+ * NotReady alone cannot distinguish dependency self-wait from data residency. */
+static NSError *metalCommandException(NSException *exception,const char *phase,unsigned cb){
+ static unsigned diagnostics;
+ NSString *reason=[[exception.reason?:exception.name stringByReplacingOccurrencesOfString:@"\n" withString:@" "] stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
+ if(reason.length>240)reason=[reason substringToIndex:240];
+ if(__atomic_fetch_add(&diagnostics,1,__ATOMIC_RELAXED)<32)
+  fprintf(stderr,"A5XELTE Metal command exception: cb=%u phase=%s name=%s reason=%s\n",cb,phase,exception.name.UTF8String,reason.UTF8String);
+ return [NSError errorWithDomain:@"com.orhunnx.a5xelte.mali" code:kIOReturnNotReady
+  userInfo:@{NSLocalizedDescriptionKey:reason,@"phase":[NSString stringWithUTF8String:phase]}];
+}
 @interface A5MaliCompiledPipeline : A5MaliReadSurfCandidate
 @property (nonatomic, readonly) const A5MaliCompiledProfile *profile;
 @property (nonatomic, readonly) BOOL sourceOver;
@@ -988,8 +999,9 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
             }
             ticket=[dependencies beginCommand:self uses:uses];
         }@catch(NSException *exception){
-            (void)exception;submit=NO;priorError=kIOReturnNotReady;
-            [_condition lock];if(!_error)_error=metalError(priorError);[_condition unlock];
+            submit=NO;priorError=kIOReturnNotReady;
+            NSError *failure=metalCommandException(exception,"resource-registration",_diagnosticID);
+            [_condition lock];if(!_error)_error=failure;[_condition unlock];
         }
     }
     BOOL diagnose=diagnosticTake(&commitDiagnosticCount,64);
@@ -1008,7 +1020,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 submissionError=submissionError?:metalError(kIOReturnError);
         }
     }@catch(NSException *exception){
-        (void)exception;submissionError=metalError(kIOReturnNotReady);
+        submissionError=metalCommandException(exception,"resource-execution",self->_diagnosticID);
     }@finally{
         /* Encoding failures never submit, and validated terminal native
          * fences (or pre-submit rejection) let operation captures retire even
@@ -1728,7 +1740,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
             }
             A5RuntimeMiscDraw command={.draw={.profile=profile,.vertexCount=(uint32_t)submittedVertexCount,
                 .primitive=primitiveType==MTLPrimitiveTypeTriangle?A5RuntimeTriangle:A5RuntimeTriangleStrip,
-                .blend=sourceOver?((profile->flags&A5MaliProfileScreenBlend)?A5RuntimeBlendScreen:A5RuntimeBlendPremultipliedSourceOver):A5RuntimeBlendCopy,
+                .blend=(profile->flags&A5MaliProfileRenderState)?A5RuntimeBlendState:sourceOver?((profile->flags&A5MaliProfileScreenBlend)?A5RuntimeBlendScreen:A5RuntimeBlendPremultipliedSourceOver):A5RuntimeBlendCopy,
                 .scissorX=(uint32_t)scissor.x,.scissorY=(uint32_t)scissor.y,
                 .scissorWidth=(uint32_t)scissor.width,.scissorHeight=(uint32_t)scissor.height,
                 .viewportX=viewport.originX,.viewportY=viewport.originY,.viewportWidth=viewport.width,

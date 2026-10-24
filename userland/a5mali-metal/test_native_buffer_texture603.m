@@ -205,8 +205,12 @@ static A5MaliReadSurfCandidate *pipeline(A5MaliRestrictedDevice *device,State *s
     }
     if(s->blend){
         assert(s->profile->flags&A5MaliProfileSourceOverBlend);
+        /* RGB and alpha equations are independent API state, not a pair whitelist. */
         d.colorAttachments[0].destinationAlphaBlendFactor=MTLBlendFactorZero;
+        assert([device newRenderPipelineStateWithDescriptor:d error:&error]&&!error);
+        d.colorAttachments[0].rgbBlendOperation=MTLBlendOperationMin;
         assert(![device newRenderPipelineStateWithDescriptor:d error:&error]&&error);
+        d.colorAttachments[0].rgbBlendOperation=MTLBlendOperationAdd;
         d.colorAttachments[0].destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
         error=nil;
     }

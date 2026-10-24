@@ -45,7 +45,8 @@ enum { A5MaliProfileFixedViewport = 1, A5MaliProfileNearestSampler = 2,
        A5MaliProfileFragmentColorOnly = 131072,
        /* UV/procedural fragment with reflected interpolants but no sampled images. */
        A5MaliProfileFragmentNoTextures = 262144,
-       A5MaliProfileScreenBlend = 524288 };
+       A5MaliProfileScreenBlend = 524288,
+       A5MaliProfileRenderState = 1048576 };
 enum { A5MaliDynamicProfileID = 65536 };
 
 typedef struct {

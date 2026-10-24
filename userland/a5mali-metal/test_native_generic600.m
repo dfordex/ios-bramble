@@ -5,8 +5,9 @@
 #import "A5MaliRestrictedDevice.h"
 #import "A5MaliMetalDeviceResources.h"
 #import "A5MaliCompiledRegistry.h"
+#include "A5MaliRenderState.h"
 #import "A5MaliNative.h"
-extern void A5MaliCheckScreenBlendState(const uint8_t *,unsigned);
+extern void A5MaliCheckLoweredBlendState(const uint8_t *,const A5MaliCompiledAttachmentState *);
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,7 @@ typedef struct {
     unsigned queries,submits,releases;
     BOOL failSubmit;
     unsigned blendMode;
+    A5MaliCompiledAttachmentState requested;
     Vertex vertices[4];
     float matrix[16];
     const A5MaliCompiledProfile *profile;
@@ -72,7 +74,7 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
     for(unsigned i=1;i<A5NativeSlots;++i)assert(!q->surfaces[i]);
     for(unsigned i=0;i<A5NativeSlots;++i)assert(!q->buffers[i]);
     const uint8_t *jobs=(const uint8_t *)input+sizeof(*q);
-    A5MaliCheckScreenBlendState(jobs,s->blendMode);
+    A5MaliCheckLoweredBlendState(jobs,&s->requested);
     const A5MaliCompiledPass *pass=s->profile->passes;
     assert(pass->passID==s->profile->profileID&&pass->logicalTarget==0);
     assert(pass->vertex.byteCount==1808&&pass->fragment.byteCount==848);
@@ -252,9 +254,18 @@ static int run(uint32_t profileID,unsigned blend,BOOL float2)
         if(blend){
             MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[0];
             a.blendingEnabled=YES;a.destinationRGBBlendFactor=a.destinationAlphaBlendFactor=blend==2?MTLBlendFactorOneMinusSourceColor:MTLBlendFactorOneMinusSourceAlpha;
+            if(blend==3)a.sourceRGBBlendFactor=a.sourceAlphaBlendFactor=MTLBlendFactorSourceAlpha;
+            if(blend>=4)a.destinationRGBBlendFactor=a.destinationAlphaBlendFactor=MTLBlendFactorOne;
+            if(blend==5){a.sourceRGBBlendFactor=MTLBlendFactorDestinationColor;a.destinationRGBBlendFactor=MTLBlendFactorZero;a.destinationAlphaBlendFactor=MTLBlendFactorZero;}
+            if(blend==6)a.rgbBlendOperation=a.alphaBlendOperation=MTLBlendOperationSubtract;
+            if(blend==7)a.rgbBlendOperation=a.alphaBlendOperation=MTLBlendOperationReverseSubtract;
+            if(blend==8){a.blendingEnabled=NO;a.writeMask=MTLColorWriteMaskAlpha;
+                a.sourceRGBBlendFactor=a.sourceAlphaBlendFactor=MTLBlendFactorOne;
+                a.destinationRGBBlendFactor=a.destinationAlphaBlendFactor=MTLBlendFactorZero;}
+
             /* Reject superficially similar straight-alpha, additive, alpha-only,
              * reverse-subtract and unattached-target states before transport. */
-            for(unsigned fault=0;fault<6;++fault){
+            for(unsigned fault=0;blend!=8&&fault<6;++fault){
                 MTLRenderPipelineDescriptor *bad=[d copy];
                 if(fault==0)bad.colorAttachments[0].sourceRGBBlendFactor=MTLBlendFactorSourceAlpha;
                 if(fault==1)bad.colorAttachments[0].destinationRGBBlendFactor=MTLBlendFactorOne;
@@ -262,12 +273,23 @@ static int run(uint32_t profileID,unsigned blend,BOOL float2)
                 if(fault==3)bad.colorAttachments[0].rgbBlendOperation=MTLBlendOperationReverseSubtract;
                 if(fault==4)bad.colorAttachments[0].writeMask=MTLColorWriteMaskAlpha;
                 if(fault==5)bad.colorAttachments[1].blendingEnabled=YES;
-                error=nil;assert(![device newRenderPipelineStateWithDescriptor:bad error:&error]&&error);
+                error=nil;
+                MTLRenderPipelineColorAttachmentDescriptor *a=bad.colorAttachments[0];
+                A5MaliCompiledAttachmentState state={(uint32_t)a.writeMask,a.isBlendingEnabled,
+                    (uint32_t)a.rgbBlendOperation,(uint32_t)a.alphaBlendOperation,(uint32_t)a.sourceRGBBlendFactor,
+                    (uint32_t)a.destinationRGBBlendFactor,(uint32_t)a.sourceAlphaBlendFactor,(uint32_t)a.destinationAlphaBlendFactor};
+                id accepted=[device newRenderPipelineStateWithDescriptor:bad error:&error];
+                if(fault==5||A5MaliLowerRenderState(&state).route!=A5MaliStateFixed)assert(!accepted&&error);
+                else assert(accepted&&!error);
             }
             error=nil;
         }
+        MTLRenderPipelineColorAttachmentDescriptor *requested=d.colorAttachments[0];
+        s.requested=(A5MaliCompiledAttachmentState){(uint32_t)requested.writeMask,requested.isBlendingEnabled,
+            (uint32_t)requested.rgbBlendOperation,(uint32_t)requested.alphaBlendOperation,(uint32_t)requested.sourceRGBBlendFactor,
+            (uint32_t)requested.destinationRGBBlendFactor,(uint32_t)requested.sourceAlphaBlendFactor,(uint32_t)requested.destinationAlphaBlendFactor};
         A5MaliReadSurfCandidate *pipeline=[device newRenderPipelineStateWithDescriptor:d error:&error];
-        assert(pipeline.sourceOver==!!blend);
+        assert(pipeline.sourceOver==(blend&&blend!=8));
         const A5MaliCompiledProfile *original=s.profile;s.profile=pipeline.profile;
         assert(s.profile&&s.profile->profileID==original->profileID);
         assert(s.profile->passes==original->passes&&s.profile->resources==original->resources);
@@ -306,4 +328,4 @@ static int run(uint32_t profileID,unsigned blend,BOOL float2)
     return 0;
 }
 
-int main(void) { for(unsigned id=600;id<=602;id++)for(unsigned blend=0;blend<3;blend++)for(unsigned float2=0;float2<2;float2++)assert(!run(id,blend,float2));puts("generic CPF, CPH and specialized-vertex native wrapper paths passed; GPU pixels unverified");return 0; }
+int main(void) { for(unsigned id=600;id<=602;id++)for(unsigned blend=0;blend<9;blend++)for(unsigned float2=0;float2<2;float2++)assert(!run(id,blend,float2));puts("generic CPF, CPH and specialized-vertex native wrapper paths passed; GPU pixels unverified");return 0; }

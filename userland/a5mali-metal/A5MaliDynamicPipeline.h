@@ -8,7 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 FOUNDATION_EXPORT A5MaliDynamicPipelineEntry * _Nullable A5MaliComposeDynamicPipeline(
     MTLRenderPipelineDescriptor *descriptor,NSError **error);
-/* Adapt implemented vertex-fetch and fixed-function source-over state while
+/* Adapt vertex-fetch and the shared Metal render-state IR while
  * keeping the original shader authentication and all other descriptor gates. */
 FOUNDATION_EXPORT A5MaliDynamicPipelineEntry * _Nullable A5MaliAdaptCompiledPipeline(
     MTLRenderPipelineDescriptor *descriptor,BOOL *suppliesInactiveColor1,NSError **error);

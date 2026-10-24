@@ -5,6 +5,7 @@
 #define PAN_ARCH 4
 #include <stdint.h>
 #include "runtime_misc_encode.h"
+#include "../../a5mali-metal/A5MaliRenderState.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -241,7 +242,7 @@ static int dynamic_images(uint8_t*d,const A5RuntimeMiscDraw*m){
 static int generic_color_contract(const A5MaliCompiledProfile*p){
  const unsigned sourceOver=!!(p->flags&A5MaliProfileSourceOverBlend);
  if((p->profileID!=600&&p->profileID!=601&&p->profileID!=602)||
-    p->flags!=((sourceOver?A5MaliProfileSourceOverBlend:0)|(p->flags&A5MaliProfileScreenBlend))||((p->flags&A5MaliProfileScreenBlend)&&!sourceOver)||p->passCount!=1||
+    p->flags!=((sourceOver?A5MaliProfileSourceOverBlend:0)|(p->flags&(A5MaliProfileScreenBlend|A5MaliProfileRenderState)))||((p->flags&A5MaliProfileScreenBlend)&&!sourceOver)||p->passCount!=1||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     (p->colorFormats[0]!=80&&(p->profileID!=602||p->colorFormats[0]!=43))||p->attributeCount!=4||!p->attributes||
     p->layoutCount!=1||!p->layouts||p->resourceCount!=1||!p->resources||
@@ -269,6 +270,10 @@ static int generic_color_contract(const A5MaliCompiledProfile*p){
  for(unsigned c=0;c<p->attachmentContractCount;++c)for(unsigned i=0;i<8;++i){
   const A5MaliCompiledAttachmentState*a=&p->attachmentContracts[c].attachments[i];
   unsigned over=c==1&&i==0;
+  if((p->flags&A5MaliProfileRenderState)&&c==1&&i==0){
+   if(A5MaliLowerRenderState(a).route!=A5MaliStateFixed)return 0;
+   continue;
+  }
   /* Fixed ROP supports inverse source alpha or inverse source color on RT0. All
    * unattached slots and the existing copy contract remain exact. */
   if(a->writeMask!=15||a->blendEnabled!=over||a->rgbOperation||
@@ -290,7 +295,7 @@ static int generic_color_contract(const A5MaliCompiledProfile*p){
 static int generic_textured_contract(const A5MaliCompiledProfile*p){
  const int coord5=p->profileID==606;
  if((p->profileID!=603&&p->profileID!=604&&p->profileID!=605&&!coord5)||
-    p->flags!=(A5MaliProfileSourceOverBlend|(p->flags&A5MaliProfileScreenBlend))||p->passCount!=1||!p->passes||
+    p->flags!=(A5MaliProfileSourceOverBlend|(p->flags&(A5MaliProfileScreenBlend|A5MaliProfileRenderState)))||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||strcmp(p->vertexName,"fixed_vert_lph_spc")||
     !p->fragmentName||strcmp(p->fragmentName,"fixed_frag_lph_cph")||
@@ -332,6 +337,10 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
   for(unsigned i=0;i<8;++i){
    const A5MaliCompiledAttachmentState*a=&p->attachmentContracts[contract].attachments[i];
    const int source_over=contract==1&&i==0;
+  if((p->flags&A5MaliProfileRenderState)&&contract==1&&i==0){
+   if(A5MaliLowerRenderState(a).route!=A5MaliStateFixed)return 0;
+   continue;
+  }
    if(a->writeMask!=15||a->blendEnabled!=source_over||a->rgbOperation||a->alphaOperation||
       a->sourceRGB!=1||a->destinationRGB!=(source_over?((p->flags&A5MaliProfileScreenBlend)?3:5):0)||
       a->sourceAlpha!=1||a->destinationAlpha!=(source_over?((p->flags&A5MaliProfileScreenBlend)?3:5):0))return 0;
@@ -359,7 +368,7 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
 static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(p->profileID!=A5MaliDynamicProfileID||
     !(p->flags&A5MaliProfileDynamicStages)||
-    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV|A5MaliProfileFragmentColorOnly|A5MaliProfileFragmentNoTextures|A5MaliProfileScreenBlend))||
+    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV|A5MaliProfileFragmentColorOnly|A5MaliProfileFragmentNoTextures|A5MaliProfileScreenBlend|A5MaliProfileRenderState))||
     !(p->flags&A5MaliProfileSourceOverBlend)||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
@@ -464,6 +473,10 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i){
   const A5MaliCompiledAttachmentState*a=&p->attachmentContracts[c].attachments[i];
   unsigned over=c==1&&i==0;
+  if((p->flags&A5MaliProfileRenderState)&&c==1&&i==0){
+   if(A5MaliLowerRenderState(a).route!=A5MaliStateFixed)return 0;
+   continue;
+  }
   if(a->writeMask!=15||a->blendEnabled!=over||a->rgbOperation||a->alphaOperation||
      a->sourceRGB!=1||a->sourceAlpha!=1||a->destinationRGB!=(over?((p->flags&A5MaliProfileScreenBlend)?3u:5u):0u)||
      a->destinationAlpha!=(over?((p->flags&A5MaliProfileScreenBlend)?3u:5u):0u))return 0;
@@ -718,8 +731,9 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
    (r->indexCount&&p->profileID!=602&&!generic_textured)||
    (!r->indexCount&&r->indexSize)||r->indexCount>A5RuntimeMaxIndices||
    (r->primitive!=A5RuntimeTriangle&&r->primitive!=A5RuntimeTriangleStrip)||
-   (r->primitive==A5RuntimeTriangle&&drawCount%3)||r->blend>A5RuntimeBlendScreen||
-   (r->blend&&((r->blend==A5RuntimeBlendScreen)!=!!(p->flags&A5MaliProfileScreenBlend)))||
+   (r->primitive==A5RuntimeTriangle&&drawCount%3)||r->blend>A5RuntimeBlendState||
+   ((r->blend==A5RuntimeBlendState)!=!!(p->flags&A5MaliProfileRenderState))||
+   (r->blend&&r->blend!=A5RuntimeBlendState&&((r->blend==A5RuntimeBlendScreen)!=!!(p->flags&A5MaliProfileScreenBlend)))||
    (r->blend&&(!(p->flags&A5MaliProfileSourceOverBlend)||
      (out->metalPixelFormat==115&&!(p->flags&A5MaliProfileInlineSourceOver))))||
    ((p->flags&A5MaliProfileInlineSourceOver)&&r->blend!=A5RuntimeBlendPremultipliedSourceOver))return A5RuntimeUnsupported;
@@ -739,6 +753,23 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  unsigned fmt=out->metalPixelFormat==115?2:out->metalPixelFormat==10?1:out->metalPixelFormat==30?3:out->metalPixelFormat==43?4:0;
  framebuffer(d,r->descriptorGPUVA,fmt,out);renderer(d,r->descriptorGPUVA,home,clear,generic_color,generic_textured,p->profileID==604||!!(p->flags&A5MaliProfileDynamicColorVarying),vs->workRegisters,fs->workRegisters,
   p->flags&A5MaliProfileInlineSourceOver?0:r->blend);
+ if(r->blend==A5RuntimeBlendState){
+  A5MaliBlendPlan plan=A5MaliLowerRenderState(&p->attachmentContracts[1].attachments[0]);
+  if(plan.route!=A5MaliStateFixed)return A5RuntimeUnsupported;
+  struct MALI_RENDERER_STATE state;
+  MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FS_RSD),&state);
+  /* RSD overlay: blend_shader aliases the packed equation. Clear the
+   * decoded pointer arm before replacing equation bits, or old bits OR in. */
+  state.blend_shader=0;
+  state.multisample_misc.load_destination=plan.loadDestination;
+  state.blend_equation.color_mask=plan.writeMask;
+  state.blend_equation.rgb=(struct MALI_BLEND_FUNCTION){.a=plan.rgb.a,.b=plan.rgb.b,.c=plan.rgb.c,
+   .negate_a=plan.rgb.negateA,.negate_b=plan.rgb.negateB,.invert_c=plan.rgb.invertC};
+  state.blend_equation.alpha=(struct MALI_BLEND_FUNCTION){.a=plan.alpha.a,.b=plan.alpha.b,.c=plan.alpha.c,
+   .negate_a=plan.alpha.negateA,.negate_b=plan.alpha.negateB,.invert_c=plan.alpha.invertC};
+  MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+FS_RSD),&state);
+ }
+
  if(dynamic){
   struct MALI_RENDERER_STATE rs;
   MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+VS_RSD),&rs);
