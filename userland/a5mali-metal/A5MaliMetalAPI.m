@@ -445,7 +445,8 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
             }
         }
     }
-    if(!profile && authenticatedPair && ([vertex dynamicShader] || [fragment dynamicShader])){
+    if(!profile && authenticatedPair && ([vertex dynamicShader] || [fragment dynamicShader] ||
+        descriptor.colorAttachments[0].pixelFormat==MTLPixelFormatBGR5A1Unorm)){
         dynamicOwner=A5MaliComposeDynamicPipeline(descriptor,&rejection);
         profile=dynamicOwner.profile;
     }

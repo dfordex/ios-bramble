@@ -280,7 +280,24 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
        [f functionType]!=MTLFunctionTypeFragment){return rejectPipeline(nil,nil,@"functions.authentication",unsupported(@"dynamic stages require authenticated same-library functions"),error);}
     A5MaliMetalFunction *vf=v,*ff=f;
     A5MaliDynamicShaderCacheEntry *vs=vf.dynamicShader,*fs=ff.dynamicShader;
-    if(!vs&&!fs)return nil;
+    if(!vs&&!fs){
+        if(d.colorAttachments[0].pixelFormat!=MTLPixelFormatBGR5A1Unorm)return nil;
+        /* Storage adaptation of an authenticated complete static contract.
+         * The selector still verifies both original specialization identities,
+         * all attributes/resources, and every attachment/blend descriptor. */
+        MTLRenderPipelineDescriptor *original=[d copy];
+        original.colorAttachments[0].pixelFormat=MTLPixelFormatBGRA8Unorm;
+        NSError *staticError=nil;
+        const A5MaliCompiledProfile *source=A5MaliSelectCompiledProfile(original,&staticError);
+        if(!source||source->profileID<602||source->profileID>606||source->colorFormats[0]!=80)
+            return rejectPipeline(vf,ff,@"static-packed-target.contract",staticError?:unsupported(@"packed target requires an exact authenticated static602..606 pair"),error);
+        A5MaliDynamicPipelineEntry *owned=[A5MaliDynamicPipelineEntry new];
+        owned->_owners=@[vf,ff];owned->_profile=*source;
+        owned->_profile.colorFormats[0]=43;
+        NSString *mismatch=A5MaliCompiledDescriptorMismatch(&owned->_profile,d);
+        if(mismatch)return rejectPipeline(vf,ff,@"static-packed-target.descriptor",unsupported(mismatch),error);
+        return owned;
+    }
     NSError *snapshotError=nil;
     if(!A5MaliShaderCompilePipelinePayload(d,vf.compileRequestPayload,ff.compileRequestPayload,&snapshotError))
         return rejectPipeline(vf,ff,@"pipeline.source-snapshot",snapshotError,error);

@@ -49,9 +49,41 @@ int main(int argc,char**argv){@autoreleasepool{
   error=nil;A5MaliReadSurfCandidate*p=[device newRenderPipelineStateWithDescriptor:d error:&error];if(!p)NSLog(@"%@",error);assert(p&&!error);
   assert([p profile]->colorFormats[0]==format);A5MaliTestDynamicFormat43([p profile],format,blend);
  }
+ /* Static602..606 retain their exact profile ID, shader hashes and complete
+  * original resource contract in a pipeline-owned packed storage profile. */
+ NSMutableArray *owners=[NSMutableArray new];
+ for(unsigned profileID=602;profileID<=606;profileID++){
+  const A5MaliCompiledProfile*source=A5MaliCompiledProfileForID(profileID);assert(source&&source->colorFormats[0]==80);
+  for(unsigned stage=0;stage<2;stage++){
+   MTLFunctionConstantValues*constants=[MTLFunctionConstantValues new];size_t count=0;
+   const A5MaliCompiledFunctionConstant*fields=stage?A5MaliCompiledConstantsForProfile(profileID,&count):A5MaliCompiledVertexConstantsForProfile(profileID,&count);assert(fields&&count);
+   for(size_t i=0;i<count;i++)[constants setConstantValue:fields[i].raw type:fields[i].dataType withName:@(fields[i].name)];
+   error=nil;id function=[library newFunctionWithName:@(stage?source->fragmentName:source->vertexName)constantValues:constants error:&error];assert(function&&!error);
+   if(stage)d.fragmentFunction=function;else d.vertexFunction=function;
+  }
+  for(unsigned target=0;target<2;target++)for(unsigned blend=0;blend<2;blend++){
+   unsigned format=target?43:80;d.colorAttachments[0].pixelFormat=format;
+   d.colorAttachments[0].blendingEnabled=blend;
+   d.colorAttachments[0].sourceRGBBlendFactor=d.colorAttachments[0].sourceAlphaBlendFactor=MTLBlendFactorOne;
+   d.colorAttachments[0].destinationRGBBlendFactor=d.colorAttachments[0].destinationAlphaBlendFactor=blend?MTLBlendFactorOneMinusSourceAlpha:MTLBlendFactorZero;
+   error=nil;A5MaliReadSurfCandidate*p=[device newRenderPipelineStateWithDescriptor:d error:&error];if(!p)NSLog(@"static%u target%u: %@",profileID,format,error);assert(p&&!error);
+   const A5MaliCompiledProfile*actual=[p profile];A5MaliCompiledProfile expected=*source;expected.colorFormats[0]=format;
+   assert(actual->profileID==profileID&&!memcmp(actual,&expected,sizeof(expected))&&source->colorFormats[0]==80);
+   if(format==43){assert(actual!=source);[owners addObject:p];}
+   A5MaliTestDynamicFormat43(actual,format,blend);
+  }
+  // Packing adaptation must preserve every other descriptor restriction.
+  d.colorAttachments[0].pixelFormat=43;d.vertexDescriptor.layouts[1].stride=40;error=nil;
+  assert(!A5MaliComposeDynamicPipeline(d,&error)&&error);d.vertexDescriptor.layouts[1].stride=48;
+  d.rasterSampleCount=4;error=nil;assert(!A5MaliComposeDynamicPipeline(d,&error)&&error);d.rasterSampleCount=1;
+  d.colorAttachments[0].destinationAlphaBlendFactor=MTLBlendFactorOne;error=nil;
+  assert(!A5MaliComposeDynamicPipeline(d,&error)&&error);
+  d.colorAttachments[0].destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
+ }
+ for(A5MaliReadSurfCandidate*p in owners)assert([p profile]->colorFormats[0]==43);
  for(NSNumber*f in @[@0,@70,@71,@81,@115,@999]){
   d.colorAttachments[0].pixelFormat=f.unsignedIntegerValue;error=nil;
-  assert(!A5MaliComposeDynamicPipeline(d,&error)&&error);
+  assert(![device newRenderPipelineStateWithDescriptor:d error:&error]&&error);
  }
- puts("PASS genuine dynamic target80/43 copy/blend factory, exact shader bytes, SFBD/preload tuples, row/span bounds and unsupported formats; GPU pixels pending");
+ puts("PASS genuine dynamic and static602..606 target80/43 copy/blend factory, exact shader bytes, SFBD/preload tuples, row/span bounds and unsupported formats; GPU pixels pending");
 }return 0;}

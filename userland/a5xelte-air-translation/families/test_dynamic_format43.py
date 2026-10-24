@@ -34,7 +34,7 @@ def main():
     def sha(path):
         return hashlib.sha256(path.read_bytes()).hexdigest()
     preload = json.loads((out / 'preload-generated' / 'preload.json').read_text())
-    report = {'request_sha256': sha(a.request), 'factory_formats': [80, 43], 'copy_and_source_over': True, 'sfbd_internal_format43': 6, 'sfbd_writeback43': 28, 'target43_bytes_per_pixel': 2, 'preload_shaders': preload['shaders'], 'exact_original_code_preserved': True, 'bounds_and_unknown_formats_rejected': True, 'application_source43_still_rejected': True, 'device_runtime_verified': False}
+    report = {'request_sha256': sha(a.request), 'factory_formats': [80, 43], 'static_profiles': [602, 603, 604, 605, 606], 'static_profiles_owned_and_registry_immutable': True, 'copy_and_source_over': True, 'sfbd_internal_format43': 6, 'sfbd_writeback43': 28, 'target43_bytes_per_pixel': 2, 'preload_shaders': preload['shaders'], 'exact_original_code_preserved': True, 'bounds_and_unknown_formats_rejected': True, 'application_source43_still_rejected': True, 'device_runtime_verified': False}
     (out / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     print(result.stdout.strip())
     print(out / 'result.json')

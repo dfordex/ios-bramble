@@ -243,7 +243,7 @@ static int generic_color_contract(const A5MaliCompiledProfile*p){
  if((p->profileID!=600&&p->profileID!=601&&p->profileID!=602)||
     p->flags!=(sourceOver?A5MaliProfileSourceOverBlend:0)||p->passCount!=1||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
-    p->colorFormats[0]!=80||p->attributeCount!=4||!p->attributes||
+    (p->colorFormats[0]!=80&&(p->profileID!=602||p->colorFormats[0]!=43))||p->attributeCount!=4||!p->attributes||
     p->layoutCount!=1||!p->layouts||p->resourceCount!=1||!p->resources||
     p->pushFieldCount!=2||!p->pushFields||p->attachmentContractCount!=(sourceOver?2u:1u)||
     !p->attachmentContracts)return 0;
@@ -294,7 +294,7 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||strcmp(p->vertexName,"fixed_vert_lph_spc")||
     !p->fragmentName||strcmp(p->fragmentName,"fixed_frag_lph_cph")||
-    p->colorFormats[0]!=80||p->attributeCount!=4||!p->attributes||
+    (p->colorFormats[0]!=80&&p->colorFormats[0]!=43)||p->attributeCount!=4||!p->attributes||
     p->layoutCount!=1||!p->layouts||p->resourceCount!=(coord5?6u:5u)||!p->resources||
     p->pushFieldCount!=(coord5?5u:4u)||!p->pushFields||p->attachmentContractCount!=2||
     !p->attachmentContracts)return 0;

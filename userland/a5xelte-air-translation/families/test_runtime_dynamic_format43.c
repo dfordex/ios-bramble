@@ -18,7 +18,7 @@ void A5MaliTestDynamicFormat43(const A5MaliCompiledProfile*p,unsigned format,uns
  for(unsigned i=0;i<p->resourceCount;i++){
   const A5MaliCompiledResource*r=p->resources+i;
   if(r->kind==A5MaliResourceBuffer)(r->stage==1?m.draw.vertexBuffers:m.draw.fragmentBuffers)[r->metalIndex]=(A5RuntimeBuffer){0,r->uniformBytes,0,uniforms[r->stage-1][r->metalIndex]};
-  else if(r->kind==A5MaliResourceTexture)m.fragmentTextures[r->metalIndex]=(A5RuntimeImage){0x06000000+0x100000*r->nativeIndex,4096,32,32,128,80};
+  else if(r->kind==A5MaliResourceTexture)m.fragmentTextures[r->metalIndex]=(A5RuntimeImage){0x06000000+0x100000*r->nativeIndex,p->profileID==606?1024:4096,32,32,p->profileID==606?32:128,p->profileID==606?1:80};
   else if(r->kind==A5MaliResourceSampler&&!(r->flags&A5MaliResourceImmutableSampler))m.fragmentSamplers[r->metalIndex]=(A5RuntimeSampler){.valid=1,.normalizedCoordinates=1,.maxAnisotropy=1};
  }
  m.draw.vertexBuffers[1]=(A5RuntimeBuffer){0,sizeof(vertices),0,vertices};
@@ -49,9 +49,10 @@ void A5MaliTestDynamicFormat43(const A5MaliCompiledProfile*p,unsigned format,uns
  assert(A5MaliEncodeRuntimeMiscPass(&m,jobs,sizeof(jobs))==A5RuntimeOK&&!memcmp(jobs,baseline,sizeof(jobs)));
  /* Target43 support must not expose dynamic_images' unrelated R8 fallback. */
  for(unsigned i=0;i<31;i++)if(m.fragmentTextures[i].gpuVA){
+  unsigned original=m.fragmentTextures[i].metalPixelFormat;
   m.fragmentTextures[i].metalPixelFormat=43;
   assert(A5MaliEncodeRuntimeMiscPass(&m,jobs,sizeof(jobs))!=A5RuntimeOK);
-  m.fragmentTextures[i].metalPixelFormat=80;
+  m.fragmentTextures[i].metalPixelFormat=original;
  }
  A5MaliCompiledProfile unsupported=*p;unsupported.colorFormats[0]=71;
  m.draw.profile=&unsupported;m.colorAttachments[0].metalPixelFormat=71;
