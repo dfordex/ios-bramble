@@ -730,3 +730,5 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - User reportsSamsung-logo reboot. SYSTEMflush151still0214; loaderstatus10=-1beforeinitrdlookup, noXNUentrymarker. S-BootprintsDTupdatefailed thenwatchdogreset.
 - AddedpayloadmovesselectedDTBheader41fed800→4200e800, intoramdiskrelocationtarget42000000. Confirmedstaticstagingconflict; firmwarecopyorderingunrecovered. Loader/DTBHcontentunchanged;32MiBcapacitycheckwasinsufficient.
 -0215b packer rearrangesonlyequal-sizedDTBHblobslots/entryoffsets andguardswhole-selected-FDTstagingrange; kernel/loader/ADT/arguments/21cacheoutputs/47fixturesunchanged. Physicalcorrectionpending. See[layout report](docs/a5xelte-0215-boot-layout.md).
+
+- **0215b installed:** same31,924,240bytepayloadguardedwrite/sync/reboot; onlyBOOT-carriedDTBHslotlayout/digestchanged,all6logicalblobs/loader/kernel/cachebyte-identical. SelectedFDTwhole41fda800..41ff4800before42000000.10tests/independentimagecomparisonpass. ActualXNUentrypendinguserreport; no physicalbootfixclaimyet.

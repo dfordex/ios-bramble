@@ -25,3 +25,7 @@ The native kernel, loader, ADT, boot arguments,21shader publications and47GPU fi
 ## Host result
 
 Ten focused tests pass, including invalid table/FDT bounds, overlaps and no safe slot. The real0215 candidate fails the staging guard. Repacking swaps entry1/3 offsets0x800/0x34800: selected FDT source becomes0x41fda800..0x41ff4800, leaving47,104bytes below the initrd destination. All six logical blob and padding hashes remain identical. BOOT0215b stays31,924,240bytes; only DTBH slot placement/offsets and the Android header digest change. An independent full-image comparison confirms the entire loader and ramdisk/kernel payload are byte-identical. Physical boot is pending.
+
+## Installation checkpoint
+
+Guarded TWRP/model/BOOTp10/capacity checks pass. Direct offset-zero0215b write acknowledges31,924,240bytes, sync succeeds and reboot is requested. No backup, readback/hash, factory DTB write or whole USERDATA transfer occurs. Runtime confirmation of S-Boot DT update and XNU entry remains pending.
