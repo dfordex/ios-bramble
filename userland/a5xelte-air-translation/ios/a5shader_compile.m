@@ -20,6 +20,7 @@ extern char **environ;
  * header. These prototypes match XNU/libproc, with sys/resource.h types. */
 extern int proc_listpgrppids(pid_t, void *, int);
 extern int proc_pid_rusage(int, int, rusage_info_t *);
+extern int proc_pidpath(int, void *, uint32_t) __attribute__((weak_import));
 
 #ifndef A5_SHADER_HOST_TEST
 static NSString *const installed = @"/usr/libexec/a5shader";
@@ -121,30 +122,76 @@ static double seconds(void)
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
+/* Diagnostic identifiers are metadata only. Bound and sanitize even inherited
+ * worker context; never print argv shader constants, source, or an image path. */
+static void diagnosticToken(const char *input,char result[65])
+{
+    unsigned i=0;
+    if(input)for(;i<64&&input[i];i++){
+        unsigned char c=(unsigned char)input[i];
+        result[i]=((c>='a'&&c<='z')||(c>='A'&&c<='Z')||
+            (c>='0'&&c<='9')||c=='_'||c=='-'||c=='.')?(char)c:'_';
+    }
+    if(!i){memcpy(result,"none",4);i=4;}result[i]=0;
+}
+static void workerCheckpoint(const char *phase,int argc,char **argv,int error)
+{
+    char request[65],stage[65];
+    diagnosticToken(getenv("A5_SHADER_DIAG_REQUEST_KEY"),request);
+    const char *tool=argc>3?strrchr(argv[3],'/'):NULL;
+    diagnosticToken(tool?tool+1:(argc>3?argv[3]:NULL),stage);
+    fprintf(stderr,"A5XELTE shader compiler: WORKER phase=%s parent_pid=%d child_pid=%d pgrp=%d request=%s stage=%s errno=%d\n",
+        phase,getppid(),getpid(),getpgrp(),request,stage,error);
+    fflush(stderr);
+}
 /* Separate exec worker inherits finite limits without changing a compositor's
  * process limits. Every child, including spirv-val, stays in its process group. */
 static int worker(int argc, char **argv)
 {
-    if (argc < 4) return 2;
+    if (argc < 4){workerCheckpoint("invalid-arguments",argc,argv,EINVAL);return 2;}
     NSString *path = [NSString stringWithUTF8String:argv[3]];
-    if (![path hasPrefix:[installed stringByAppendingString:@"/"]]) return 2;
+    if (![path hasPrefix:[installed stringByAppendingString:@"/"]]){
+        workerCheckpoint("path-rejected",argc,argv,EPERM);return 2;
+    }
     struct rlimit file = {8ULL * 1024 * 1024, 8ULL * 1024 * 1024};
     /* Darwin's RLIMIT_DATA includes mapped shared-cache data and can already
      * exceed500MiB before main. Enforce actual group RSS/footprint in parent. */
-    if (setrlimit(RLIMIT_FSIZE, &file))
-        return 125;
+    if (setrlimit(RLIMIT_FSIZE, &file)){
+        int error=errno;workerCheckpoint("limits-failed",argc,argv,error);return 125;
+    }
+    workerCheckpoint("limits-ready",argc,argv,0);
+    workerCheckpoint("exec-attempt",argc,argv,0);
     execv(argv[3], &argv[3]);
-    return 126;
+    int error=errno;workerCheckpoint("exec-failed",argc,argv,error);return 126;
 }
+static BOOL addAccounting(uint64_t *sum,uint64_t value)
+{ if(value>UINT64_MAX-*sum)return NO;*sum+=value;return YES; }
 
 static void run(NSString *self, NSArray<NSString *> *command, NSString *log)
 {
     double start = seconds(), lastProgress = start;
+    char request[65],stage[65];
+    diagnosticToken(activeRequestKey.UTF8String,request);
+    diagnosticToken(command[0].lastPathComponent.UTF8String,stage);
     NSMutableArray<NSString *> *all = [NSMutableArray arrayWithObjects:self, @"--worker", @"--", nil];
     [all addObjectsFromArray:command];
     char **args = calloc(all.count + 1, sizeof(char *));
     if (!args) fail(@"argument allocation failed");
     for (NSUInteger i = 0; i < all.count; ++i) args[i] = (char *)all[i].UTF8String;
+    /* Preserve arbitrary inherited environment bytes. Replace only this private
+     * diagnostic key; it carries no compiler authorization or policy input. */
+    NSUInteger inherited=0;while(environ[inherited])inherited++;
+    char **childEnvironment=calloc(inherited+2,sizeof(char *));
+    if(!childEnvironment)fail(@"worker environment allocation failed");
+    NSUInteger environmentCount=0;
+    for(NSUInteger i=0;i<inherited;i++)
+        if(strncmp(environ[i],"A5_SHADER_DIAG_REQUEST_KEY=",sizeof("A5_SHADER_DIAG_REQUEST_KEY=")-1))
+            childEnvironment[environmentCount++]=environ[i];
+    char requestEnvironment[96];snprintf(requestEnvironment,sizeof(requestEnvironment),
+        "A5_SHADER_DIAG_REQUEST_KEY=%s",request);
+    char *ownedEnvironment=strdup(requestEnvironment);
+    if(!ownedEnvironment)fail(@"worker diagnostic allocation failed");
+    childEnvironment[environmentCount]=ownedEnvironment;
     int fd = open(log.fileSystemRepresentation, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
     if (fd < 0) fail(@"cannot create compiler log");
     posix_spawn_file_actions_t actions;
@@ -158,12 +205,14 @@ static void run(NSString *self, NSArray<NSString *> *command, NSString *log)
     error = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
     if (!error) error = posix_spawnattr_setpgroup(&attr, 0);
     pid_t pid = 0;
-    if (!error) error = posix_spawn(&pid, self.fileSystemRepresentation, &actions, &attr, args, environ);
+    fprintf(stderr,"A5XELTE shader compiler: SPAWN phase=begin parent_pid=%d child_pid=0 request=%s stage=%s\n",getpid(),request,stage);
+    if (!error) error = posix_spawn(&pid, self.fileSystemRepresentation, &actions, &attr, args, childEnvironment);
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attr);
-    close(fd); free(args);
+    close(fd); free(args);free(ownedEnvironment);free(childEnvironment);
+    fprintf(stderr,"A5XELTE shader compiler: SPAWN phase=complete parent_pid=%d child_pid=%d pgrp=%d request=%s stage=%s errno=%d\n",getpid(),pid,pid,request,stage,error);
     if (error) fail([NSString stringWithFormat:@"spawn error=%d", error]);
-    int status = 0;
+    int status = 0;BOOL execObserved=NO;
     struct rusage usage = {};
     for (;;) {
         pid_t done = wait4(pid, &status, WNOHANG, &usage);
@@ -177,19 +226,44 @@ static void run(NSString *self, NSArray<NSString *> *command, NSString *log)
             break;
         }
         if (done < 0 && errno != EINTR) {
+            int waitError=errno;
+            fprintf(stderr,"A5XELTE shader compiler: WAIT_FAILED parent_pid=%d child_pid=%d request=%s stage=%s errno=%d\n",getpid(),pid,request,stage,waitError);
             kill(-pid,SIGKILL);
             fail(@"wait4 failed");
+        }
+        /* Probe only the exact child we spawned, never the process table. A
+         * matching executable image distinguishes successful exec from a live
+         * orchestration worker. A denial remains observable, not fatal. */
+        int imageError=0;
+        if(!execObserved){
+            char image[4096]={0};
+            int imageBytes=proc_pidpath?proc_pidpath(pid,image,sizeof(image)):0;
+            imageError=imageBytes>0?0:(proc_pidpath?errno:ENOSYS);
+            if(imageBytes>0&&!strcmp(image,command[0].fileSystemRepresentation)){
+                execObserved=YES;
+                fprintf(stderr,"A5XELTE shader compiler: EXEC_OBSERVED parent_pid=%d child_pid=%d pgrp=%d request=%s stage=%s\n",getpid(),pid,pid,request,stage);
+            }
         }
         pid_t members[32] = {};
         int memberCount = proc_listpgrppids(pid,members,sizeof(members));
         bool invalid = memberCount < 0 || memberCount >= 32;
-        uint64_t resident = 0;
+        uint64_t resident=0,groupResident=0,groupFootprint=0,groupUser=0,groupSystem=0;
+        uint64_t childResident=0,childFootprint=0,childUser=0,childSystem=0;
+        unsigned accounted=0;BOOL childAccounted=NO;
         for (int i = 0; !invalid && i < memberCount; ++i) {
             if (members[i] <= 0) continue;
             struct rusage_info_v0 info = {};
             if (proc_pid_rusage(members[i],RUSAGE_INFO_V0,(rusage_info_t *)&info)) {
                 if (errno != ESRCH) invalid = true;
-            } else resident += MAX(info.ri_resident_size,info.ri_phys_footprint);
+            } else {
+                accounted++;
+                invalid=!addAccounting(&resident,MAX(info.ri_resident_size,info.ri_phys_footprint))||
+                    !addAccounting(&groupResident,info.ri_resident_size)||
+                    !addAccounting(&groupFootprint,info.ri_phys_footprint)||
+                    !addAccounting(&groupUser,info.ri_user_time)||!addAccounting(&groupSystem,info.ri_system_time);
+                if(members[i]==pid){childAccounted=YES;childResident=info.ri_resident_size;
+                    childFootprint=info.ri_phys_footprint;childUser=info.ri_user_time;childSystem=info.ri_system_time;}
+            }
         }
         if (invalid || resident > 500ULL*1024*1024) {
             kill(-pid,SIGKILL);
@@ -197,14 +271,22 @@ static void run(NSString *self, NSArray<NSString *> *command, NSString *log)
             fail(invalid ? @"cannot account compiler process group" : @"compiler group exceeded500MiB");
         }
         if (seconds() - lastProgress >= 10) {
-            fprintf(stderr,"A5XELTE shader compiler: RUNNING stage=%s wall=%.1f resident_bytes=%llu\n",
-                command[0].lastPathComponent.UTF8String,seconds()-start,(unsigned long long)resident);
+            struct stat logStat={0};long long logBytes=-1;
+            if(!lstat(log.fileSystemRepresentation,&logStat)&&S_ISREG(logStat.st_mode))logBytes=logStat.st_size;
+            fprintf(stderr,"A5XELTE shader compiler: RUNNING parent_pid=%d child_pid=%d pgrp=%d request=%s stage=%s wall=%.1f exec_observed=%u image_errno=%d members=%u child_accounted=%u child_user_ns=%llu child_system_ns=%llu child_resident_bytes=%llu child_footprint_bytes=%llu group_user_ns=%llu group_system_ns=%llu group_resident_bytes=%llu group_footprint_bytes=%llu resident_bytes=%llu log_bytes=%lld\n",
+                getpid(),pid,pid,request,stage,seconds()-start,execObserved,imageError,accounted,childAccounted,
+                (unsigned long long)childUser,(unsigned long long)childSystem,
+                (unsigned long long)childResident,(unsigned long long)childFootprint,
+                (unsigned long long)groupUser,(unsigned long long)groupSystem,
+                (unsigned long long)groupResident,(unsigned long long)groupFootprint,
+                (unsigned long long)resident,logBytes);
             lastProgress = seconds();
         }
         usleep(20000);
     }
-    fprintf(stderr, "A5XELTE shader compiler: stage=%s status=%d wall=%.3f cpu=%.3f peak_bytes=%ld\n",
-        command[0].lastPathComponent.UTF8String, status,seconds()-start,
+    fprintf(stderr, "A5XELTE shader compiler: EXIT parent_pid=%d child_pid=%d pgrp=%d request=%s stage=%s status=%d exited=%u exit_code=%d signal=%d exec_observed=%u wall=%.3f cpu=%.3f peak_bytes=%ld\n",
+        getpid(),pid,pid,request,stage,status,WIFEXITED(status),WIFEXITED(status)?WEXITSTATUS(status):-1,
+        WIFSIGNALED(status)?WTERMSIG(status):0,execObserved,seconds()-start,
         usage.ru_utime.tv_sec+usage.ru_utime.tv_usec/1e6+
         usage.ru_stime.tv_sec+usage.ru_stime.tv_usec/1e6,usage.ru_maxrss);
     if (!WIFEXITED(status) || WEXITSTATUS(status))
@@ -373,9 +455,20 @@ static void compilePair(NSString *self, NSString *pair)
 
 int main(int argc, char **argv)
 {
+    if(argc>1&&!strcmp(argv[1],"--worker"))workerCheckpoint("main-entry",argc,argv,0);
     @autoreleasepool {
       @try {
         if (argc > 1 && !strcmp(argv[1],"--worker")) return worker(argc,argv);
+#ifdef A5_SHADER_HOST_TEST
+        /* Test orchestration with genuine local OS executables. This entry is
+         * excluded entirely from signed device builds and accepts no requests. */
+        if(argc>=5&&!strcmp(argv[1],"--test-run")){
+            activeRequestKey=[NSString stringWithUTF8String:argv[2]];
+            NSMutableArray *command=[NSMutableArray new];
+            for(int i=4;i<argc;i++)[command addObject:[NSString stringWithUTF8String:argv[i]]];
+            run(NSBundle.mainBundle.executablePath,command,[NSString stringWithUTF8String:argv[3]]);return 0;
+        }
+#endif
         if (argc != 2 && argc != 3) { fprintf(stderr,"usage: %s --serve | --selftest | --pair read_surf|downsample_4\n",argv[0]); return 2; }
         NSString *self = NSBundle.mainBundle.executablePath;
         if (!NSFileManager.defaultManager) fail(@"file manager unavailable");

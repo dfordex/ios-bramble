@@ -432,6 +432,25 @@ static BOOL payload(id p) {
                 [usedUBOs addObject:@(native)];
                 continue;
             }
+            if(source[@"Synthetic"]){
+                /* Released-Mesa dynamic inspection rejects every surviving
+                 * global/SSBO access and every FS UBO0 load outside push0..80.
+                 * A declared ConstantBlob may therefore be omitted only for
+                 * this explicitly dead, bounded fragment contract. It is not
+                 * an application buffer slot or a source of zero-filled data. */
+                id synthetic=source[@"Synthetic"];
+                if(_stage!=2||!keys(source,@[@"Synthetic"])||
+                   !keys(synthetic,@[@"stage",@"binding"])||
+                   ![synthetic[@"stage"] isEqual:stageName]||
+                   ![synthetic[@"binding"] isEqual:@"ConstantBlob"]||
+                   !exact(b[@"ty"],7)||live[@([b[@"binding"] unsignedIntValue]+1)]||
+                   [a[@"sysval_ubo0_read_extent"] unsignedIntValue]>80)return NO;
+                NSString *blob=nil;unsigned matching=0;
+                for(id stage in _reflection[@"stages"])if([stage[@"stage"] isEqual:@"frag"]){blob=stage[@"constant_blob"];matching++;}
+                if(matching!=1||![blob isKindOfClass:NSString.class]||!blob.length||
+                   (blob.length&1)||blob.length>8192||!hex(blob,blob.length))return NO;
+                continue;
+            }
             if(source[@"InputAttachment"]){
                 NSDictionary *g=_reflection[@"graphics"];
                 if(!fetch||fetches++||!exact(source[@"InputAttachment"],0)||
@@ -491,6 +510,7 @@ static BOOL payload(id p) {
                 [usedTextures addObject:@(native)];
                 continue;
             }
+            return NO; /* no unrecognized descriptor source is ignored */
         }
     }
     for (NSNumber *k in live)

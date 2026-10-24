@@ -38,7 +38,9 @@ enum { A5MaliProfileFixedViewport = 1, A5MaliProfileNearestSampler = 2,
         * sampled resources. VS outputs still follow the validated QC ABI. */
        A5MaliProfileFragmentNoInputs = 8192,
        /* Native VS exports position, point-size and color; no UV varying. */
-       A5MaliProfileVertexColorOnly = 16384 };
+       A5MaliProfileVertexColorOnly = 16384,
+       A5MaliProfileVertexTwoUV = 32768,
+       A5MaliProfileFragmentTwoUV = 65536 };
 enum { A5MaliDynamicProfileID = 65536 };
 
 typedef struct {

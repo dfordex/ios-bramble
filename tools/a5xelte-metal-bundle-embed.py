@@ -155,6 +155,121 @@ def arm64_macho(data: bytes, name: str) -> None:
         raise ValueError(f"thin arm64 Mach-O required: {name}")
 
 
+COMPILED_ROOT = '/private/var/tmp/a5mali-shader-compiled'
+COMPILED_MEMBERS = ('receipt.json', 'reflection.json', 'stage.midgard')
+SOURCE_LIBRARY_SHA = '11c74cc42ce5137b73d44d427f75764f886656d4ddb374422d56b609ed2762d9'
+
+
+def compiled_stage_entries(publication: Path, request_path: Path, validation_out: Path):
+    """Authenticate an exact typed request with the production cache reader.
+
+    The host source keeps its current UID and read-only publication modes; the
+    boot payload explicitly installs root:wheel ownership. Native ABI derivation
+    is shared with the real provider, never a relaxed packaging interpretation.
+    """
+    import hashlib
+    import re
+    def sha(data):
+        return hashlib.sha256(data).hexdigest()
+    def canonical(value):
+        return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate compiled-stage JSON key')
+            result[key] = value
+        return result
+    def decode(data):
+        return json.loads(data, object_pairs_hook=unique)
+    if publication.is_symlink():
+        raise ValueError("compiled-stage leaf must not be a symlink")
+    # Resolve trusted caller path aliases once, then open only the canonical
+    # directory chain and no-follow publication leaves.
+    publication = publication.resolve(strict=True)
+    if not re.fullmatch('[a-f0-9]{64}', publication.name):
+        raise ValueError('compiled-stage directory must be its canonical request identity')
+    for parent in (publication, *publication.parents):
+        st = parent.lstat()
+        if not stat.S_ISDIR(st.st_mode):
+            raise ValueError('compiled-stage source ancestors must be real directories')
+    root_stat = publication.parent.stat()
+    if set(p.name for p in publication.iterdir()) != set(COMPILED_MEMBERS):
+        raise ValueError('compiled-stage must contain exactly three fixed publication files')
+    contents = {}
+    for name in COMPILED_MEMBERS:
+        path = publication / name
+        st = path.lstat()
+        maximum = 8192 if name == 'stage.midgard' else 256*1024 if name == 'reflection.json' else 128*1024
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_dev != root_stat.st_dev:
+            raise ValueError('compiled-stage source must be same-filesystem single-link regular files')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            data = stream.read(maximum+1)
+            after = os.fstat(stream.fileno())
+        def identity(v):
+            return (v.st_dev,v.st_ino,v.st_size,v.st_mtime_ns,v.st_ctime_ns,v.st_mode,v.st_uid,v.st_gid,v.st_nlink)
+        if identity(st) != identity(before) or identity(before) != identity(after) or not 0 < len(data) <= maximum or len(data) != st.st_size:
+            raise ValueError('compiled-stage source changed or exceeds bounds')
+        contents[name] = data
+    request = decode(regular_bytes(request_path,128*1024))
+    if not isinstance(request,dict) or set(request) != {'schema','kind','source_library','metallib_sha256','gpu_id','compiler_abi','stage','function','named_constants','indexed_constants','owner_uid','request_id'}:
+        raise ValueError('compiled-stage requires exact canonical function request')
+    body = dict(request)
+    key = body.pop('request_id')
+    if key != publication.name or sha(canonical(body)) != key or type(body['owner_uid']) is not int or not 0 <= body['owner_uid'] <= 0xffffffff:
+        raise ValueError('compiled-stage canonical request identity mismatch')
+    receipt = decode(contents['receipt.json'])
+    if (receipt.get('schema') != 2 or receipt.get('kind') != 'dynamic-stage' or
+        receipt.get('request_id') != key or receipt.get('source_library') != 'quartzcore' or
+        receipt.get('metallib_sha256') != SOURCE_LIBRARY_SHA or receipt.get('gpu_id') != '07201000' or
+        receipt.get('compiler_abi') != 1 or receipt.get('stage') not in ('vertex','fragment') or
+        receipt.get('stage') != body['stage'] or receipt.get('function') != body['function'] or
+        receipt.get('stage_compiled') is not True or receipt.get('pipeline_compatible') is not False or
+        receipt.get('support_generation') != 2 or
+        receipt.get('named_constants_sha256') != sha(canonical(body['named_constants'])) or
+        receipt.get('indexed_constants_sha256') != sha(canonical(body['indexed_constants']))):
+        raise ValueError('compiled-stage receipt source/stage/ABI/request identity mismatch')
+    native, reflection = receipt['native'], receipt['reflection']
+    for metadata, name in ((native,'stage.midgard'), (reflection,'reflection.json')):
+        if metadata.get('file') != name or metadata.get('bytes') != len(contents[name]) or metadata.get('sha256') != sha(contents[name]):
+            raise ValueError('compiled-stage publication hash/size mismatch')
+    code = contents['stage.midgard']
+    if (len(code)&15 or not 1 <= native.get('work_registers',0) <= 16 or
+        native.get('tls_bytes') != 0 or native.get('wls_bytes') != 0 or
+        native.get('first_tag') not in (2,3,4,5,8,9,10,11,12,13,14,15) or
+        code[0]&15 != native['first_tag']):
+        raise ValueError('compiled-stage native bounds or header mismatch')
+    # The real loader checks typed constants, source pins, canonical current UID,
+    # native IO/UBO/texture windows, sampling/packing, and every reflected ABI.
+    source = Path(__file__).resolve().parents[1] / 'userland/a5mali-metal'
+    validation_out.mkdir(parents=True,exist_ok=True)
+    suffix = sha(os.fsencode(publication.parent))[:16]
+    check = validation_out / ('cache-check-'+suffix+'.m')
+    binary = validation_out / ('cache-check-'+suffix)
+    check.write_text('''#import "A5MaliDynamicShaderCache.h"
+#include <unistd.h>
+uid_t A5MaliDynamicShaderCacheTestUID(void){return geteuid();}
+int main(int argc,char**argv){@autoreleasepool{
+ if(argc!=3)return 2;
+ NSData*d=[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[1]]];
+ NSMutableDictionary*p=[[NSJSONSerialization JSONObjectWithData:d options:0 error:NULL]mutableCopy];
+ [p removeObjectForKey:@"owner_uid"];[p removeObjectForKey:@"request_id"];
+ NSError*e=nil;id entry=A5MaliLoadDynamicShaderStage([NSString stringWithUTF8String:argv[2]],p,&e);
+ if(!entry){fprintf(stderr,"actual provider cache rejected stage: %s\\n",e.localizedDescription.UTF8String);return 1;}
+ puts("PASS actual provider cache identity and reflected ABI");return 0;}}
+''')
+    subprocess.run(['clang','-fobjc-arc','-fblocks','-Wall','-Wextra','-Werror',
+        '-DA5_DYNAMIC_SHADER_CACHE_HOST_TEST=1',f'-DA5_DYNAMIC_SHADER_CACHE_TEST_ROOT="{publication.parent}"',
+        '-I'+str(source),str(source/'A5MaliDynamicShaderCache.m'),str(check),
+        '-framework','Foundation','-framework','Metal','-o',str(binary)],check=True)
+    subprocess.run([str(binary),str(request_path.resolve()),key],check=True)
+    destination = COMPILED_ROOT + '/' + key
+    return ([(destination+'/'+name,contents[name],0o444,0,0) for name in COMPILED_MEMBERS],
+            [(COMPILED_ROOT,0o755,0,0),(destination,0o755,0,0)])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bundle", type=Path)
@@ -167,11 +282,19 @@ def main() -> None:
                         help='private native compiler package; requires compressed installer patch0172')
     parser.add_argument('--installer-source',type=Path,
                         help='actual staged kernel installer; required for automatic compiler payload preflight')
+    parser.add_argument('--compiled-stage',type=Path,action='append',default=[],
+                        help='exact three-file dynamic-stage publication; repeat with matching --compiled-request')
+    parser.add_argument('--compiled-request',type=Path,action='append',default=[],
+                        help='exact canonical function request for each --compiled-stage, in the same order')
     parser.add_argument('--display-apps', type=Path,
                         help='mounted source Applications; embeds only six fixed display bundles, requires installer support')
     parser.add_argument('--backboard-ignore-mach-send-errors', action='store_true',
                         help='set verified QuartzCore Mach-send option only in the existing backboardd cached job')
     args = parser.parse_args()
+    if len(args.compiled_stage)!=len(args.compiled_request) or len(args.compiled_stage)>32:
+        parser.error('each compiled stage needs one exact request; maximum32')
+    if args.compiled_stage and not args.installer_source:
+        parser.error('compiled-stage installation requires actual --installer-source preflight')
     if bool(args.probe) != bool(args.launch_plist):
         parser.error("--probe and --launch-plist must be provided together")
     if args.backboard_ignore_mach_send_errors and not (args.probe and args.launchd_cache):
@@ -260,7 +383,15 @@ def main() -> None:
     if args.display_apps:
         app_files, directories, app_xattrs = display_app_entries(args.display_apps)
         entries.extend(app_files)
-    extended = bool(args.compiler_dir or args.display_apps)
+    compiled_directories=[]
+    seen_stages=set()
+    for publication,request in zip(args.compiled_stage,args.compiled_request):
+        stage_files,stage_dirs=compiled_stage_entries(publication,request,args.output.parent/'.compiled-stage-validation')
+        if publication.name in seen_stages:parser.error('duplicate compiled-stage identity')
+        seen_stages.add(publication.name);entries.extend(stage_files)
+        for directory in stage_dirs:
+            if directory not in compiled_directories:compiled_directories.append(directory)
+    extended = bool(args.compiler_dir or args.display_apps or args.compiled_stage)
     limit = 64*1024*1024 if extended else MAX_TOTAL
     if sum(len(data) for _, data, _, _, _ in entries) > limit:
         parser.error(f"payload exceeds {limit}-byte raw bound")
@@ -284,6 +415,12 @@ def main() -> None:
         for path, mode, uid, gid in directories:
             lines.append(f'\t{{ {c_string(path)}, 0{mode:o}, {uid}U, {gid}U }},')
         lines.append('};')
+    if compiled_directories:
+        lines.append('#define A5METAL_COMPILED_DIRECTORIES_PRESENT 1')
+        lines.append('static const struct a5metal_install_directory a5metal_install_compiled_directories[] = {')
+        for path,mode,uid,gid in compiled_directories:
+            lines.append(f'\t{{ {c_string(path)}, 0{mode:o}, {uid}U, {gid}U }},')
+        lines.append('};')
     lines.append("static const struct a5metal_install_file a5metal_install_files[] = {")
     for index, (path, data, mode, uid, gid) in enumerate(entries):
         lines.append(f'\t{{ {c_string(path)}, a5metal_payload_{index}, {len(data)}U, 0{mode:o}, {packed_sizes[index]}U, {uid}U, {gid}U }},')
@@ -301,7 +438,7 @@ def main() -> None:
         sys.stderr.write(check.stdout)
 
     print(json.dumps({"output": str(args.output), "files": [{"path": p, "size": len(d), "mode": oct(m), "uid": u, "gid": g, "crc32": f"{zlib.crc32(d):08x}"} for p, d, m, u, g in entries], "bytes": sum(len(d) for _, d, _, _, _ in entries),
-        'packed_bytes':sum(packed_sizes[i] or len(d) for i,(_,d,_,_,_) in enumerate(entries)), 'display_apps': list(DISPLAY_APPS) if args.display_apps else [], 'directories': [{'path':p,'mode':oct(m),'uid':u,'gid':g} for p,m,u,g in directories], 'xattrs': app_xattrs}, indent=2))
+        'packed_bytes':sum(packed_sizes[i] or len(d) for i,(_,d,_,_,_) in enumerate(entries)), 'display_apps': list(DISPLAY_APPS) if args.display_apps else [], 'directories': [{'path':p,'mode':oct(m),'uid':u,'gid':g} for p,m,u,g in directories], 'compiled_stage_count':len(seen_stages), 'compiled_stages':sorted(seen_stages), 'compiled_directory_count':len(compiled_directories), 'compiled_directories':[{'path':p,'mode':oct(m),'uid':u,'gid':g} for p,m,u,g in compiled_directories], 'xattrs': app_xattrs}, indent=2))
 
 
 if __name__ == "__main__":

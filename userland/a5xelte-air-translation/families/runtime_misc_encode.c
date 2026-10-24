@@ -353,7 +353,7 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
 static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(p->profileID!=A5MaliDynamicProfileID||
     !(p->flags&A5MaliProfileDynamicStages)||
-    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly))||
+    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV))||
     !(p->flags&A5MaliProfileSourceOverBlend)||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
@@ -402,7 +402,8 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
   }else return 0;
  }
  if(!!(p->flags&A5MaliProfileFramebufferFetch)!=(fetches==1))return 0;
- if((p->flags&A5MaliProfileVertexColorOnly)&&!(p->flags&A5MaliProfileFragmentNoInputs))return 0;
+ if((p->flags&A5MaliProfileVertexColorOnly)&&(!(p->flags&A5MaliProfileFragmentNoInputs)||(p->flags&A5MaliProfileVertexTwoUV)))return 0;
+ if((p->flags&A5MaliProfileFragmentTwoUV)&&(!(p->flags&A5MaliProfileVertexTwoUV)||(p->flags&A5MaliProfileFragmentNoInputs)))return 0;
  if(p->flags&A5MaliProfileFragmentNoInputs){
   /* No sampled-resource fallback: this path executes the reflected ordered
    * attachment load, with real FS UBOs and no FS interpolant descriptors. */
@@ -518,7 +519,10 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
   vertex+=push;unsigned low=(unsigned)(vertex&63);vertex&=~UINT64_C(63);
   attr(d,ATTRS,0,MALI_RGBA32F,0x688,low);
   if(generic_color||(p->flags&A5MaliProfileVertexColorOnly))attr(d,ATTRS+8,0,MALI_RGBA16F,0x688,low+32);
-  else{attr(d,ATTRS+8,0,MALI_RG32F,RG_SWIZZLE,low+16);attr(d,ATTRS+16,0,MALI_RGBA16F,0x688,low+32);}
+  else{attr(d,ATTRS+8,0,MALI_RG32F,RG_SWIZZLE,low+16);
+   if(p->flags&A5MaliProfileVertexTwoUV){attr(d,ATTRS+16,0,MALI_RG32F,RG_SWIZZLE,low+24);attr(d,ATTRS+24,0,MALI_RGBA16F,0x688,low+32);}
+   else attr(d,ATTRS+16,0,MALI_RGBA16F,0x688,low+32);
+  }
   buf(d,ATTR_BUFS,vertex,48,r->vertexCount*48+low);
   if(generic_textured){int rc=(p->profileID==A5MaliDynamicProfileID&&!dynamic_legacy_texture(m))?dynamic_images(d,m):textured_image(d,m);if(rc)return rc;}
   if(home)for(unsigned t=0;t<2;++t){const A5RuntimeImage*im=&m->fragmentTextures[t+3];unsigned tex=t?TEX1:TEX0;
@@ -548,23 +552,33 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
    /* Textured VS: hardware VAR0 is UV, VAR1 is colour; FS reads VAR0. */
    attr(d,VS_VARY+16,2,MALI_RG32UI,RG_SWIZZLE,0);
    buf(d,VS_VARY_BUFS+32,VA+VARY_DATA,8,r->vertexCount*8);
-   attr(d,VS_VARY+24,3,MALI_RGBA32UI,0x688,0);
-   buf(d,VS_VARY_BUFS+48,VA+VARY_DATA+0x1000,16,r->vertexCount*16);
+   unsigned colorData=VARY_DATA+((p->flags&A5MaliProfileVertexTwoUV)?0x2000:0x1000);
+   if(p->flags&A5MaliProfileVertexTwoUV){
+    attr(d,VS_VARY+24,3,MALI_RG32UI,RG_SWIZZLE,0);
+    buf(d,VS_VARY_BUFS+48,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
+    attr(d,VS_VARY+32,4,MALI_RGBA32UI,0x688,0);
+    buf(d,VS_VARY_BUFS+64,VA+colorData,16,r->vertexCount*16);
+   }else{
+    attr(d,VS_VARY+24,3,MALI_RGBA32UI,0x688,0);
+    buf(d,VS_VARY_BUFS+48,VA+colorData,16,r->vertexCount*16);
+   }
    if(!(p->flags&A5MaliProfileFragmentNoInputs)){
     attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);
     buf(d,FS_VARY_BUFS,VA+VARY_DATA,8,r->vertexCount*8);
    }
+   unsigned colorSlot=(p->flags&A5MaliProfileFragmentTwoUV)?2:1;
+   if(p->flags&A5MaliProfileFragmentTwoUV){
+    attr(d,FS_VARY+8,1,MALI_RG32F,RG_SWIZZLE,0);
+    buf(d,FS_VARY_BUFS+16,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
+   }
    if(p->profileID==604||(p->flags&A5MaliProfileDynamicColorVarying)){
-    /* The texture-function-3 fragment reads both UV (VAR0) and the
-     * interpolated half4 vertex colour (VAR1, promoted to float4). */
-    attr(d,FS_VARY+8,1,MALI_RGBA32F,0x688,0);
-    buf(d,FS_VARY_BUFS+16,VA+VARY_DATA+0x1000,16,r->vertexCount*16);
+    attr(d,FS_VARY+colorSlot*8,colorSlot,MALI_RGBA32F,0x688,0);
+    buf(d,FS_VARY_BUFS+colorSlot*16,VA+colorData,16,r->vertexCount*16);
    }
    if(p->flags&A5MaliProfileFragmentPosition){
-    /* Native POSvarying uses raster-generated FragCoord, not interpolated
-     * UV or the snapped vertex position array. */
-    attr(d,FS_VARY+16,2,MALI_RGBA32F,0x688,0);
-    pan_pack((struct mali_attribute_buffer_packed*)(d+FS_VARY_BUFS+32),ATTRIBUTE_BUFFER,c){
+    unsigned positionSlot=(p->flags&A5MaliProfileFragmentTwoUV)?3:2;
+    attr(d,FS_VARY+positionSlot*8,positionSlot,MALI_RGBA32F,0x688,0);
+    pan_pack((struct mali_attribute_buffer_packed*)(d+FS_VARY_BUFS+positionSlot*16),ATTRIBUTE_BUFFER,c){
      c.type=0;c.special=MALI_ATTRIBUTE_SPECIAL_FRAG_COORD;
     }
    }
@@ -687,6 +701,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+VS_RSD),&rs);
   rs.shader.shader=r->descriptorGPUVA+VS_CODE+vs->firstTag;
   if(p->flags&A5MaliProfileVertexColorOnly){rs.shader.attribute_count=2;rs.shader.varying_count=3;}
+  if(p->flags&A5MaliProfileVertexTwoUV){rs.shader.attribute_count=4;rs.shader.varying_count=5;}
   rs.properties.uniform_buffer_count=dynamic_ubo_count(p,A5MaliStageVertex);
   MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+VS_RSD),&rs);
   MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
@@ -697,7 +712,8 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
    if(r->kind==A5MaliResourceTexture&&r->nativeIndex>=count)count=r->nativeIndex+1;
   }
   rs.shader.texture_count=count;rs.shader.sampler_count=count;
-  if(p->flags&A5MaliProfileFragmentPosition)rs.shader.varying_count=3;
+  if(p->flags&A5MaliProfileFragmentTwoUV)rs.shader.varying_count=(p->flags&A5MaliProfileDynamicColorVarying)?3:2;
+  if(p->flags&A5MaliProfileFragmentPosition)rs.shader.varying_count=(p->flags&A5MaliProfileFragmentTwoUV)?4:3;
   if(p->flags&A5MaliProfileFragmentNoInputs)rs.shader.varying_count=0;
   MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
  }
