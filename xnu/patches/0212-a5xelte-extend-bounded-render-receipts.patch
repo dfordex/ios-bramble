@@ -1,0 +1,20 @@
+--- a/bsd/dev/mem.c
++++ b/bsd/dev/mem.c
+@@ -172,7 +172,7 @@
+ #if defined(ARM64_BOARD_CONFIG_A5XELTE)
+ /* Separate budgets keep a failing daemon from hiding the one-shot probe. */
+ static volatile UInt32 a5_null_chunks;
+-/* Four daemon lifetimes, each at most1024 chunks. Never reset a global
++/* Four daemon lifetimes, each at most2048 chunks. Never reset a global
+  * counter on restart: that would let a crash loop log without a boot bound. */
+ static volatile UInt64 a5_backboardd_budgets[4];
+ static bool
+@@ -188,7 +188,7 @@
+ 				continue;
+ 			}
+ 			if ((UInt32)(old >> 32) != pid) break;
+-			if ((UInt32)old >= 1024) return false;
++			if ((UInt32)old >= 2048) return false;
+ 			if (OSCompareAndSwap64(old, old + 1, &a5_backboardd_budgets[i])) return true;
+ 		}
+ 	}
