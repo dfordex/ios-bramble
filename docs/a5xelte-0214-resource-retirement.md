@@ -27,3 +27,5 @@ After space became available, pinned libdispatch1415.140.2 was rebuilt for Corte
 The final BOOT is31,789,072bytes, below the33,554,432-byte partition capacity. Its real freshly linked31,120,904-byte unstripped kernel contains the exact signed new provider, the verified existing compiler and45 GPU cases. Working0207d loader, ADT and DTBH bytes are unchanged. Four CPUs and32-sector storage batches remain selected.
 
 Build and offline packaging pass. Phone installation and physical602 pixel/button-transition results are separate checkpoints.
+
+The guarded direct BOOTp10 write acknowledged all31,789,072bytes; sync completed and reboot was requested. No BOOT backup, post-write hash/readback or full USERDATA transfer occurred. Physical45-case pixels and stable lock-screen/button transitions remain pending the next capture.
