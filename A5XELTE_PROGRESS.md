@@ -722,3 +722,5 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - Persistentcache already fsyncs files/directories and atomically publishes. All21 exactcapturedfunctionrequests compiled with actualMacworker for nextincrementalpayload, avoiding17new first-compilation waits. Phonecompilerunchanged. No0215writeyet. See[full readout](docs/a5xelte-0214-log-review.md).
 
 - **0215 full build ready:** XNUmakeexit0;82-filepayload40,950,796raw/9,925,794packedactualkernelpreflightpass. BOOT31,924,240bytesfits33,554,432capacity;47physicalcases/prior45unchanged,21compiledstages,exactworkingloader/ADT/DTBH. Deviceinstallationpending; finalpipelineabortnotclaimedfixed.
+
+- **0215 installed:** guardedTWRP/model/BOOTp10/capacitypass;directoffset0writeacknowledges31,924,240bytes,sync0,rebootrequested. NoBOOTbackup/readback/hash/fullUSERDATAtransfer.21cachepublicationsinstallduringboot; actualcachehits/DS4physicalpixels andfinalpipelinefailurependingnextcapture.
