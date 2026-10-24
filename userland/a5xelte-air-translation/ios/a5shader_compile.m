@@ -134,6 +134,20 @@ static void diagnosticToken(const char *input,char result[65])
     }
     if(!i){memcpy(result,"none",4);i=4;}result[i]=0;
 }
+/* Startup and pre-exec filesystem stalls previously had no observable phase.
+ * Bound these metadata-only records independently of child progress logs. */
+static void serviceCheckpoint(const char *phase,NSString *key,NSString *stage)
+{
+    static unsigned records;
+    if(records>=256)return;
+    records++;
+    char request[65],kind[65];
+    diagnosticToken(key.UTF8String,request);
+    diagnosticToken(stage.UTF8String,kind);
+    fprintf(stderr,"A5XELTE shader compiler: SERVICE phase=%s pid=%d request=%s stage=%s\n",
+        phase,getpid(),request,kind);
+    fflush(stderr);
+}
 static void workerCheckpoint(const char *phase,int argc,char **argv,int error)
 {
     char request[65],stage[65];
@@ -485,7 +499,9 @@ int main(int argc, char **argv)
         if (lockfd < 0 || flock(lockfd,LOCK_EX|LOCK_NB)) fail(@"compiler cache is busy");
         fprintf(stderr,"A5XELTE shader compiler: native iOS ARM64 service start no_time_limit=1\n");
         if (argc == 2 && !strcmp(argv[1],"--serve")) {
+            serviceCheckpoint("main-roots-begin",nil,nil);
             a5PrepareRequestRoots();
+            serviceCheckpoint("main-roots-end",nil,nil);
             if (setpriority(PRIO_PROCESS,0,10))
                 fprintf(stderr,"A5XELTE shader compiler: priority adjustment unavailable errno=%d\n",errno);
         }

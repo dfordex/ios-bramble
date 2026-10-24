@@ -793,22 +793,29 @@ static void a5CompileDynamic(NSString *self,NSDictionary *request,NSDictionary *
     NSString *final=[publishedRoot stringByAppendingPathComponent:key];
     if([NSFileManager.defaultManager fileExistsAtPath:final])return;
     activeRequestKey=key;
+    serviceCheckpoint("dispatch",key,stage);
     NSString *work=[cacheRoot stringByAppendingPathComponent:
         [@".stage-work-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    serviceCheckpoint("workspace-mkdir-begin",key,stage);
     if(![NSFileManager.defaultManager createDirectoryAtPath:work withIntermediateDirectories:NO
         attributes:@{NSFilePosixPermissions:@0700} error:NULL])fail(@"cannot create dynamic stage workspace");
+    serviceCheckpoint("workspace-mkdir-end",key,stage);
     activeWork=work;
     BOOL vertex=[stage isEqual:@"vertex"];
     NSString *prefix=[work stringByAppendingPathComponent:@"shader"];
     NSString *meta=[work stringByAppendingPathComponent:@"reflection.json"];
     NSString *packing=[work stringByAppendingPathComponent:@"packing0.json"];
+    serviceCheckpoint("packing-write-sync-begin",key,stage);
     writeData(a5Canonical(scaffold[@"configured_vertex_packing0"]),packing);
+    serviceCheckpoint("packing-write-sync-end",key,stage);
     /* This compiler contract is implemented by the native color0 tilebuffer
      * read, target preload and ordered-fragment runtime, not a Vulkan device.
      * Keep the installed baseline unchanged for the pinned old recipes. */
+    serviceCheckpoint("profile-read-begin",key,stage);
     NSMutableDictionary *deviceProfile=[NSJSONSerialization JSONObjectWithData:
         regularData([installed stringByAppendingPathComponent:@"profile.json"],1024*1024)
         options:NSJSONReadingMutableContainers error:NULL];
+    serviceCheckpoint("profile-read-end",key,stage);
     NSMutableDictionary *capabilities=deviceProfile[@"capabilities"];
     NSMutableDictionary *profiles=deviceProfile[@"profiles"];
     if(![capabilities isKindOfClass:NSMutableDictionary.class]||
@@ -826,7 +833,9 @@ static void a5CompileDynamic(NSString *self,NSDictionary *request,NSDictionary *
         fail(@"invalid baseline compiler capability list");
     [selectedCapabilities addObject:@"a5_ordered_tilebuffer_color0"];
     NSString *deviceProfilePath=[work stringByAppendingPathComponent:@"ordered-color0-profile.json"];
+    serviceCheckpoint("profile-write-sync-begin",key,stage);
     writeData(a5Canonical(deviceProfile),deviceProfilePath);
+    serviceCheckpoint("profile-write-sync-end",key,stage);
     /* The translator currently exposes a render-pair CLI. A trusted stock
      * companion supplies stage-link scaffolding; only the requested stage is
      * compiled/published and the companion is not an executable-pipeline claim. */
@@ -963,10 +972,21 @@ static void a5HandleRequest(NSString *self, NSDictionary *request,
     a5CompileKnown(self,request,known);
 }
 
+#include "a5shader_retirement.inc.m"
+
 static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfiles)
 {
+    static unsigned scans;
+    unsigned scan=++scans;
+    BOOL report=scan<=8;
+    unsigned usersSeen=0,usersRejected=0,candidates=0,readRejected=0,
+        jsonRejected=0,identityRejected=0,digestRejected=0,handled=0,capped=0;
+    if(report)serviceCheckpoint("scan-begin",nil,nil);
     int rootfd = open(requestRoot.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
-    if (rootfd < 0) return; /* provider has not forwarded a request yet */
+    if (rootfd < 0) {
+        if(report)fprintf(stderr,"A5XELTE shader compiler: SCAN scan=%u root_open_errno=%d\n",scan,errno);
+        return; /* provider has not forwarded a request yet */
+    }
     struct stat rootstat;
     if (fstat(rootfd,&rootstat) || !S_ISDIR(rootstat.st_mode) ||
         rootstat.st_uid != geteuid() || (rootstat.st_mode & 07777) != 01777)
@@ -982,16 +1002,18 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
             continue;
         unsigned long long number = strtoull(user->d_name,NULL,10);
         if (number > UINT32_MAX) continue;
+        usersSeen++;
         uid_t uid = (uid_t)number;
         int uidfd = openat(rootfd,user->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
         struct stat st;
         if (uidfd<0 || fstat(uidfd,&st) || !S_ISDIR(st.st_mode) ||
             st.st_uid!=uid || (st.st_mode & 0777)!=0700) {
             if (uidfd>=0) close(uidfd);
+            usersRejected++;
             continue;
         }
         DIR *files = fdopendir(dup(uidfd));
-        if (!files) { close(uidfd); continue; }
+        if (!files) { usersRejected++; close(uidfd); continue; }
         unsigned count=0;
         struct dirent *entry;
         while ((entry=readdir(files)) && count<64) {
@@ -1000,36 +1022,56 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
             NSString *key = [name substringToIndex:64];
             if (!a5HexDigest(key)) continue;
             count++;
+            candidates++;
             NSData *bytes = a5ReadRequest(uidfd,entry->d_name,uid);
-            if (!bytes) continue;
+            if (!bytes) { readRejected++; continue; }
             id parsed = [NSJSONSerialization JSONObjectWithData:bytes options:0 error:NULL];
-            if (![parsed isKindOfClass:NSDictionary.class]) continue;
+            if (![parsed isKindOfClass:NSDictionary.class]) { jsonRejected++; continue; }
             NSDictionary *request = parsed;
             if (![request[@"request_id"] isEqual:key] ||
-                ![request[@"owner_uid"] isEqual:@(uid)]) continue;
+                ![request[@"owner_uid"] isEqual:@(uid)]) { identityRejected++; continue; }
             NSMutableDictionary *body = [request mutableCopy];
             [body removeObjectForKey:@"request_id"];
             NSData *canonical = a5Canonical(body);
-            if (!canonical || ![digest(canonical) isEqual:key]) continue;
+            if (!canonical || ![digest(canonical) isEqual:key]) { digestRejected++; continue; }
+            handled++;
             a5HandleRequest(self,request,knownProfiles,key);
+            a5RetireCompletedRequest(uidfd,entry->d_name,uid,bytes,request,knownProfiles);
         }
+        if(count==64)capped++;
         closedir(files); close(uidfd);
     }
     closedir(users); close(rootfd);
+    if(report){
+        fprintf(stderr,"A5XELTE shader compiler: SCAN scan=%u users=%u users_rejected=%u candidates=%u read_rejected=%u json_rejected=%u identity_rejected=%u digest_rejected=%u handled=%u capped_users=%u\n",
+            scan,usersSeen,usersRejected,candidates,readRejected,jsonRejected,
+            identityRejected,digestRejected,handled,capped);
+        fflush(stderr);
+        serviceCheckpoint("scan-end",nil,nil);
+    }
 }
 
 static void a5Serve(NSString *self)
 {
+    serviceCheckpoint("serve-roots-begin",nil,nil);
     a5PrepareRequestRoots();
+    serviceCheckpoint("serve-roots-end",nil,nil);
     NSMutableArray<NSDictionary *> *knownProfiles = [NSMutableArray array];
-    NSString *sourceSHA = digest(regularData(sourceLibrary,64*1024*1024));
+    serviceCheckpoint("stock-read-begin",nil,nil);
+    NSData *source=regularData(sourceLibrary,64*1024*1024);
+    serviceCheckpoint("stock-read-end",nil,nil);
+    serviceCheckpoint("stock-hash-begin",nil,nil);
+    NSString *sourceSHA = digest(source);
+    serviceCheckpoint("stock-hash-end",nil,nil);
     for (NSNumber *profile in @[@602,@603,@604,@605,@606]) {
+        serviceCheckpoint("recipe-read-begin",nil,profile.stringValue);
         NSString *name = [NSString stringWithFormat:@"generic%@.json",profile];
         NSDictionary *known = readJSON([installed stringByAppendingPathComponent:name]);
         if (![known[@"profile_id"] isEqual:profile] ||
             ![sourceSHA isEqual:known[@"metallib_sha256"]])
             fail(@"installed generic recipe or stock library differs");
         [knownProfiles addObject:known];
+        serviceCheckpoint("recipe-read-end",nil,profile.stringValue);
     }
     for (;;) {
         @autoreleasepool { a5ScanRequests(self,knownProfiles); }

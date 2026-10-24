@@ -740,3 +740,11 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - Fixturepreloadcorrected0203e000, only3bytesperpayload;decodedpointerchecksrejectbotholdactualbadfixturesandacceptbothnew,oracles/codeunchanged.0216normalUIexplicitlyskipsoptionalGPUselftests,retainsnativeGPU/mandatorybootstrap/21cachepublications. See[readout](docs/a5xelte-0215b-log-review.md).
 
 - **0216 built/installed:** FullXNUmake0;31,924,240byteBOOT,loader/ADT/safeDTBH/provider/21cacheoutputs unchanged; correctedDS4fixturesverifiedinsidekernel. Explicitoptionaltestgates0,nativeGPU/mandatorybootstrapunchanged. Guardedp10writeacknowledgesallbytes/sync0/rebootrequested,noBOOTbackup/readback/fullUSERDATA. PhysicalUI/mappingresultpending.
+
+## 2026-10-24 — 0216 UI reaches a new shader wait
+
+- Fullflush66/431,469logicalbytes: nopanic/CRASH/MMU/importfailure;CB2–10complete,status4/error0;7sampledGPU-presentintervals/sourcepanelmatches. KeyHIDheadconsumes2048,notfull,evenafterwaitbegins. Touchlogging0soinputcontactstatusunproved.
+- CAthreadwaitsinnewFunction/nanosleepfornew58constantfragment1888B. Exactrequestrecovered,actualMacworker/cache/factory/emitterpass;22ndpersistentpublicationprepared. Phonecompileronlystartup,noobservabledispatch;boundedstartup/scan/preexecphasesadded, no guessedpriority/admissionchange.
+-62queuedfilesalsoexposeindependent64pendingquota defect: completed/terminalfilesneverretire. Strictboundedterminal-retirementimplemented/tested;64pendingpreserved,64terminalfreequota,300rotationsbounded64slots/8MiB,producerlocknonblocking. See[full readout](docs/a5xelte-0216-log-review.md).
+
+- **0217 built:** XNUmake0,31,940,624byteBOOT; exact0216loader/ADT/safeDTBH,selectedFDT41fde800..41ff8800.22persistentstages/final230,608bytesignedworkerembedded;actualcachepreflightpass. Optionaltests0,nativeGPU4CPU/32-sectorpathunchanged. PhysicalUI/inputresultpending.
