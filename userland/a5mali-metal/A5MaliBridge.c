@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 #include "A5MaliBridge.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdatomic.h>
 
 typedef struct { A5MaliHeader h; uint32_t max, operations, commands, reserved; } QueryReply;
 typedef struct { A5MaliHeader h; uint32_t port, usage; uint64_t reserved; } ImportRequest;
@@ -155,6 +157,16 @@ void A5MaliClose(A5MaliClient *client)
     memset(client, 0, sizeof(*client));
 }
 
+static void importFailure(const char *phase,kern_return_t status,uint64_t token)
+{
+    static atomic_uint receipts;
+    unsigned n=atomic_load_explicit(&receipts,memory_order_relaxed);
+    do {if(n>=32)return;}while(!atomic_compare_exchange_weak_explicit(&receipts,&n,n+1,
+        memory_order_relaxed,memory_order_relaxed));
+    fprintf(stderr,"A5XELTE Metal import: phase=%s status=%x logical_slot=%u generation=%u\n",
+        phase,(unsigned)status,(unsigned)token,(unsigned)(token>>32));
+}
+
 kern_return_t A5MaliImportSurface(A5MaliClient *client,
     mach_port_t surfacePort, uint32_t usage, A5MaliResource *resource)
 {
@@ -170,8 +182,10 @@ kern_return_t A5MaliImportSurface(A5MaliClient *client,
     size_t size = sizeof(reply);
     kern_return_t kr = call(client, A5MaliImport, &request,
         sizeof(request), &reply, &size);
-    if (kr != KERN_SUCCESS)
+    if (kr != KERN_SUCCESS) {
+        importFailure("import-selector1",kr,0);
         return kr;
+    }
     if (!validReply(&reply.h, sizeof(reply), size) || !reply.handle) {
         if (reply.handle) {
             HandleRequest release = { header(sizeof(release)), reply.handle };
@@ -205,6 +219,7 @@ kern_return_t A5MaliImportSurface(A5MaliClient *client,
          mapped.mappedBytes < (uint64_t)reply.rowBytes * reply.height))
         kr = kIOReturnBadArgument;
     if (kr != KERN_SUCCESS) {
+        importFailure("map-selector4",kr,reply.handle);
         /* The kernel release path also unmaps if map succeeded. */
         call(client, A5MaliRelease, &map, sizeof(map), NULL, NULL);
         return kr;

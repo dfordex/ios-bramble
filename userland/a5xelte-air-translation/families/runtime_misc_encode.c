@@ -236,11 +236,13 @@ static int dynamic_images(uint8_t*d,const A5RuntimeMiscDraw*m){
  * The captured FS constant blob and FB1 uniform are dead in this exact code.
  */
 static int generic_color_contract(const A5MaliCompiledProfile*p){
- if((p->profileID!=600&&p->profileID!=601&&p->profileID!=602)||p->flags||p->passCount!=1||
+ const unsigned sourceOver=p->profileID==602;
+ if((p->profileID!=600&&p->profileID!=601&&p->profileID!=602)||
+    p->flags!=(sourceOver?A5MaliProfileSourceOverBlend:0)||p->passCount!=1||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     p->colorFormats[0]!=80||p->attributeCount!=4||!p->attributes||
     p->layoutCount!=1||!p->layouts||p->resourceCount!=1||!p->resources||
-    p->pushFieldCount!=2||!p->pushFields||p->attachmentContractCount!=1||
+    p->pushFieldCount!=2||!p->pushFields||p->attachmentContractCount!=(sourceOver?2u:1u)||
     !p->attachmentContracts)return 0;
  if(!p->vertexName||strcmp(p->vertexName,p->profileID==602?"fixed_vert_lph_spc":"std_vert0_lph")||
     !p->fragmentName||strcmp(p->fragmentName,p->profileID==600?"fixed_frag_lph_cpf":"fixed_frag_lph_cph"))return 0;
@@ -261,13 +263,14 @@ static int generic_color_contract(const A5MaliCompiledProfile*p){
     vs->metalIndex!=2||vs->offset||vs->bytes!=4||vs->value||
     fs->stage!=A5MaliStageFragment||fs->kind!=A5MaliPushColorWriteRule||
     fs->metalIndex||fs->offset!=68||fs->bytes!=4||fs->value!=0x2222)return 0;
- for(unsigned i=0;i<8;++i){
-  const A5MaliCompiledAttachmentState*a=&p->attachmentContracts[0].attachments[i];
-  /* Unattached Metal slots retain their descriptor defaults even though
-   * colorFormats[1..7] are zero and no native MRT is generated. */
-  if(a->writeMask!=15||a->blendEnabled||a->rgbOperation||
-     a->alphaOperation||a->sourceRGB!=1||a->destinationRGB||
-     a->sourceAlpha!=1||a->destinationAlpha)return 0;
+ for(unsigned c=0;c<p->attachmentContractCount;++c)for(unsigned i=0;i<8;++i){
+  const A5MaliCompiledAttachmentState*a=&p->attachmentContracts[c].attachments[i];
+  unsigned over=c==1&&i==0;
+  /* 602 adds only ADD(ONE, ONE_MINUS_SOURCE_ALPHA) on RT0. All
+   * unattached slots and the existing copy contract remain exact. */
+  if(a->writeMask!=15||a->blendEnabled!=over||a->rgbOperation||
+     a->alphaOperation||a->sourceRGB!=1||a->destinationRGB!=(over?5u:0u)||
+     a->sourceAlpha!=1||a->destinationAlpha!=(over?5u:0u))return 0;
  }
  const A5MaliCompiledPass*pass=p->passes;
  return pass->vertex.sha256&&pass->fragment.sha256&&
@@ -683,7 +686,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
    (r->blend&&(!(p->flags&A5MaliProfileSourceOverBlend)||
      (out->metalPixelFormat==115&&!(p->flags&A5MaliProfileInlineSourceOver))))||
    ((p->flags&A5MaliProfileInlineSourceOver)&&r->blend!=A5RuntimeBlendPremultipliedSourceOver))return A5RuntimeUnsupported;
- if(generic_color&&r->blend!=A5RuntimeBlendCopy)return A5RuntimeUnsupported;
+ if(generic_color&&p->profileID!=602&&r->blend!=A5RuntimeBlendCopy)return A5RuntimeUnsupported;
  if(!isfinite(r->viewportX)||!isfinite(r->viewportY)||!isfinite(r->viewportWidth)||!isfinite(r->viewportHeight)||
    !isfinite(r->viewportNear)||!isfinite(r->viewportFar)||r->viewportWidth<=0||r->viewportHeight<=0||
    r->viewportX<0||r->viewportY<0||r->viewportWidth>4096-r->viewportX||r->viewportHeight>4096-r->viewportY||

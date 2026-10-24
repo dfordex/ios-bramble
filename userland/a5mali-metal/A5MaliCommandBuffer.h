@@ -66,6 +66,9 @@ typedef kern_return_t (^A5MaliNativeWork)(A5MaliClient *client, A5MaliFence *fen
 @property (nonatomic, readonly) A5MaliFence completedFence;
 /* Legacy batch/copy transports do not expose the native Submit18 outcome. */
 - (BOOL)usesLegacyGPUWork;
+/* Internal owner retirement after confirmed terminal fences or before any
+ * submit. Never call for an ambiguous timeout/in-flight GPU transaction. */
+- (void)retireTerminalWork;
 @end
 
 NS_ASSUME_NONNULL_END

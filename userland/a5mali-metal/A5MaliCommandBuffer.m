@@ -349,6 +349,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
             }
         }
         [[_device lock] unlock];
+        [self retireTerminalWork];
         return YES;
     }
     for (A5MaliOperation *operation in _operations) {
@@ -388,6 +389,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
         _completedFence = fence;
     }
     [[_device lock] unlock];
+    [self retireTerminalWork];
     return YES;
 }
 
@@ -402,6 +404,13 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
     return YES;
 }
 
+- (void)retireTerminalWork
+{
+    /* Releases may reenter the device to unmap/drop an imported handle.
+     * Callers are outside the transport lock and have terminal proof. */
+    _committed=YES;
+    [_operations removeAllObjects];
+}
 - (A5MaliFence)completedFence { return _completedFence; }
 - (BOOL)usesLegacyGPUWork
 {

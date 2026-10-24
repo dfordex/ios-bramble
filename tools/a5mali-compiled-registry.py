@@ -330,7 +330,14 @@ def generic_profile(receipt_path, capture_path, metallib_path, vertex_capture_pa
     if pid==602:
         if j['vertex_function']!='fixed_vert_lph_spc' or fragment!='fixed_frag_lph_cph':fail('unreviewed specialized vertex pair')
         p['vertex_function_constants']=j['vertex_captured_constants']
-        p['proof']='Both observed stage names and exact typed constants; full render state not yet captured'
+        # 0213 rejects the exact602 specialization when QuartzCore enables
+        # blending. Admit only the implemented premultiplied source-over
+        # equation, preserving the copy contract and every inactive RT state.
+        over=[list(a) for a in p['attachment_contracts'][0]]
+        over[0]=[15,1,0,0,1,5,1,5]
+        p['attachment_contracts'].append(over)
+        p['flags']=16
+        p['proof']='Observed exact602 typed pair and blend-enabled request; strict copy/premultiplied-source-over native contracts'
     return p
 
 

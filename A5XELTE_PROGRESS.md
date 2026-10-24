@@ -695,3 +695,15 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **0213 final local build:** Prioractual2448fetchand2592/1328pairregressionsalsopass; fullXNUexit0. BOOT31,776,784bytesfits32MiB, exact0212loader/ADT, finalsignedprovider/verifiedcompiler/fourcompletepublicationsand44casesembedded;4cores/32blockstorageunchanged. Physicalpixel/buttontransitionresultpending.
 
 - **0213 installed:** Sourceff396d7pushed; guardedoffset-zeroBOOTp10writeacknowledges31,776,784bytes,synccomplete/rebootrequested. NoBOOTbackup/readback/hash/fullUSERDATAtransfer. Actualnew44-casepixelsandHome/Power/backboardd/Attentionruntimepending.
+
+
+## 2026-10-24 — 0213 phone input works; resource retirement and602 blend are next blockers
+
+- Read-only SYSTEM flush77 recovers all744,917bytes/nooverwrite. Both new actual2240/176fragmentcases pass4096/4096, total40/44; oldfourfailures unchanged. HIDheads advance/full0 forHome/Power/volume. No kernelpanic orSpringBoardcrash recorded.
+- Drawing later stops before GPU submission: private BGRA target imports returnNoResources and CB8+ resource errors. Source audit identifies operation closures retaining textures after terminal completion/pre-submit cancellation; logical32slot quota distinct from4physicalmappingwindows. Two backboarddSIGABRTs report Metalpipelinefailure and captured602 blendEnabled1/expected0. See[fullreadout](docs/a5xelte-0213-log-review.md). Stable interactiveUI remains unverified.
+
+
+## 2026-10-24 — 0214 candidate fixes resource retirement and602 source-over
+
+- Confirmed terminal/safely cancelled command buffers retire captured texture owners outside transport locks; ambiguous submissions retain them.128 logical imports remain bounded independently of four physical windows, with protected-index sets and explicit import/map diagnostics. Real helper, bridge and40-retained-CB lifecycle tests pass.
+-602 gains only strict ADD/ONE/ONE_MINUS_SOURCE_ALPHA copy/source-over alternatives and destination preload.18nativewrappers,29profilefactory,descriptornegatives,Cortex-A53compile,signedproductionprovider and31-filekernelpreflight pass. Newactual602independentpixelcasegenerated; physicalresultpending. FullXNU/BOOT remains blockedbyMacENOSPC; no0214devicewrite. See[candidate status](docs/a5xelte-0214-resource-retirement.md).

@@ -946,14 +946,19 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     }@catch(NSException *exception){
         (void)exception;submissionError=metalError(kIOReturnNotReady);
     }@finally{
+        /* Encoding failures never submit, and validated terminal native
+         * fences (or pre-submit rejection) let operation captures retire even
+         * when QuartzCore keeps the completed command-buffer object alive. */
+        BOOL ambiguous=submissionError && (A5MaliNativeSubmissionMayBeActive() ||
+            [_privateBuffer usesLegacyGPUWork] ||
+            ![[self.device privateDevice]supportsNativePrograms]);
         if(ticket){
             /* A failed submission may have poisoned/pinned the kernel queue.
              * Never advertise those aliased pages as safely completed. */
-            if(submissionError && (A5MaliNativeSubmissionMayBeActive() ||
-                [_privateBuffer usesLegacyGPUWork] ||
-                ![[self.device privateDevice]supportsNativePrograms]))[dependencies failTicket:ticket];
+            if(ambiguous)[dependencies failTicket:ticket];
             else [dependencies finishTicket:ticket];
         }
+        if(!ambiguous)[_privateBuffer retireTerminalWork];
         [_resourceUses removeAllObjects];
     }
     for(A5MaliTexturePassBacking *lease in _memorylessPassBackings)[lease invalidateAfterCompletion];

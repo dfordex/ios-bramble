@@ -39,16 +39,17 @@ int main(int argc,char**argv){
  A5MaliCompiledVertexAttribute attr[]={
   {0,31,0,1},{1,29,16,1},{2,29,24,1},{3,27,32,1}};
  A5MaliCompiledVertexLayout layout={1,48,1,1};
- A5MaliCompiledAttachmentContract attachment={0};
- for(unsigned i=0;i<8;++i){attachment.attachments[i].writeMask=15;
-  attachment.attachments[i].sourceRGB=1;attachment.attachments[i].sourceAlpha=1;}
+ A5MaliCompiledAttachmentContract attachments[2]={0};
+ A5MaliCompiledAttachmentContract *attachment=attachments;
+ for(unsigned i=0;i<8;++i){attachment->attachments[i].writeMask=15;
+  attachment->attachments[i].sourceRGB=1;attachment->attachments[i].sourceAlpha=1;}
  A5MaliCompiledProfile profile={0};profile.profileID=600;
  profile.vertexName="std_vert0_lph";profile.fragmentName="fixed_frag_lph_cpf";
  profile.colorFormats[0]=80;
  profile.passes=&pass;profile.passCount=1;profile.resources=&res;profile.resourceCount=1;
  profile.pushFields=push;profile.pushFieldCount=2;profile.attributes=attr;profile.attributeCount=4;
  profile.layouts=&layout;profile.layoutCount=1;
- profile.attachmentContracts=&attachment;profile.attachmentContractCount=1;
+ profile.attachmentContracts=attachment;profile.attachmentContractCount=1;
  A5RuntimeMiscDraw m={0};m.draw.profile=&profile;m.draw.descriptorGPUVA=0x12000000;
  m.draw.vertexCount=4;m.draw.primitive=A5RuntimeTriangleStrip;
  m.draw.viewportWidth=m.draw.viewportHeight=32;m.draw.viewportFar=1;
@@ -103,6 +104,8 @@ int main(int argc,char**argv){
   * keep the captured function identity distinct in the profile contract. */
  profile.profileID=602;pass.passID=602;
  profile.vertexName="fixed_vert_lph_spc";
+ profile.flags=A5MaliProfileSourceOverBlend;profile.attachmentContractCount=2;
+ attachments[1]=attachments[0];attachments[1].attachments[0]=(A5MaliCompiledAttachmentState){15,1,0,0,1,5,1,5};
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
  assert(!memcmp(syntheticDescriptor,descriptor,sizeof(descriptor)));
 #ifdef A5_TEST_REAL_PROFILE
@@ -114,6 +117,24 @@ int main(int argc,char**argv){
  assert(!memcmp(syntheticDescriptor,descriptor,sizeof(descriptor)));
  m.draw.profile=&profile;
 #endif
+ /* The same authentic602 native shader performs premultiplied source-over
+  * through real fixed-function blending, not a second blend in the shader. */
+ m.draw.blend=A5RuntimeBlendPremultipliedSourceOver;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ pan_unpack((struct mali_renderer_state_packed*)(descriptor+0x540),RENDERER_STATE,over);
+ assert(over.multisample_misc.load_destination&&over.blend_equation.color_mask==15);
+ assert(over.blend_equation.rgb.a==MALI_BLEND_OPERAND_A_SRC&&over.blend_equation.rgb.b==MALI_BLEND_OPERAND_B_DEST&&
+  over.blend_equation.rgb.c==MALI_BLEND_OPERAND_C_SRC_ALPHA&&over.blend_equation.rgb.invert_c);
+ assert(over.blend_equation.alpha.a==MALI_BLEND_OPERAND_A_SRC&&over.blend_equation.alpha.b==MALI_BLEND_OPERAND_B_DEST&&
+  over.blend_equation.alpha.c==MALI_BLEND_OPERAND_C_SRC_ALPHA&&over.blend_equation.alpha.invert_c);
+ assert(!memcmp(descriptor+0x6000,vs,1808)&&!memcmp(descriptor+0x8000,fs,848));
+ attachments[1].attachments[0].destinationRGB=1;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ attachments[1].attachments[0].destinationRGB=5;profile.flags=0;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
+ profile.flags=A5MaliProfileSourceOverBlend;m.draw.blend=A5RuntimeBlendCopy;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ assert(!memcmp(syntheticDescriptor,descriptor,sizeof(descriptor)));
  uint16_t indices16[]={99,0,1,2,2,1,3};
  m.draw.primitive=A5RuntimeTriangle;m.draw.indexCount=6;m.draw.indexSize=2;
  m.draw.indexBuffer=(A5RuntimeBuffer){0,sizeof(indices16),2,(const uint8_t *)indices16};
@@ -151,9 +172,9 @@ int main(int argc,char**argv){
         indexed32.indices>=m.draw.descriptorGPUVA+0x20000&&
         indexed32.indices+24<=m.draw.descriptorGPUVA+0x30000&&
         !memcmp(descriptor+(indexed32.indices-m.draw.descriptorGPUVA),indices32+1,24));
- profile.profileID=601;pass.passID=601;profile.vertexName="std_vert0_lph";
+ profile.profileID=601;pass.passID=601;profile.vertexName="std_vert0_lph";profile.flags=0;profile.attachmentContractCount=1;
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
- profile.profileID=602;pass.passID=602;profile.vertexName="fixed_vert_lph_spc";
+ profile.profileID=602;pass.passID=602;profile.vertexName="fixed_vert_lph_spc";profile.flags=A5MaliProfileSourceOverBlend;profile.attachmentContractCount=2;
  indices32[6]=4;
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeBounds&&zeroed());
  indices32[6]=3;m.draw.indexBuffer.bytes--;
@@ -175,7 +196,7 @@ int main(int argc,char**argv){
  profile.vertexName="fixed_vert_lph_spc";
  profile.fragmentName="fixed_frag_lph_cpf";
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());
- profile.profileID=600;pass.passID=600;
+ profile.profileID=600;pass.passID=600;profile.flags=0;profile.attachmentContractCount=1;
  profile.vertexName="std_vert0_lph";
  m.draw.blend=A5RuntimeBlendPremultipliedSourceOver;
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported&&zeroed());

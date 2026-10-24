@@ -135,7 +135,7 @@ int main(void)
             assert(pipelineError.code==kIOReturnUnsupported);
             MTLRenderPipelineDescriptor *nativeDescriptor=descriptor(p,nativeLibrary);
             id pipeline=[nativeDevice newRenderPipelineStateWithDescriptor:nativeDescriptor error:&pipelineError];
-            if ((p->profileID>=99 && p->profileID<=108)||p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||p->profileID==600||p->profileID==601||p->profileID==602||p->profileID==603||(p->profileID>=300&&p->profileID<=302))
+            if ((p->profileID>=99 && p->profileID<=108)||p->profileID==200||p->profileID==202||p->profileID==204||p->profileID==206||p->profileID==207||(p->profileID>=600&&p->profileID<=606)||(p->profileID>=300&&p->profileID<=302))
                 assert([pipeline isKindOfClass:NSClassFromString(@"A5MaliCompiledPipeline")]&&!pipelineError);
             else assert(!pipeline&&pipelineError.code==kIOReturnUnsupported);
 
@@ -151,7 +151,7 @@ int main(void)
             error=nil;
             assert(![library newFunctionWithName:f.name constantValues:f.constantValues error:&error]);
             assert(error.code==kIOReturnUnsupported);
-            if(p->profileID==600||p->profileID==601||p->profileID==602||p->profileID==603){
+            if(p->profileID>=600&&p->profileID<=606){
                 assert(![library newFunctionWithName:f.name constantValues:nil error:&error]);
                 assert(error.code==kIOReturnUnsupported);
                 size_t nc=0;const A5MaliCompiledFunctionConstant *values=A5MaliCompiledConstantsForProfile(p->profileID,&nc);
@@ -167,7 +167,7 @@ int main(void)
                 [extra setConstantValue:&value type:MTLDataTypeBool atIndex:0];
                 assert(![library newFunctionWithName:f.name constantValues:extra error:&error]);
             }else assert([library newFunctionWithName:f.name constantValues:nil error:&error]&&!error);
-            if(p->profileID==602||p->profileID==603){
+            if(p->profileID>=602&&p->profileID<=606){
                 NSString *vertexName=[NSString stringWithUTF8String:p->vertexName];
                 assert([vertexName isEqualToString:@"fixed_vert_lph_spc"]);
                 assert(![library newFunctionWithName:vertexName]);

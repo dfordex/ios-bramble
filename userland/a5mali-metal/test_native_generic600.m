@@ -14,6 +14,9 @@
 @interface A5MaliMetalBuffer (Generic600FenceTest)
 - (A5MaliCommandBuffer *)privateBuffer;
 @end
+@interface A5MaliReadSurfCandidate (Generic602BlendTest)
+- (BOOL)sourceOver;
+@end
 
 typedef struct {
     float position[4], texcoord0[2], texcoord1[2];
@@ -153,7 +156,7 @@ static MTLRenderPipelineDescriptor *descriptor(A5MaliMetalLibrary *library,
         d.vertexDescriptor.layouts[layout->index].stepFunction=layout->stepFunction;
         d.vertexDescriptor.layouts[layout->index].stepRate=layout->stepRate;
     }
-    assert(profile->attachmentContractCount==1&&profile->colorFormats[0]==MTLPixelFormatBGRA8Unorm);
+    assert(profile->attachmentContractCount==(profile->profileID==602?2u:1u)&&profile->colorFormats[0]==MTLPixelFormatBGRA8Unorm);
     for(unsigned i=0;i<8;++i){
         const A5MaliCompiledAttachmentState *state=&profile->attachmentContracts[0].attachments[i];
         MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[i];
@@ -219,7 +222,7 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     memcpy(vertices.contents,s->vertices,sizeof(s->vertices)); /* shared buffer captured at commit */
     return command;
 }
-static int run(uint32_t profileID)
+static int run(uint32_t profileID,BOOL blend)
 {
     State s={0};
     @autoreleasepool{
@@ -241,7 +244,26 @@ static int run(uint32_t profileID)
             [NSString stringWithUTF8String:path]]error:&error];assert(library&&!error);
         if(profileID==602)verifyVertex602Factory(library,&s);
         MTLRenderPipelineDescriptor *d=descriptor(library,s.profile,NO,&error);assert(d&&!error);
+        if(blend){
+            assert(profileID==602);
+            MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[0];
+            a.blendingEnabled=YES;a.destinationRGBBlendFactor=a.destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
+            /* Reject superficially similar straight-alpha, additive, alpha-only,
+             * reverse-subtract and unattached-target states before transport. */
+            for(unsigned fault=0;fault<6;++fault){
+                MTLRenderPipelineDescriptor *bad=[d copy];
+                if(fault==0)bad.colorAttachments[0].sourceRGBBlendFactor=MTLBlendFactorSourceAlpha;
+                if(fault==1)bad.colorAttachments[0].destinationRGBBlendFactor=MTLBlendFactorOne;
+                if(fault==2)bad.colorAttachments[0].destinationAlphaBlendFactor=MTLBlendFactorZero;
+                if(fault==3)bad.colorAttachments[0].rgbBlendOperation=MTLBlendOperationReverseSubtract;
+                if(fault==4)bad.colorAttachments[0].writeMask=MTLColorWriteMaskAlpha;
+                if(fault==5)bad.colorAttachments[1].blendingEnabled=YES;
+                error=nil;assert(![device newRenderPipelineStateWithDescriptor:bad error:&error]&&error);
+            }
+            error=nil;
+        }
         A5MaliReadSurfCandidate *pipeline=[device newRenderPipelineStateWithDescriptor:d error:&error];
+        assert(pipeline.sourceOver==blend);
         assert(pipeline&&!error&&!s.queries&&!s.submits);
         A5MaliMetalTexture *target=[device hostTestTextureWithResource:
             (A5MaliResource){UINT64_C(0x100000001),32,32,128,A5MaliRead|A5MaliWrite}];assert(target);
@@ -261,8 +283,8 @@ static int run(uint32_t profileID)
         assert(!A5MaliResourceIsComplete(target)); /* Failed DMA storage remains quarantined. */
     }
     assert(s.releases==0); /* Timeout pages retained, matching kernel poison policy. */
-    printf("native generic%u: exact fragment specialization, authenticated native pair, original packing0, CPU snapshots, RT0-only query/submit, constant rejection and terminal/error fences passed (mock transport; no GPU pixels claimed)\n",profileID);
+    printf("native generic%u blend%u: exact fragment specialization, authenticated native pair, original packing0, CPU snapshots, RT0-only query/submit, constant rejection and terminal/error fences passed (mock transport; no GPU pixels claimed)\n",profileID,blend);
     return 0;
 }
 
-int main(void) { assert(!run(600));assert(!run(601));assert(!run(602));puts("generic CPF, CPH and specialized-vertex native wrapper paths passed; GPU pixels unverified");return 0; }
+int main(void) { assert(!run(600,NO));assert(!run(601,NO));assert(!run(602,NO));assert(!run(602,YES));puts("generic CPF, CPH and specialized-vertex native wrapper paths passed; GPU pixels unverified");return 0; }
