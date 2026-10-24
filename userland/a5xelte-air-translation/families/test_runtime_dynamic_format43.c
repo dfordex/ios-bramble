@@ -8,8 +8,20 @@
 #include <stdio.h>
 #include <string.h>
 void A5MaliTestDynamicFormat43(const A5MaliCompiledProfile *,unsigned,unsigned);
+void A5MaliCheckPackedVertexUpload(const uint8_t *,const uint8_t *,unsigned,uint32_t);
+void A5MaliCheckPackedVertexUpload(const uint8_t *jobs,const uint8_t *expected,unsigned n,uint32_t jobVA){
+ pan_unpack((const struct mali_attribute_buffer_packed*)(jobs+0x900),ATTRIBUTE_BUFFER,buffer);
+ pan_unpack((const struct mali_attribute_packed*)(jobs+0x800),ATTRIBUTE,position);
+ pan_unpack((const struct mali_attribute_packed*)(jobs+0x808),ATTRIBUTE,color);
+ assert(buffer.stride==16&&color.offset==position.offset+8);
+ assert(position.format==((MALI_RG32F<<12)|(MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9))));
+ assert(color.format==((MALI_RGBA16F<<12)|0x688));
+ assert(buffer.size==n+position.offset&&buffer.pointer>=jobVA);
+ uint64_t offset=buffer.pointer-jobVA+position.offset;
+ assert(offset<=A5RuntimeJobBytes&&n<=A5RuntimeJobBytes-offset&&!memcmp(jobs+offset,expected,n));
+}
 void A5MaliTestDynamicFormat43(const A5MaliCompiledProfile*p,unsigned format,unsigned blend){
- static uint8_t uniforms[2][31][4096],vertices[192],jobs[A5RuntimeJobBytes],baseline[A5RuntimeJobBytes];
+ static uint8_t uniforms[2][31][4096],vertices[8192],jobs[A5RuntimeJobBytes],baseline[A5RuntimeJobBytes];
  A5RuntimeMiscDraw m={0};m.draw.profile=p;m.draw.descriptorGPUVA=0x02000000;
  m.draw.vertexCount=4;m.draw.primitive=A5RuntimeTriangleStrip;m.draw.blend=blend;
  m.draw.viewportWidth=m.draw.scissorWidth=17;m.draw.viewportHeight=m.draw.scissorHeight=9;m.draw.viewportFar=1;
@@ -21,7 +33,8 @@ void A5MaliTestDynamicFormat43(const A5MaliCompiledProfile*p,unsigned format,uns
   else if(r->kind==A5MaliResourceTexture)m.fragmentTextures[r->metalIndex]=(A5RuntimeImage){0x06000000+0x100000*r->nativeIndex,p->profileID==606?1024:4096,32,32,p->profileID==606?32:128,p->profileID==606?1:80};
   else if(r->kind==A5MaliResourceSampler&&!(r->flags&A5MaliResourceImmutableSampler))m.fragmentSamplers[r->metalIndex]=(A5RuntimeSampler){.valid=1,.normalizedCoordinates=1,.maxAnisotropy=1};
  }
- m.draw.vertexBuffers[1]=(A5RuntimeBuffer){0,sizeof(vertices),0,vertices};
+ unsigned vertexBytes=A5MaliRuntimeVertexSpan(p,4);assert(vertexBytes&&vertexBytes<=sizeof(vertices));
+ m.draw.vertexBuffers[1]=(A5RuntimeBuffer){0,vertexBytes,0,vertices};
  assert(A5MaliEncodeRuntimeMiscPass(&m,jobs,sizeof(jobs))==A5RuntimeOK);
  assert(!memcmp(jobs+0x6000,p->passes[0].vertex.bytes,p->passes[0].vertex.byteCount));
  assert(!memcmp(jobs+0x8000,p->passes[0].fragment.bytes,p->passes[0].fragment.byteCount));
@@ -35,15 +48,29 @@ void A5MaliTestDynamicFormat43(const A5MaliCompiledProfile*p,unsigned format,uns
   unsigned compact=!!(p->flags&A5MaliProfileVertexColorOnly),dual=!!(p->flags&A5MaliProfileVertexTwoUV);
   unsigned colorSlot=compact?1:dual?3:2;
   pan_unpack((const struct mali_attribute_packed*)(jobs+0x800+8*colorSlot),ATTRIBUTE,color);
-  assert(color.buffer_index==position.buffer_index&&color.offset==position.offset+32);
+  unsigned offsets[4]={0};
+  for(unsigned i=0;i<p->attributeCount;i++)offsets[p->attributes[i].index]=p->attributes[i].offset;
+  assert(color.buffer_index==position.buffer_index&&color.offset==position.offset-offsets[0]+offsets[3]);
   assert(color.format==((MALI_RGBA16F<<12)|0x688));
   if(!compact){
    pan_unpack((const struct mali_attribute_packed*)(jobs+0x808),ATTRIBUTE,uv0);
-   assert(uv0.offset==position.offset+16&&uv0.format==((MALI_RG32F<<12)|rg));
+   assert(uv0.offset==position.offset-offsets[0]+offsets[1]&&uv0.format==((MALI_RG32F<<12)|rg));
   }
   if(dual){
    pan_unpack((const struct mali_attribute_packed*)(jobs+0x810),ATTRIBUTE,uv1);
-   assert(uv1.offset==position.offset+24&&uv1.format==((MALI_RG32F<<12)|rg));
+   assert(uv1.offset==position.offset-offsets[0]+offsets[2]&&uv1.format==((MALI_RG32F<<12)|rg));
+  }
+  pan_unpack((const struct mali_attribute_buffer_packed*)(jobs+0x900),ATTRIBUTE_BUFFER,vertexBuffer);
+  assert(vertexBuffer.stride==p->layouts[0].stride);
+  if(p->flags&A5MaliProfileFragmentNoTextures){
+   pan_unpack((const struct mali_draw_packed*)(jobs+0x140),DRAW,draw);
+   pan_unpack((const struct mali_renderer_state_packed*)(jobs+0x540),RENDERER_STATE,fragment);
+   assert(!draw.textures&&!draw.samplers&&draw.varyings&&draw.varying_buffers);
+   assert(!fragment.shader.texture_count&&!fragment.shader.sampler_count&&fragment.shader.varying_count);
+   A5MaliCompiledProfile bad=*p;bad.flags&=~A5MaliProfileFragmentNoTextures;
+   assert(!A5MaliDynamicRuntimeProfileSupported(&bad));
+   bad=*p;bad.flags|=A5MaliProfileFragmentColorOnly;
+   assert(!A5MaliDynamicRuntimeProfileSupported(&bad));
   }
  }
  check_preload(jobs,m.draw.descriptorGPUVA,m.colorAttachments);
@@ -58,6 +85,9 @@ void A5MaliTestDynamicFormat43(const A5MaliCompiledProfile*p,unsigned format,uns
  assert(rs.stencil_mask_misc.dither_disable);
  assert(rs.multisample_misc.load_destination==!!(blend||(p->flags&A5MaliProfileFramebufferFetch)));
  memcpy(baseline,jobs,sizeof(jobs));
+ m.draw.vertexBuffers[1].bytes--;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,jobs,sizeof(jobs))==A5RuntimeBounds);
+ m.draw.vertexBuffers[1].bytes++;
  /* Exact byte span and native 16-byte row alignment are separate gates. */
  m.colorAttachments[0].bytes--;
  assert(A5MaliEncodeRuntimeMiscPass(&m,jobs,sizeof(jobs))==A5RuntimeBounds);

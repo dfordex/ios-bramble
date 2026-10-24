@@ -222,9 +222,10 @@ static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch
     *reason=@"fragment.native-texture-liveness-or-no-input-fetch";
     if(![live isKindOfClass:NSArray.class]||
        (textureCount?(!live.count||*noInputs):live.count))return NO;
-    /* Untextured VAR0 is the colour exported by the compact QC vertex ABI.
-     * Its exact vec4 lanes/base are checked below; zero textures never imply UV. */
-    *colorOnly=!textureCount&&!*noInputs;
+    /* A compact untextured VAR0 is color only when its reflected lanes match
+     * vec4. Zero sampled images can also describe a procedural UV shader. */
+    unsigned colorLocations[]={32},colorBases[]={0},colorMasks[]={15};
+    *colorOnly=!textureCount&&!*noInputs&&ioShape(io,colorLocations,colorBases,colorMasks,1);
     unsigned mask33=0;*twoUV=NO;
     for(NSDictionary *r in io){
         unsigned loc=[r[@"location"] unsignedIntValue],c=[r[@"component"] unsignedIntValue],n=[r[@"components"] unsignedIntValue];
@@ -423,15 +424,22 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     /* Native attribute locations are compacted by the compiler. Metal keeps
      * position/UV0/UV1/color at indices 0/1/2/3: color remains index3 even when
      * native location1 is color. Require every consumed Metal field, while
-     * allowing absent unused UV fields. Present unused fields still receive
-     * the same exact packing checks as the legacy four-field descriptor. */
-    const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
+     * allowing absent unused UV fields. The native formats remain fixed by
+     * the reflected ABI, while byte offsets/stride come from this descriptor.
+     * The independent emitter gate validates alignment and complete spans. */
+    const unsigned formats[]={31,29,29,27};
+    NSUInteger stride=d.vertexDescriptor.layouts[1].stride;
+    if(stride<8||stride>2048||(stride&3))
+        return rejectPipeline(vf,ff,@"descriptor.vertex-stride",unsupported(@"vertex stride requires 8..2048 bytes, aligned to 4"),error);
     unsigned attributeCount=0,requiredAttributes=vertexColorOnly?0x9u:vertexTwoUV?0xfu:0xbu;
     for(unsigned i=0;i<4;++i)if((requiredAttributes&(1u<<i))||
-        d.vertexDescriptor.attributes[i].format!=MTLVertexFormatInvalid)
-        e->_attributes[attributeCount++]=(A5MaliCompiledVertexAttribute){i,formats[i],offsets[i],1};
+        d.vertexDescriptor.attributes[i].format!=MTLVertexFormatInvalid){
+        NSUInteger offset=d.vertexDescriptor.attributes[i].offset;
+        if(offset>2048)return rejectPipeline(vf,ff,@"descriptor.vertex-offset",unsupported(@"vertex field offset exceeds native stride bounds"),error);
+        e->_attributes[attributeCount++]=(A5MaliCompiledVertexAttribute){i,formats[i],(uint32_t)offset,1};
+    }
     if(d.vertexDescriptor.attributes[0].format==MTLVertexFormatFloat2)e->_attributes[0].format=29;
-    e->_layout=(A5MaliCompiledVertexLayout){1,48,1,1};
+    e->_layout=(A5MaliCompiledVertexLayout){1,(uint32_t)stride,1,1};
     for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i){unsigned over=c==1&&i==0;
         e->_attachments[c].attachments[i]=(A5MaliCompiledAttachmentState){15,over,0,0,1,over?5u:0u,1,over?5u:0u};}
     unsigned immutableCount=fs?fs.immutableSamplerCount:0;
@@ -440,7 +448,8 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     e->_profile=(A5MaliCompiledProfile){.profileID=A5MaliDynamicProfileID,.name="dynamic-reflected-QC",
         .vertexName=e->_vertexName.UTF8String,.fragmentName=e->_fragmentName.UTF8String,
         .colorFormats={(uint32_t)target},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
-            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0)|(vertexTwoUV?A5MaliProfileVertexTwoUV:0)|(fragmentTwoUV?A5MaliProfileFragmentTwoUV:0)|(fragmentColorOnly?A5MaliProfileFragmentColorOnly:0),.passes=&e->_pass,.passCount=1,
+            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0)|(vertexTwoUV?A5MaliProfileVertexTwoUV:0)|(fragmentTwoUV?A5MaliProfileFragmentTwoUV:0)|(fragmentColorOnly?A5MaliProfileFragmentColorOnly:0)|
+            (fs&&!noInputs&&!fragmentColorOnly&&![fs.nativeABI[@"native_info"][@"textures"] unsignedIntValue]?A5MaliProfileFragmentNoTextures:0),.passes=&e->_pass,.passCount=1,
         .resources=e->_resources,.resourceCount=resourceCount,.pushFields=e->_pushes,.pushFieldCount=pushCount,
         .attributes=e->_attributes,.attributeCount=attributeCount,.layouts=&e->_layout,.layoutCount=1,
         .attachmentContracts=e->_attachments,.attachmentContractCount=2,.immutableSamplers=e->_samplers,.immutableSamplerCount=immutableCount};
@@ -454,8 +463,8 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     if(mismatch)return rejectPipeline(vf,ff,@"descriptor.contract",unsupported(descriptorRejection(&e->_profile,d,mismatch)),error);
     static unsigned acceptedDiagnostics=0;
     if(__atomic_fetch_add(&acceptedDiagnostics,1,__ATOMIC_RELAXED)<32)fprintf(stderr,
-        "A5XELTE Metal dynamic link: accepted vertex=%s vertex_profile=%u vertex_dynamic=%u vertex_abi=%s fragment=%s fragment_profile=%u fragment_dynamic=%u fs_no_inputs=%u fetch=%u\n",
+        "A5XELTE Metal dynamic link: accepted vertex=%s vertex_profile=%u vertex_dynamic=%u vertex_abi=%s fragment=%s fragment_profile=%u fragment_dynamic=%u fs_no_inputs=%u fetch=%u vertex_stride=%u vertex_fields=%u\n",
         vf.name.UTF8String,vf.specializationProfileID,!!vs,vertexColorOnly?"position-color":vertexTwoUV?"position-two-uv-color":"position-uv-color",
-        ff.name.UTF8String,ff.specializationProfileID,!!fs,noInputs,fetch);
+        ff.name.UTF8String,ff.specializationProfileID,!!fs,noInputs,fetch,e->_layout.stride,attributeCount);
     return e;
 }

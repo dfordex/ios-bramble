@@ -359,7 +359,7 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
 static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(p->profileID!=A5MaliDynamicProfileID||
     !(p->flags&A5MaliProfileDynamicStages)||
-    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV|A5MaliProfileFragmentColorOnly))||
+    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV|A5MaliProfileFragmentColorOnly|A5MaliProfileFragmentNoTextures))||
     !(p->flags&A5MaliProfileSourceOverBlend)||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
@@ -369,19 +369,21 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
     !p->pushFieldCount||p->pushFieldCount>16||!p->pushFields||
     p->attachmentContractCount!=2||!p->attachmentContracts)return 0;
  for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return 0;
- static const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
+ static const unsigned formats[]={31,29,29,27};
+ const A5MaliCompiledVertexLayout*l=p->layouts;
+ if(l->index!=1||l->stride<8||l->stride>2048||(l->stride&3)||l->stepFunction!=1||l->stepRate!=1)return 0;
  unsigned attributeMask=0,requiredAttributes=(p->flags&A5MaliProfileVertexColorOnly)?0x9u:
   (p->flags&A5MaliProfileVertexTwoUV)?0xfu:0xbu;
  for(unsigned i=0;i<p->attributeCount;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
   unsigned index=a->index;
   if(index>=4||(i&&index<=p->attributes[i-1].index)||
      (a->format!=formats[index]&&(index||a->format!=29))||
-     a->offset!=offsets[index]||a->bufferIndex!=1)return 0;
+     a->bufferIndex!=1)return 0;
+  unsigned width=a->format==31?16:8,alignment=index==3?2:4;
+  if(a->offset%alignment||a->offset>l->stride||width>l->stride-a->offset)return 0;
   attributeMask|=1u<<index;
  }
  if((attributeMask&requiredAttributes)!=requiredAttributes)return 0;
- const A5MaliCompiledVertexLayout*l=p->layouts;
- if(l->index!=1||l->stride!=48||l->stepFunction!=1||l->stepRate!=1)return 0;
  unsigned textures=0,samplers=0,fetches=0;uint32_t textureBindings[4]={0},samplerBindings[4]={0};
  uint32_t bindings[2]={0},slots[2]={0},descriptorBindings[2]={0};
  for(unsigned i=0;i<p->resourceCount;++i){const A5MaliCompiledResource*r=p->resources+i;
@@ -417,6 +419,7 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(!!(p->flags&A5MaliProfileFramebufferFetch)!=(fetches==1))return 0;
  if((p->flags&A5MaliProfileVertexColorOnly)&&(!(p->flags&(A5MaliProfileFragmentNoInputs|A5MaliProfileFragmentColorOnly))||(p->flags&A5MaliProfileVertexTwoUV)))return 0;
  if((p->flags&A5MaliProfileFragmentTwoUV)&&(!(p->flags&A5MaliProfileVertexTwoUV)||(p->flags&A5MaliProfileFragmentNoInputs)))return 0;
+ if((p->flags&A5MaliProfileFragmentNoTextures)&&(p->flags&(A5MaliProfileFragmentNoInputs|A5MaliProfileFragmentColorOnly)))return 0;
  if(p->flags&A5MaliProfileFragmentNoInputs){
   /* Constant and ordered-fetch shaders both have genuine empty interpolant
    * tables. Fetch is independently matched to a real input-attachment above. */
@@ -425,6 +428,8 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  }else if(p->flags&A5MaliProfileFragmentColorOnly){
   if(textures||samplers||!(p->flags&A5MaliProfileDynamicColorVarying)||
      (p->flags&(A5MaliProfileFragmentPosition|A5MaliProfileFragmentTwoUV)))return 0;
+ }else if(p->flags&A5MaliProfileFragmentNoTextures){
+  if(textures||samplers)return 0;
  }else if(!textures||textures!=samplers)return 0;
  for(unsigned i=0;i<4;i++)if((textures&(1u<<i))&&textureBindings[i]!=samplerBindings[i])return 0;
  unsigned immutableMask=0,constantMask=0;
@@ -467,6 +472,24 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
 }
 int A5MaliDynamicRuntimeProfileSupported(const A5MaliCompiledProfile*p){
  return p&&dynamic_textured_contract(p);
+}
+uint32_t A5MaliRuntimeVertexSpan(const A5MaliCompiledProfile*p,uint32_t count){
+ if(!p||!count||count>A5RuntimeMaxVertices)return 0;
+ if(p->profileID!=A5MaliDynamicProfileID)return count*48;
+ if(!dynamic_textured_contract(p))return 0;
+ unsigned extent=0;
+ for(unsigned i=0;i<p->attributeCount;i++){
+  const A5MaliCompiledVertexAttribute*a=p->attributes+i;
+  unsigned end=a->offset+(a->format==31?16:8);if(end>extent)extent=end;
+ }
+ uint64_t bytes=(uint64_t)(count-1)*p->layouts[0].stride+extent;
+ return bytes<=UINT32_MAX?(uint32_t)bytes:0;
+}
+static unsigned vertex_offset(const A5MaliCompiledProfile*p,unsigned index){
+ static const unsigned legacy[]={0,16,24,32};
+ if(p->profileID!=A5MaliDynamicProfileID)return legacy[index];
+ for(unsigned i=0;i<p->attributeCount;i++)if(p->attributes[i].index==index)return p->attributes[i].offset;
+ return 0; /* Only called for fields required by the validated native ABI. */
 }
 static unsigned dynamic_ubo_count(const A5MaliCompiledProfile*p,unsigned stage){
  unsigned count=1;
@@ -531,16 +554,18 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
  }
  if(home||generic_color||generic_textured){
   uint64_t vertex;unsigned push,available;
-  if(!bind_buffer(m,d,&arena,&r->vertexBuffers[1],r->vertexCount*48,&vertex,&push,&available))return A5RuntimeBounds;
+  unsigned vertexBytes=A5MaliRuntimeVertexSpan(p,r->vertexCount);
+  unsigned stride=p->profileID==A5MaliDynamicProfileID?p->layouts[0].stride:48;
+  if(!vertexBytes||!bind_buffer(m,d,&arena,&r->vertexBuffers[1],vertexBytes,&vertex,&push,&available))return A5RuntimeBounds;
   vertex+=push;unsigned low=(unsigned)(vertex&63);vertex&=~UINT64_C(63);
   attr(d,ATTRS,0,p->attributes[0].format==29?MALI_RG32F:MALI_RGBA32F,
-       p->attributes[0].format==29?RG_SWIZZLE:0x688,low);
-  if(generic_color||(p->flags&A5MaliProfileVertexColorOnly))attr(d,ATTRS+8,0,MALI_RGBA16F,0x688,low+32);
-  else{attr(d,ATTRS+8,0,MALI_RG32F,RG_SWIZZLE,low+16);
-   if(p->flags&A5MaliProfileVertexTwoUV){attr(d,ATTRS+16,0,MALI_RG32F,RG_SWIZZLE,low+24);attr(d,ATTRS+24,0,MALI_RGBA16F,0x688,low+32);}
-   else attr(d,ATTRS+16,0,MALI_RGBA16F,0x688,low+32);
+       p->attributes[0].format==29?RG_SWIZZLE:0x688,low+vertex_offset(p,0));
+  if(generic_color||(p->flags&A5MaliProfileVertexColorOnly))attr(d,ATTRS+8,0,MALI_RGBA16F,0x688,low+vertex_offset(p,3));
+  else{attr(d,ATTRS+8,0,MALI_RG32F,RG_SWIZZLE,low+vertex_offset(p,1));
+   if(p->flags&A5MaliProfileVertexTwoUV){attr(d,ATTRS+16,0,MALI_RG32F,RG_SWIZZLE,low+vertex_offset(p,2));attr(d,ATTRS+24,0,MALI_RGBA16F,0x688,low+vertex_offset(p,3));}
+   else attr(d,ATTRS+16,0,MALI_RGBA16F,0x688,low+vertex_offset(p,3));
   }
-  buf(d,ATTR_BUFS,vertex,48,r->vertexCount*48+low);
+  buf(d,ATTR_BUFS,vertex,stride,vertexBytes+low);
   if(generic_textured){int rc=(p->profileID==A5MaliDynamicProfileID&&!dynamic_legacy_texture(m))?dynamic_images(d,m):textured_image(d,m);if(rc)return rc;}
   if(home)for(unsigned t=0;t<2;++t){const A5RuntimeImage*im=&m->fragmentTextures[t+3];unsigned tex=t?TEX1:TEX0;
    if(!valid_image(im)||im->metalPixelFormat!=80)return A5RuntimeUnsupported;
@@ -751,7 +776,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   struct MALI_DRAW draw;MALI_DRAW_unpack((const struct mali_draw_packed*)(d+0x140),&draw);
   if(p->flags&A5MaliProfileFragmentNoInputs){
    draw.textures=0;draw.samplers=0;draw.varyings=0;draw.varying_buffers=0;
-  }else if(p->flags&A5MaliProfileFragmentColorOnly){
+  }else if(p->flags&(A5MaliProfileFragmentColorOnly|A5MaliProfileFragmentNoTextures)){
    draw.textures=0;draw.samplers=0;
   }else{
    draw.textures=r->descriptorGPUVA+DYNAMIC_TEX_TABLE;draw.samplers=r->descriptorGPUVA+DYNAMIC_SAMPLERS;

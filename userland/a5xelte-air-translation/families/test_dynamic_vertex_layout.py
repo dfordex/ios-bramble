@@ -16,6 +16,7 @@ def main():
     vertex = parser.add_mutually_exclusive_group(required=True)
     vertex.add_argument('--vertex-request', type=Path)
     vertex.add_argument('--static-vertex603', action='store_true')
+    parser.add_argument('--pipeline-request', type=Path)
     a = parser.parse_args()
     here = Path(__file__).resolve().parent
     provider = here.parents[1] / 'a5mali-metal'
@@ -45,13 +46,16 @@ def main():
                *objects, '-framework', 'Foundation', '-framework', 'Metal',
                '-framework', 'IOSurface', '-framework', 'IOKit', '-o', str(exe)]
     subprocess.run(command, check=True)
-    result = subprocess.run([str(exe), str(a.vertex_request.resolve()) if a.vertex_request else 'static603', str(a.fragment_request.resolve())],
+    args = [str(exe), str(a.vertex_request.resolve()) if a.vertex_request else 'static603', str(a.fragment_request.resolve())]
+    if a.pipeline_request:
+        args.append(str(a.pipeline_request.resolve()))
+    result = subprocess.run(args,
                             env=dict(os.environ, A5_MALI_STOCK_QUARTZCORE_METALLIB=str(a.stock.resolve())),
                             text=True, capture_output=True)
     (out / 'test.log').write_text(result.stdout + result.stderr)
     assert result.returncode == 0, result.stdout + result.stderr
     (out / 'result.json').write_text(json.dumps({'host_replay_pass': True,
-        'real_compiled_stages': True, 'mask_cases': 16, 'position_formats': [29, 31],
+        'real_compiled_stages': True, 'mask_cases': 16, 'packing_cases': 4, 'position_formats': [29, 31],
         'target_formats': [80, 43], 'blend_modes': [0, 1],
         'physical_gpu_result': 'pending'}, indent=2) + '\n')
     print(result.stdout.strip())

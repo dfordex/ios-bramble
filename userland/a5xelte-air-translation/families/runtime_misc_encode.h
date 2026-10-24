@@ -41,6 +41,10 @@ typedef struct {
  * Generic texture profile603 uses the snapshotted Sampler0 and accepts only
  * its separately compiled ClampToEdge specialization. */
 int A5MaliDynamicRuntimeProfileSupported(const A5MaliCompiledProfile *);
+/* Exact byte span of the consumed interleaved vertex records. Dynamic
+ * layouts use the application's stride/offsets, including the last field;
+ * legacy static profiles preserve their original 48-byte record contract. */
+uint32_t A5MaliRuntimeVertexSpan(const A5MaliCompiledProfile *,uint32_t count);
 int A5MaliEncodeRuntimeMiscPass(const A5RuntimeMiscDraw *, void *, size_t);
 #ifdef __cplusplus
 }

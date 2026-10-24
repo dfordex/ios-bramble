@@ -120,7 +120,7 @@ int main(int argc,char**argv){@autoreleasepool{
  for(unsigned fault=0;fault<5;fault++){
   NSMutableDictionary *abi=[original mutableCopy];
   if(fault==0)abi[@"inputs"]=@[@{@"location":@32,@"base":@1,@"component":@0,@"components":@4,@"bit_size":@32}];
-  if(fault==1)abi[@"inputs"]=@[@{@"location":@32,@"base":@0,@"component":@0,@"components":@2,@"bit_size":@32}];
+  if(fault==1)abi[@"inputs"]=@[@{@"location":@32,@"base":@0,@"component":@0,@"components":@3,@"bit_size":@32}]; /* Neither supported UV2 nor color4. */
   if(fault==2)abi[@"framebuffer_fetch"]=@(![original[@"framebuffer_fetch"] boolValue]);
   if(fault==3){NSMutableDictionary *n=[abi[@"native_info"] mutableCopy];n[@"textures"]=@1;n[@"samplers"]=@1;abi[@"native_info"]=n;}
   if(fault==4)abi[@"outputs"]=@[@{@"location":@4,@"base":@0,@"component":@0,@"components":@3,@"bit_size":@32}];

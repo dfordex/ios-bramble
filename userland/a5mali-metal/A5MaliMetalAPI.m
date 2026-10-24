@@ -1668,7 +1668,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         [NSMutableArray arrayWithObjects:[NSMutableSet new],[NSMutableSet new],nil];
     NSArray<NSMutableSet<NSNumber *> *> *paddedSlots=@[[NSMutableSet new],[NSMutableSet new]];
     if(profile->profileID==206 || (profile->profileID>=600 && profile->profileID<=606) || profile->profileID==A5MaliDynamicProfileID)
-        windows[0][@1]=@((indexed?1:count)*48);
+        windows[0][@1]=@(A5MaliRuntimeVertexSpan(profile,(uint32_t)(indexed?1:count)));
     for(uint32_t i=0;i<profile->resourceCount;++i){const A5MaliCompiledResource*r=profile->resources+i;
         if(r->kind!=A5MaliResourceBuffer)continue;
         if(r->metalIndex>=31 || r->windowOffset || (r->flags&A5MaliResourceWrite) ||
@@ -1715,7 +1715,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 }
                 submittedVertexCount=(NSUInteger)maximum+1;
                 A5MaliBufferBinding *vertices=bindings[0][@1];
-                if(vertices.length<submittedVertexCount*48)return kIOReturnBadArgument;
+                if(vertices.length<A5MaliRuntimeVertexSpan(profile,(uint32_t)submittedVertexCount))return kIOReturnBadArgument;
                 if(diagnosticTake(&indexedDrawDiagnosticCount,32))fprintf(stderr,
                     "A5XELTE Metal indexed: cb=%u profile=%u indices=%lu width=%lu offset=%lu vertices=%lu\n",
                     diagnosticID,profile->profileID,(unsigned long)indexCount,(unsigned long)indexSize,
@@ -1793,7 +1793,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                     A5RuntimeBuffer native={0};
                     if(!handle){
                         NSUInteger required=(indexed && !stage && slot.unsignedIntegerValue==1)?
-                            submittedVertexCount*48:windows[stage][slot].unsignedIntegerValue;
+                            A5MaliRuntimeVertexSpan(profile,(uint32_t)submittedVertexCount):windows[stage][slot].unsignedIntegerValue;
                         NSData *data=nil;
                         if(pad&&binding.privateKernelHandle){
                             NSMutableData *copy=[NSMutableData dataWithLength:required];
@@ -1803,7 +1803,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                         }else data=[binding capturePrefixBytesForSubmission:required error:NULL];
                         if(!data)return kIOReturnBadArgument;
                         if(!stage && slot.unsignedIntegerValue==1 &&
-                           (profile->profileID==602 || textured) &&
+                           (profile->profileID==602 || textured) && profile->profileID!=A5MaliDynamicProfileID &&
                            diagnosticTake(&inputVertexDiagnosticCount,8)){
                             NSUInteger rgb=0,alpha=0,finite=0,zeroW=0;
                             float minUV[2]={INFINITY,INFINITY},maxUV[2]={-INFINITY,-INFINITY};
@@ -1841,10 +1841,10 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                     else command.draw.vertexBuffers[slot.unsignedIntegerValue]=native;
                 }
             __attribute__((objc_precise_lifetime)) NSArray *retainSnapshots=snapshots;(void)retainSnapshots;
-            if(textured && diagnosticTake(&inputUVDiagnosticCount,8)){
+            if(textured && profile->profileID!=A5MaliDynamicProfileID && diagnosticTake(&inputUVDiagnosticCount,8)){
                 const A5RuntimeBuffer *v=&command.draw.vertexBuffers[1],*t=&command.draw.vertexBuffers[3];
                 if(v->cpuBytes && t->cpuBytes && v->offset<=v->bytes && t->offset<=t->bytes &&
-                   (uint64_t)submittedVertexCount*48<=v->bytes-v->offset && 16<=t->bytes-t->offset){
+                   (uint64_t)A5MaliRuntimeVertexSpan(profile,(uint32_t)submittedVertexCount)<=v->bytes-v->offset && 16<=t->bytes-t->offset){
                     float transform[4],lo[2]={INFINITY,INFINITY},hi[2]={-INFINITY,-INFINITY};
                     memcpy(transform,t->cpuBytes+t->offset,sizeof(transform));
                     unsigned finite=0;

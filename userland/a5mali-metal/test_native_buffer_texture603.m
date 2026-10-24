@@ -211,7 +211,7 @@ static A5MaliReadSurfCandidate *pipeline(A5MaliRestrictedDevice *device,State *s
     d.vertexLinkedFunctions=linked;
     assert(![device newRenderPipelineStateWithDescriptor:d error:&error]&&error);
     d.vertexLinkedFunctions=nil;error=nil;
-    d.vertexDescriptor.attributes[0].offset=4;
+    d.vertexDescriptor.attributes[0].offset=1; /* Unaligned; aligned repacking is supported. */
     assert(![device newRenderPipelineStateWithDescriptor:d error:&error]&&error);
     d.vertexDescriptor.attributes[0].offset=0;error=nil;
 #endif
