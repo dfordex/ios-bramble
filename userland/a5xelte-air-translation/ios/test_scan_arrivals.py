@@ -103,7 +103,8 @@ int main(int argc,char **argv){
     (work / 'late.log').write_text(late.stdout + late.stderr)
     assert late.returncode == 0, late.stderr
     log = late.stderr
-    assert log.index('TEST after-initial-snapshot') < log.index('STAGE PUBLISHED stage=') < log.index('TEST old-handler'), log
+    assert log.index('TEST after-initial-snapshot') < log.index('STAGE PUBLISHED stage='), log
+    assert 'TEST old-handler' not in log and 'maintenance=0 ' in log, log
     assert 'SERVICE phase=arriving-function ' in log and 'candidates=18 ' in log, log
     assert ': RETIRED ' not in log and 'retire-prepare-begin' not in log, log
     assert not (cache / 'completed-requests').exists() and len(list(queue.glob('*.request.json'))) == 20

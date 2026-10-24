@@ -127,13 +127,12 @@ int main(int argc,char **argv){
             receipt = json.loads((published / key / 'receipt.json').read_bytes())
             assert receipt['request_id'] == key and receipt['stage_compiled'] is True
             complete = log.index('STAGE PUBLISHED stage=')
-            private_failure = log.index('STAGE FAILED stage=')
             retirement = log.index(': RETIRED request=')
-            assert complete < private_failure < retirement, log
-            assert 'candidates=64 read_rejected=1' in log, log
+            assert complete < retirement, log
+            assert 'candidates=64 ' in log and 'maintenance=1 ' in log, log
         else:
             assert 'SPAWN phase=' not in log, log
-            assert 'candidates=63 read_rejected=1' in log, log
+            assert 'candidates=63 ' in log and 'maintenance=1 ' in log, log
     assert len(list(queue.glob('*.request.json'))) == 62
     assert len(list((cache / 'completed-requests').glob('slot-*.json'))) == 2
     proof = {'queued_candidates': 64, 'pending_function_compiled_before_old_terminal_io': True,

@@ -1011,6 +1011,11 @@ static unsigned a5DispatchArrivingFunctions(NSString *self,NSArray *profiles,int
             count++;
             if([seen containsObject:key])continue;
             [seen addObject:key];(*remaining)--;
+            NSString *publication=[publishedRoot stringByAppendingPathComponent:key];
+            NSString *status=[[cacheRoot stringByAppendingPathComponent:@"request-status"]
+                stringByAppendingPathComponent:[key stringByAppendingString:@".json"]];
+            if([NSFileManager.defaultManager fileExistsAtPath:publication]||
+                [NSFileManager.defaultManager fileExistsAtPath:status])continue;
             NSData *bytes=a5ReadRequest(dir,entry->d_name,uid);
             NSDictionary *request=bytes?[NSJSONSerialization JSONObjectWithData:bytes options:0 error:NULL]:nil;
             if(![request isKindOfClass:NSDictionary.class]||![request[@"request_id"] isEqual:key]||
@@ -1034,138 +1039,133 @@ static void (*a5ScanBeforeOldHandler)(NSDictionary *);
 static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfiles)
 {
     static unsigned scans;
+    static NSString *maintenanceCursor;
     unsigned scan=++scans;
     BOOL report=scan<=8;
-    unsigned usersSeen=0,usersRejected=0,candidates=0,readRejected=0,
+    __block unsigned usersSeen=0,usersRejected=0,candidates=0,readRejected=0,
         jsonRejected=0,identityRejected=0,digestRejected=0,handled=0,capped=0;
     if(report)serviceCheckpoint("scan-begin",nil,nil);
-    int rootfd = open(requestRoot.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
-    if (rootfd < 0) {
+    int rootfd=open(requestRoot.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
+    if(rootfd<0){
         if(report)fprintf(stderr,"A5XELTE shader compiler: SCAN scan=%u root_open_errno=%d\n",scan,errno);
-        return; /* provider has not forwarded a request yet */
+        return;
     }
     struct stat rootstat;
-    if (fstat(rootfd,&rootstat) || !S_ISDIR(rootstat.st_mode) ||
-        rootstat.st_uid != geteuid() || (rootstat.st_mode & 07777) != 01777)
-        fail(@"untrusted shader request spool root");
-    DIR *users = fdopendir(dup(rootfd));
-    if (!users) fail(@"cannot enumerate request spool");
-    /* Keep the producer's existing64-candidate bound per UID. Finish reading
-     * and authenticating these bounded snapshots before any handler can sync
-     * old statuses or archive completed work. Paths below are scheduling hints
-     * only; the existing handler and retirement helper still decide trust. */
-    NSMutableArray<NSDictionary *> *snapshots=[NSMutableArray array];
+    if(fstat(rootfd,&rootstat)||!S_ISDIR(rootstat.st_mode)||rootstat.st_uid!=geteuid()||
+        (rootstat.st_mode&07777)!=01777)fail(@"untrusted shader request spool root");
+    DIR *users=fdopendir(dup(rootfd));if(!users)fail(@"cannot enumerate request spool");
+    NSMutableArray *urgentNames=[NSMutableArray array],*oldNames=[NSMutableArray array];
     NSMutableSet *seen=[NSMutableSet set];
     NSMutableDictionary *uidCandidates=[NSMutableDictionary dictionary];
     struct dirent *user;
-    while ((user=readdir(users))) {
-        NSString *component = [NSString stringWithUTF8String:user->d_name];
-        if (!component.length ||
-            [component rangeOfCharacterFromSet:
-                [NSCharacterSet.decimalDigitCharacterSet invertedSet]].location != NSNotFound)
-            continue;
-        unsigned long long number = strtoull(user->d_name,NULL,10);
-        if (number > UINT32_MAX) continue;
-        usersSeen++;
-        uid_t uid = (uid_t)number;
-        int uidfd = openat(rootfd,user->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    /* Enumerate metadata first. Never read all old request bodies before a
+     * newly queued specialization. Output/status presence is only a priority
+     * hint, never proof of identity, shader admission or terminal durability. */
+    while((user=readdir(users))){
+        NSString *component=[NSString stringWithUTF8String:user->d_name];
+        if(!component.length||[component rangeOfCharacterFromSet:
+            [NSCharacterSet.decimalDigitCharacterSet invertedSet]].location!=NSNotFound)continue;
+        unsigned long long number=strtoull(user->d_name,NULL,10);if(number>UINT32_MAX)continue;
+        usersSeen++;uid_t uid=(uid_t)number;
+        int dir=openat(rootfd,user->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
         struct stat st;
-        if (uidfd<0 || fstat(uidfd,&st) || !S_ISDIR(st.st_mode) ||
-            st.st_uid!=uid || (st.st_mode & 0777)!=0700) {
-            if (uidfd>=0) close(uidfd);
-            usersRejected++;
-            continue;
-        }
-        DIR *files = fdopendir(dup(uidfd));
-        if (!files) { usersRejected++; close(uidfd); continue; }
-        unsigned count=0;
-        struct dirent *entry;
-        while ((entry=readdir(files)) && count<64) {
-            NSString *name = [NSString stringWithUTF8String:entry->d_name];
-            if (![name hasSuffix:@".request.json"] || name.length != 77) continue;
-            NSString *key = [name substringToIndex:64];
-            if (!a5HexDigest(key)) continue;
-            count++;
-            candidates++;
-            [seen addObject:key];
-            NSData *bytes = a5ReadRequest(uidfd,entry->d_name,uid);
-            if (!bytes) { readRejected++; continue; }
-            id parsed = [NSJSONSerialization JSONObjectWithData:bytes options:0 error:NULL];
-            if (![parsed isKindOfClass:NSDictionary.class]) { jsonRejected++; continue; }
-            NSDictionary *request = parsed;
-            if (![request[@"request_id"] isEqual:key] ||
-                ![request[@"owner_uid"] isEqual:@(uid)]) { identityRejected++; continue; }
-            NSMutableDictionary *body = [request mutableCopy];
-            [body removeObjectForKey:@"request_id"];
-            NSData *canonical = a5Canonical(body);
-            if (!canonical || ![digest(canonical) isEqual:key]) { digestRejected++; continue; }
-            [snapshots addObject:@{@"user":component,@"uid":@(uid),@"name":name,
-                @"request":request,@"bytes":bytes}];
+        if(dir<0||fstat(dir,&st)||!S_ISDIR(st.st_mode)||st.st_uid!=uid||(st.st_mode&0777)!=0700){
+            if(dir>=0)close(dir);usersRejected++;continue;}
+        DIR *files=fdopendir(dup(dir));if(!files){usersRejected++;close(dir);continue;}
+        unsigned count=0;struct dirent *entry;
+        while(count<64&&(entry=readdir(files))){
+            NSString *name=[NSString stringWithUTF8String:entry->d_name];
+            if(![name hasSuffix:@".request.json"]||name.length!=77)continue;
+            NSString *key=[name substringToIndex:64];if(!a5HexDigest(key))continue;
+            count++;candidates++;[seen addObject:key];
+            NSDictionary *meta=@{@"user":component,@"uid":@(uid),@"name":name,@"key":key,
+                @"token":[component stringByAppendingFormat:@"/%@",key]};
+            NSString *publication=[publishedRoot stringByAppendingPathComponent:key];
+            NSString *status=[[cacheRoot stringByAppendingPathComponent:@"request-status"]
+                stringByAppendingPathComponent:[key stringByAppendingString:@".json"]];
+            if([NSFileManager.defaultManager fileExistsAtPath:publication]||
+                [NSFileManager.defaultManager fileExistsAtPath:status])[oldNames addObject:meta];
+            else [urgentNames addObject:meta];
         }
         if(count==64)capped++;
-        uidCandidates[component]=@(count);
-        closedir(files); close(uidfd);
+        uidCandidates[component]=@(count);closedir(files);close(dir);
     }
     closedir(users);
 #ifdef A5_SHADER_SCAN_HOST_TEST
     if(a5ScanAfterSnapshot)a5ScanAfterSnapshot();
 #endif
-    unsigned arrivalBudget=64,arrivals=0;
-    NSMutableArray<NSDictionary *> *freshFunctions=[NSMutableArray array],
-        *statusFunctions=[NSMutableArray array],*publishedFunctions=[NSMutableArray array],
-        *otherRequests=[NSMutableArray array];
-    for(NSDictionary *snapshot in snapshots){
-        NSDictionary *request=snapshot[@"request"];NSString *key=request[@"request_id"];
-        if(![request[@"kind"] isEqual:@"function"]){[otherRequests addObject:snapshot];continue;}
-        NSString *publication=[publishedRoot stringByAppendingPathComponent:key];
-        NSString *status=[[cacheRoot stringByAppendingPathComponent:@"request-status"]
-            stringByAppendingPathComponent:[key stringByAppendingString:@".json"]];
-        if([NSFileManager.defaultManager fileExistsAtPath:publication])
-            [publishedFunctions addObject:snapshot];
-        else if([NSFileManager.defaultManager fileExistsAtPath:status])
-            [statusFunctions addObject:snapshot];
-        else [freshFunctions addObject:snapshot];
+    NSDictionary *(^readSnapshot)(NSDictionary *)=^NSDictionary *(NSDictionary *meta){
+        uid_t uid=[meta[@"uid"]unsignedIntValue];NSString *key=meta[@"key"];
+        int dir=openat(rootfd,[meta[@"user"]fileSystemRepresentation],O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+        struct stat st;NSData *bytes=nil;
+        if(dir>=0&&!fstat(dir,&st)&&S_ISDIR(st.st_mode)&&st.st_uid==uid&&(st.st_mode&0777)==0700)
+            bytes=a5ReadRequest(dir,[meta[@"name"]fileSystemRepresentation],uid);
+        if(dir>=0)close(dir);
+        if(!bytes){readRejected++;return nil;}
+        NSDictionary *request=[NSJSONSerialization JSONObjectWithData:bytes options:0 error:NULL];
+        if(![request isKindOfClass:NSDictionary.class]){jsonRejected++;return nil;}
+        if(![request[@"request_id"]isEqual:key]||![request[@"owner_uid"]isEqual:@(uid)]){
+            identityRejected++;return nil;}
+        NSMutableDictionary *body=[request mutableCopy];[body removeObjectForKey:@"request_id"];
+        NSData *canonical=a5Canonical(body);
+        if(!canonical||![digest(canonical)isEqual:key]){digestRejected++;return nil;}
+        NSMutableDictionary *snapshot=[meta mutableCopy];snapshot[@"request"]=request;snapshot[@"bytes"]=bytes;
+        return snapshot;
+    };
+    NSMutableArray *functions=[NSMutableArray array],*others=[NSMutableArray array],*completed=[NSMutableArray array];
+    for(NSDictionary *meta in urgentNames){
+        NSDictionary *snapshot=readSnapshot(meta);if(!snapshot)continue;
+        if([snapshot[@"request"][@"kind"]isEqual:@"function"])[functions addObject:snapshot];
+        else [others addObject:snapshot];
     }
-    for(NSArray *batch in @[freshFunctions,statusFunctions,publishedFunctions,otherRequests])
-        for(NSDictionary *snapshot in batch){
+    for(NSArray *batch in @[functions,others])for(NSDictionary *snapshot in batch){
+        NSDictionary *request=snapshot[@"request"];handled++;
+        a5HandleRequest(self,request,knownProfiles,request[@"request_id"]);
+        [completed addObject:snapshot];
+    }
+    /* One fresh-name pass per scan, replacing the previous per-old-handler
+     * rescans. Arrivals get real authentication/compilation before maintenance. */
+    unsigned arrivalBudget=64;
+    unsigned arrivals=a5DispatchArrivingFunctions(self,knownProfiles,rootfd,seen,&arrivalBudget);
+    unsigned maintenance=0;
+    if(!arrivals&&arrivalBudget&&oldNames.count){
+        NSArray *ordered=[oldNames sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){
+            return [a[@"token"]compare:b[@"token"]];}];
+        NSDictionary *selected=ordered.firstObject;
+        for(NSDictionary *meta in ordered)if(!maintenanceCursor||[meta[@"token"]compare:maintenanceCursor]==NSOrderedDescending){
+            selected=meta;break;}
+        /* Advance even for a corrupt or replaced leaf so it cannot starve
+         * old603 migration, retryable statuses or another UID's maintenance. */
+        maintenanceCursor=[selected[@"token"]copy];maintenance=1;
+        NSDictionary *snapshot=readSnapshot(selected);
+        if(snapshot){
             NSDictionary *request=snapshot[@"request"];
-            if(batch!=freshFunctions){
-                arrivals+=a5DispatchArrivingFunctions(self,knownProfiles,rootfd,seen,&arrivalBudget);
 #ifdef A5_SHADER_SCAN_HOST_TEST
-                if(a5ScanBeforeOldHandler)a5ScanBeforeOldHandler(request);
+            if(a5ScanBeforeOldHandler)a5ScanBeforeOldHandler(request);
 #endif
-            }
-            handled++;
-            a5HandleRequest(self,request,knownProfiles,request[@"request_id"]);
+            serviceCheckpoint("old-maintenance",request[@"request_id"],nil);
+            handled++;a5HandleRequest(self,request,knownProfiles,request[@"request_id"]);
+            [completed insertObject:snapshot atIndex:0];
         }
-    arrivals+=a5DispatchArrivingFunctions(self,knownProfiles,rootfd,seen,&arrivalBudget);
-    /* Slow archival fsync cannot be interrupted by a later UI request. Do it
-     * only at quota pressure (63/64 leaves), after a final fresh-work check.
-     * A scan that dispatched arriving work defers archival to the next scan.
-     * One candidate/attempt maximum still uses the fresh locked helper. */
-    for(NSDictionary *snapshot in snapshots){
+    }
+    /* At63/64 quota pressure, one fresh locked terminal retirement attempt.
+     * Mere publication/status presence above can never authorize deletion. */
+    for(NSDictionary *snapshot in completed){
         if(arrivals||!arrivalBudget)break;
-        if([uidCandidates[snapshot[@"user"]] unsignedIntValue]<63)continue;
+        if([uidCandidates[snapshot[@"user"]]unsignedIntValue]<63)continue;
         NSDictionary *request=snapshot[@"request"];
         if(!a5RetireTerminal(request,knownProfiles))continue;
-        arrivals+=a5DispatchArrivingFunctions(self,knownProfiles,rootfd,seen,&arrivalBudget);
-        if(arrivals||!arrivalBudget)break;
-        int uidfd=openat(rootfd,[snapshot[@"user"] fileSystemRepresentation],
-            O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-        if(uidfd>=0){
-            a5RetireCompletedRequest(uidfd,[snapshot[@"name"] fileSystemRepresentation],
-                [snapshot[@"uid"] unsignedIntValue],snapshot[@"bytes"],request,knownProfiles);
-            close(uidfd);
-        }
+        int dir=openat(rootfd,[snapshot[@"user"]fileSystemRepresentation],O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+        if(dir>=0){a5RetireCompletedRequest(dir,[snapshot[@"name"]fileSystemRepresentation],
+            [snapshot[@"uid"]unsignedIntValue],snapshot[@"bytes"],request,knownProfiles);close(dir);}
         break;
     }
     close(rootfd);
     if(report){
-        fprintf(stderr,"A5XELTE shader compiler: SCAN scan=%u users=%u users_rejected=%u candidates=%u read_rejected=%u json_rejected=%u identity_rejected=%u digest_rejected=%u handled=%u capped_users=%u\n",
-            scan,usersSeen,usersRejected,candidates,readRejected,jsonRejected,
-            identityRejected,digestRejected,handled,capped);
-        fflush(stderr);
-        serviceCheckpoint("scan-end",nil,nil);
+        fprintf(stderr,"A5XELTE shader compiler: SCAN scan=%u users=%u users_rejected=%u candidates=%u read_rejected=%u json_rejected=%u identity_rejected=%u digest_rejected=%u handled=%u capped_users=%u deferred_old=%lu maintenance=%u arrivals=%u\n",
+            scan,usersSeen,usersRejected,candidates,readRejected,jsonRejected,identityRejected,digestRejected,handled,capped,
+            (unsigned long)oldNames.count,maintenance,arrivals);
+        fflush(stderr);serviceCheckpoint("scan-end",nil,nil);
     }
 }
 
