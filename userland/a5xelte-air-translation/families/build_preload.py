@@ -12,7 +12,7 @@ def build(build,out):
   old=json.loads(receipt.read_text())
   if old.get('inputs')==stamp and old.get('include_sha256')==sha(inc):return
  lines=subprocess.check_output(['ninja','-t','commands','src/panfrost/a5_t720_copy_shader'],cwd=build,text=True).splitlines()
- cc=shlex.split(next(x for x in lines if ' -c ../mesa-26.2.4/src/panfrost/a5_t720_copy_shader.c' in x));obj=out/'preload.o';exe=out/'preload-compiler'
+ cc=shlex.split(next(x for x in lines if '-c' in shlex.split(x) and shlex.split(x)[shlex.split(x).index('-c')+1].endswith('/src/panfrost/a5_t720_copy_shader.c')));obj=out/'preload.o';exe=out/'preload-compiler'
  cc[cc.index('-c')+1]=str(here/'preload_midgard.c');cc[cc.index('-o')+1]=str(obj)
  for flag in ('-MD','-MQ','-MF'):
   if flag in cc:i=cc.index(flag);del cc[i:i+(1 if flag=='-MD' else 2)]

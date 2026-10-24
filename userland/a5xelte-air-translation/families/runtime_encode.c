@@ -94,6 +94,21 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
   return A5RuntimeUnsupported;
  /* Filtering is native sampler state. Preserve the authenticated DS4/blur
   * program and the actual caller min/mag request in the released v4 sampler. */
+ /* Float2 position is a real vertex fetch ABI: z=0/w=1 are supplied by
+  * channel swizzle. Do not read16 bytes from an8-byte attribute or reinterpret
+  * the actual UV bytes as position.z/w. Only the exact known48B layout adapts. */
+ if(p->attributeCount!=4||!p->attributes||p->layoutCount!=1||!p->layouts)
+  return A5RuntimeUnsupported;
+ const A5MaliCompiledVertexLayout*layout=p->layouts;
+ if(layout->index!=1||layout->stride!=48||layout->stepFunction!=1||layout->stepRate!=1)
+  return A5RuntimeUnsupported;
+ unsigned attributeSeen=0;int position2=0;
+ for(unsigned i=0;i<4;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
+  static const unsigned offset[4]={0,16,24,32},format[4]={31,29,29,27};
+  if(a->index>=4||(attributeSeen&(1u<<a->index))||a->offset!=offset[a->index]||a->bufferIndex!=1||
+     (a->format!=format[a->index]&&(a->index||a->format!=29)))return A5RuntimeUnsupported;
+  attributeSeen|=1u<<a->index;if(!a->index)position2=a->format==29;
+ }
  const A5MaliCompiledPass*pass=p->passes;
  const A5MaliCompiledShader*vs=&pass->vertex,*fs=&pass->fragment;
  if(!vs->bytes||!fs->bytes||!vs->byteCount||vs->byteCount>FCODE-VCODE||
@@ -102,7 +117,8 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
     !fs->workRegisters||fs->workRegisters>16||vs->tlsBytes||vs->wlsBytes||fs->wlsBytes||
     (fs->tlsBytes!=0&&fs->tlsBytes!=32&&fs->tlsBytes!=64))return A5RuntimeUnsupported;
  if(!span(r->descriptorGPUVA,A5RuntimeJobBytes)||(r->descriptorGPUVA&4095)||
-    !image(&r->source,4)||r->source.metalPixelFormat!=80||
+    !(r->source.metalPixelFormat==80||r->source.metalPixelFormat==43)||
+    !image(&r->source,r->source.metalPixelFormat==43?2:4)||
     !(r->destination.metalPixelFormat==80||r->destination.metalPixelFormat==115)||
     !image(&r->destination,r->destination.metalPixelFormat==115?8:4)||
     p->colorFormats[0]!=r->destination.metalPixelFormat||
@@ -178,10 +194,13 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
  unsigned vertexLow=(unsigned)(vertexAddress&63);
  uint64_t vertexBase=vertexAddress&~UINT64_C(63);
  memcpy(d+VCODE,vs->bytes,vs->byteCount);memcpy(d+FCODE,fs->bytes,fs->byteCount);
- /* Source is genuine BGRA memory: format swizzle decodes its byte order. */
+ /* BGRA8 and BGR5A1 are sampled in place. Released v4 format and R/B
+  * swizzle decode the actual 4-byte or packed 2-byte source, including
+  * padded rows; no CPU conversion or substitute allocation is involved. */
  pan_pack((struct mali_texture_packed*)(d+TEX),TEXTURE,c){
   c.width=r->source.width;c.height=r->source.height;c.array_size=1;c.levels=1;
-  c.format=(MALI_RGBA8_UNORM<<12)|0x60a;c.dimension=MALI_TEXTURE_DIMENSION_2D;
+  c.format=((r->source.metalPixelFormat==43?MALI_RGB5_A1_UNORM:MALI_RGBA8_UNORM)<<12)|0x60a;
+  c.dimension=MALI_TEXTURE_DIMENSION_2D;
   c.texel_ordering=MALI_TEXTURE_LAYOUT_LINEAR;c.swizzle=0x688;
  }
  pan_pack((struct mali_surface_with_stride_packed*)(d+TEX+32),SURFACE_WITH_STRIDE,c){
@@ -243,7 +262,7 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
   c.blend_equation.alpha.c=c.blend_equation.rgb.c;c.blend_equation.rgb.invert_c=!!r->blend;
   c.blend_equation.alpha.invert_c=!!r->blend;c.blend_equation.color_mask=15;
  }
- attr(d,ATTR,0,MALI_RGBA32F,0x688,vertexLow);attr(d,ATTR+8,0,MALI_RG32F,RG,vertexLow+16);
+ attr(d,ATTR,0,position2?MALI_RG32F:MALI_RGBA32F,position2?RG:0x688,vertexLow);attr(d,ATTR+8,0,MALI_RG32F,RG,vertexLow+16);
  ab(d,ABUF,vertexBase,48,r->vertexCount*48+vertexLow);
  attr(d,VV,0,MALI_SNAP_4,0x688,0);attr(d,VV+8,1,MALI_R16F,R,0);attr(d,VV+16,2,MALI_RG32UI,RG,0);
  ab(d,VB,va+POS,16,r->vertexCount*16);ab(d,VB+16,va+PSIZ,2,r->vertexCount*2);ab(d,VB+32,va+UV,8,r->vertexCount*8);

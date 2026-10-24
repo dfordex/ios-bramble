@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <float.h>
 #include "genxml/v4_pack.h"
 #include "A5MaliCompiledRegistryData.inc"
 #include "test_runtime_preload.h"
@@ -119,6 +120,50 @@ static void check_sampler(const A5MaliCompiledProfile*p){
  d.sourceSampler.minFilter=1;
  assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeUnsupported&&zero());
 }
+/* The exact packed source that profile99 rejected on0223: odd width,
+ * independently padded rows and a whole mapped IOSurface allocation. */
+static void check_packed_source(const A5MaliCompiledProfile*p){
+ A5RuntimeDraw d=request(p,144,32);
+ d.source=(A5RuntimeImage){0x20000000,1048576,542,963,1088,43};
+ d.sourceSampler=(A5RuntimeBlurSampler){.valid=1,.minFilter=1,.magFilter=1,
+  .normalizedCoordinates=1,.maxAnisotropy=1,.lodMaxClamp=FLT_MAX};
+ assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
+ pan_unpack((struct mali_texture_packed*)(output+0x600),TEXTURE,texture);
+ pan_unpack((struct mali_surface_with_stride_packed*)(output+0x620),SURFACE_WITH_STRIDE,surface);
+ assert(texture.width==542&&texture.height==963&&texture.levels==1&&texture.array_size==1);
+ assert(texture.dimension==MALI_TEXTURE_DIMENSION_2D&&texture.texel_ordering==MALI_TEXTURE_LAYOUT_LINEAR);
+ assert(texture.format==((MALI_RGB5_A1_UNORM<<12)|0x60a)&&texture.swizzle==0x688);
+ assert(surface.pointer==d.source.gpuVA&&surface.row_stride==1088&&surface.surface_stride==1047744);
+ assert(!memcmp(output+0x2000,p->passes[0].vertex.bytes,p->passes[0].vertex.byteCount));
+ assert(!memcmp(output+0x4000,p->passes[0].fragment.bytes,p->passes[0].fragment.byteCount));
+ for(unsigned fault=0;fault<6;++fault){A5RuntimeDraw bad=d;
+  switch(fault){case 0:bad.source.rowBytes=1072;break;case 1:bad.source.rowBytes=1084;break;
+   case 2:bad.source.bytes=1047743;break;case 3:bad.source.gpuVA++;break;
+   case 4:bad.source.gpuVA=bad.destination.gpuVA;break;case 5:bad.source.metalPixelFormat=42;break;}
+  assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeBounds&&zero());
+ }
+ /* BGRA8 keeps its original4B layout, and the same packed row cannot be
+  * mislabeled as BGRA8. This catches guard-only admission. */
+ A5RuntimeDraw bad=d;bad.source.metalPixelFormat=80;
+ assert(A5MaliEncodeRuntimeDraw(&bad,output,sizeof(output))==A5RuntimeBounds&&zero());
+}
+static void check_float2_position(const A5MaliCompiledProfile*p){
+ assert(p->attributeCount==4);A5MaliCompiledProfile owned=*p;
+ A5MaliCompiledVertexAttribute attributes[4];memcpy(attributes,p->attributes,sizeof(attributes));
+ unsigned at=4;for(unsigned i=0;i<4;++i)if(attributes[i].index==0)at=i;assert(at<4);
+ owned.attributes=attributes;A5RuntimeDraw d=request(&owned,64,128);
+ for(unsigned format=29;format<=31;format+=2){attributes[at].format=format;
+  assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeOK);
+  pan_unpack((struct mali_attribute_packed*)(output+0x800),ATTRIBUTE,a);
+  unsigned rg=MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9);
+  assert(a.format==(((format==29?MALI_RG32F:MALI_RGBA32F)<<12)|(format==29?rg:0x688)));
+  assert(!memcmp(output+0x2000,p->passes[0].vertex.bytes,p->passes[0].vertex.byteCount));
+ }
+ attributes[at].format=29;attributes[at].offset=4;
+ assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeUnsupported&&zero());
+ attributes[at].offset=0;attributes[at].format=30;
+ assert(A5MaliEncodeRuntimeDraw(&d,output,sizeof(output))==A5RuntimeUnsupported&&zero());
+}
 static void compare_legacy(const char*path){
  uint8_t*legacy=malloc(A5RuntimeJobBytes);assert(legacy);FILE*f=fopen(path,"rb");assert(f);
  assert(fread(legacy,1,A5RuntimeJobBytes,f)==A5RuntimeJobBytes&&fgetc(f)==EOF);fclose(f);
@@ -156,7 +201,7 @@ int main(int argc,char**argv){
  unsigned passed=0;
  for(unsigned i=0;i<sizeof(kA5MaliCompiledProfiles)/sizeof(kA5MaliCompiledProfiles[0]);++i){
   const A5MaliCompiledProfile*p=kA5MaliCompiledProfiles+i;if(p->profileID<99||p->profileID>108)continue;
-  check_indexed(p);check_sampler(p);
+  check_indexed(p);check_sampler(p);check_packed_source(p);check_float2_position(p);
   A5RuntimeDraw d=p->colorFormats[0]==115?request(p,64,128):request(p,1080,1920);
   int rc=A5MaliEncodeRuntimeDraw(&d,output,sizeof(output));if(rc){fprintf(stderr,"profile%u rc%d\n",p->profileID,rc);return 1;}
   check_preload(output,d.descriptorGPUVA,&d.destination);

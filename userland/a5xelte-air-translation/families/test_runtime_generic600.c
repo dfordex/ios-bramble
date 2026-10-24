@@ -85,6 +85,26 @@ int main(int argc,char**argv){
  assert(outcolor.buffer_index==2&&(outcolor.format>>12)==MALI_RGBA32UI);
  assert(incolor.buffer_index==0&&(incolor.format>>12)==MALI_RGBA32F);
  uint32_t rule;memcpy(&rule,descriptor+0x1400+68,4);assert(rule==0x2222);
+ /* Float2 position fetch must synthesize z=0,w=1 at the hardware boundary,
+  * without reading the caller's otherwise unrelated bytes8..15. Source-over
+  * uses the real destination load/equation even for the existing600/601 code. */
+ attr[0].format=29;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ struct MALI_ATTRIBUTE xy;MALI_ATTRIBUTE_unpack((const struct mali_attribute_packed*)(descriptor+0x800),&xy);
+ unsigned xy_swizzle=MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9);
+ assert(xy.format==((MALI_RG32F<<12)|xy_swizzle)&&xy.offset==0);
+ attr[0].format=30;assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported);
+ attr[0].format=31;attachments[1]=attachments[0];
+ attachments[1].attachments[0]=(A5MaliCompiledAttachmentState){15,1,0,0,1,5,1,5};
+ profile.flags=A5MaliProfileSourceOverBlend;profile.attachmentContractCount=2;m.draw.blend=1;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ struct MALI_RENDERER_STATE sov;MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(descriptor+0x540),&sov);
+ assert(sov.multisample_misc.load_destination&&sov.blend_equation.rgb.b==MALI_BLEND_OPERAND_B_DEST&&
+  sov.blend_equation.rgb.c==MALI_BLEND_OPERAND_C_SRC_ALPHA&&sov.blend_equation.rgb.invert_c);
+ attachments[1].attachments[0].sourceRGB=4;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeUnsupported);
+ attachments[1].attachments[0].sourceRGB=1;
+ profile.flags=0;profile.attachmentContractCount=1;m.draw.blend=0;
  /* The real CPH fragment translates to the same native code, but its
   * original function identity remains a separate exact profile. */
  profile.profileID=601;pass.passID=601;profile.fragmentName="fixed_frag_lph_cph";

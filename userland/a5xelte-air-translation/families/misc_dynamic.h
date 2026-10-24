@@ -156,6 +156,13 @@ static int a5_dynamic_analyze(nir_shader *nir,const struct a5_dynamic_profile *p
          if(!a5_dynamic_io_add(info->inputs,&info->input_count,in,false))return 0;
       }else if(in->intrinsic==nir_intrinsic_store_output){
          if(!a5_dynamic_io_add(info->outputs,&info->output_count,in,true))return 0;
+      }else if(in->intrinsic==nir_intrinsic_ddx || in->intrinsic==nir_intrinsic_ddy){
+         if(nir->info.stage!=MESA_SHADER_FRAGMENT || !in->def.num_components ||
+            in->def.num_components>4 || in->def.bit_size!=32 ||
+            nir_src_bit_size(in->src[0])!=32 ||
+            nir_src_num_components(in->src[0])!=in->def.num_components){
+            fprintf(stderr,"dynamic derivative shape unsupported\n");return 0;
+         }
       }else if(in->intrinsic!=nir_intrinsic_load_barycentric_pixel &&
                in->intrinsic!=nir_intrinsic_decl_reg &&
                in->intrinsic!=nir_intrinsic_load_reg &&

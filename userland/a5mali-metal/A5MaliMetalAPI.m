@@ -474,6 +474,12 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
             }
         }
     }
+    if(!profile && authenticatedPair){
+        NSError *adaptationError=nil;
+        dynamicOwner=A5MaliAdaptCompiledPipeline(descriptor,&suppliesInactiveColor1,&adaptationError);
+        profile=dynamicOwner.profile;
+        if(profile)rejection=nil;else if(adaptationError)rejection=adaptationError;
+    }
     if(!profile && authenticatedPair && ([vertex dynamicShader] || [fragment dynamicShader] ||
         descriptor.colorAttachments[0].pixelFormat==MTLPixelFormatBGR5A1Unorm)){
         dynamicOwner=A5MaliComposeDynamicPipeline(descriptor,&rejection);
@@ -1363,7 +1369,8 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(!source||!destination)resourceReason="missing-image";
         else if(source.device!=_buffer.device||destination.device!=_buffer.device)resourceReason="image-device";
         else if(textureBackingAliases(source,destination))resourceReason="image-storage-alias";
-        else if(source.pixelFormat!=MTLPixelFormatBGRA8Unorm)resourceReason="source-format";
+        else if(source.pixelFormat!=MTLPixelFormatBGRA8Unorm &&
+            source.pixelFormat!=MTLPixelFormatBGR5A1Unorm)resourceReason="source-format";
         else if(!source.privateSurface||!destination.privateSurface)resourceReason="image-backing";
         else if(destination.pixelFormat!=profile->colorFormats[0])resourceReason="target-format";
         else if(!(destination.usage&MTLTextureUsageRenderTarget))resourceReason="target-usage";

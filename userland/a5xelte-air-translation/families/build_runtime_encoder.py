@@ -14,8 +14,12 @@ def compile_runtime(mesa_build, output, target='ios', source=None, includes=()):
     commands = subprocess.check_output(
         ['ninja', '-t', 'commands', 'src/panfrost/a5_t720_copy_shader'],
         cwd=mesa_build, text=True).splitlines()
-    command = shlex.split(next(c for c in commands
-        if ' -c ../mesa-26.2.4/src/panfrost/a5_t720_copy_shader.c' in c))
+    candidates = [shlex.split(c) for c in commands]
+    candidates = [c for c in candidates if '-c' in c and
+                  c[c.index('-c') + 1].endswith('/src/panfrost/a5_t720_copy_shader.c')]
+    if len(candidates) != 1:
+        raise ValueError('expected exactly one released Mesa copy-shader compile command')
+    command = candidates[0]
     command[command.index('-c') + 1] = str(source)
     command[command.index('-o') + 1] = str(output.resolve())
     for flag in ('-MD', '-MQ', '-MF'):

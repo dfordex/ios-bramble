@@ -16,6 +16,7 @@
 @end
 @interface A5MaliReadSurfCandidate (Generic602BlendTest)
 - (BOOL)sourceOver;
+- (const A5MaliCompiledProfile *)profile;
 @end
 
 typedef struct {
@@ -222,7 +223,7 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
     memcpy(vertices.contents,s->vertices,sizeof(s->vertices)); /* shared buffer captured at commit */
     return command;
 }
-static int run(uint32_t profileID,BOOL blend)
+static int run(uint32_t profileID,BOOL blend,BOOL float2)
 {
     State s={0};
     @autoreleasepool{
@@ -244,8 +245,8 @@ static int run(uint32_t profileID,BOOL blend)
             [NSString stringWithUTF8String:path]]error:&error];assert(library&&!error);
         if(profileID==602)verifyVertex602Factory(library,&s);
         MTLRenderPipelineDescriptor *d=descriptor(library,s.profile,NO,&error);assert(d&&!error);
+        if(float2)d.vertexDescriptor.attributes[0].format=MTLVertexFormatFloat2;
         if(blend){
-            assert(profileID==602);
             MTLRenderPipelineColorAttachmentDescriptor *a=d.colorAttachments[0];
             a.blendingEnabled=YES;a.destinationRGBBlendFactor=a.destinationAlphaBlendFactor=MTLBlendFactorOneMinusSourceAlpha;
             /* Reject superficially similar straight-alpha, additive, alpha-only,
@@ -264,6 +265,21 @@ static int run(uint32_t profileID,BOOL blend)
         }
         A5MaliReadSurfCandidate *pipeline=[device newRenderPipelineStateWithDescriptor:d error:&error];
         assert(pipeline.sourceOver==blend);
+        const A5MaliCompiledProfile *original=s.profile;s.profile=pipeline.profile;
+        assert(s.profile&&s.profile->profileID==original->profileID);
+        assert(s.profile->passes==original->passes&&s.profile->resources==original->resources);
+        assert(s.profile->attributes[0].format==(float2?29u:31u));
+        assert(original->attributes[0].format==31);
+        for(unsigned fault=0;fault<5;fault++){
+            MTLRenderPipelineDescriptor *bad=[d copy];bad.vertexDescriptor=[d.vertexDescriptor copy];
+            if(fault==0)bad.vertexDescriptor.attributes[0].format=MTLVertexFormatFloat3;
+            if(fault==1)bad.vertexDescriptor.attributes[0].offset=4;
+            if(fault==2)bad.vertexDescriptor.attributes[0].bufferIndex=2;
+            if(fault==3)bad.vertexDescriptor.layouts[1].stride=40;
+            if(fault==4)bad.rasterSampleCount=4;
+            error=nil;assert(![device newRenderPipelineStateWithDescriptor:bad error:&error]&&error);
+        }
+        error=nil;
         assert(pipeline&&!error&&!s.queries&&!s.submits);
         A5MaliMetalTexture *target=[device hostTestTextureWithResource:
             (A5MaliResource){UINT64_C(0x100000001),32,32,128,A5MaliRead|A5MaliWrite}];assert(target);
@@ -287,4 +303,4 @@ static int run(uint32_t profileID,BOOL blend)
     return 0;
 }
 
-int main(void) { assert(!run(600,NO));assert(!run(601,NO));assert(!run(602,NO));assert(!run(602,YES));puts("generic CPF, CPH and specialized-vertex native wrapper paths passed; GPU pixels unverified");return 0; }
+int main(void) { for(unsigned id=600;id<=602;id++)for(unsigned blend=0;blend<2;blend++)for(unsigned float2=0;float2<2;float2++)assert(!run(id,blend,float2));puts("generic CPF, CPH and specialized-vertex native wrapper paths passed; GPU pixels unverified");return 0; }

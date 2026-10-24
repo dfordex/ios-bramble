@@ -6,6 +6,7 @@
 #import "A5MaliMetalDeviceResources.h"
 #import "A5MaliCompiledRegistry.h"
 #import "A5MaliNative.h"
+#import "A5MaliMetalTexture.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,11 +20,19 @@
 - (void)setFragmentTexture:(A5MaliMetalTexture *)texture atTextureIndex:(NSUInteger)textureIndex
     samplerState:(A5MaliSamplerState *)sampler atSamplerIndex:(NSUInteger)samplerIndex;
 @end
+@interface A5MaliRestrictedDevice (PackedSourceTest)
+- (A5MaliDevice *)privateDevice;
+@end
+@interface A5MaliMetalTexture (PackedSourceTest)
+- (instancetype)initWithSurface:(A5MaliSurface *)surface device:(A5MaliRestrictedDevice *)device
+    descriptor:(MTLTextureDescriptor *)descriptor layout:(A5MaliTextureAllocationLayout)layout external:(BOOL)external;
+@end
 typedef struct {
     unsigned queries,submits,releases,imports;
     IOSurfaceRef imported[32];
     BOOL badAuxSpan,badAuxAlias,failImport,providedAux;
-    BOOL badFormat,badFence,badDestinationRead,linearSampler;
+    unsigned sourceFault;
+    BOOL badFormat,badFence,badDestinationRead,linearSampler,packedSource;
     unsigned indexSize,indexFault,privateCreates,privateReads,privateReleases;
     BOOL privateIndex,failPrivateRead,privateLive;
     uint8_t privateBytes[4096],indices[24];
@@ -101,6 +110,10 @@ static kern_return_t transport(void *opaque,uint32_t selector,const void *input,
         r.surfaces[0]=(A5NativeSpan){q->surfaces[0],0x10000000,16384,64,64,256,0x42475241,A5MaliRead};
         r.surfaces[1]=(A5NativeSpan){q->surfaces[1],0x11000000,4096,32,32,128,0x42475241,A5MaliRead|A5MaliWrite};
         r.surfaces[2]=(A5NativeSpan){q->surfaces[2],0x12000000,4096,32,32,128,0x42475241,A5MaliRead|A5MaliWrite};
+        if(t->packedSource)r.surfaces[0]=(A5NativeSpan){q->surfaces[0],0x10000000,1048576,542,963,1088,0x42354131,A5MaliRead};
+        if(t->sourceFault==1)r.surfaces[0].bytes=1047743;
+        if(t->sourceFault==2)r.surfaces[0].rowBytes=1072;
+        if(t->sourceFault==3)r.surfaces[0].pixelFormat=0x42475241;
         if(t->badAuxSpan)r.surfaces[2].bytes=128;
         if(t->badAuxAlias)r.surfaces[2].gpuVA=r.surfaces[1].gpuVA;
         if(t->badFormat)r.surfaces[0].pixelFormat=0x52476841;
@@ -111,7 +124,7 @@ static kern_return_t transport(void *opaque,uint32_t selector,const void *input,
     assert(bytes==sizeof(A5NativeSubmitRequest)+A5NativeJobBytes);
     const A5NativeSubmitRequest *q=input;
     assert(q->header.version==1 && q->header.size==sizeof(*q));
-    assert(q->mappingEpoch==41 && q->profileID==100 && q->jobBytes==A5NativeJobBytes);
+    assert(q->mappingEpoch==41 && q->profileID==t->profile->profileID && q->jobBytes==A5NativeJobBytes);
     assert(q->vertexOffset==0 && q->tilerOffset==0x100 && q->fragmentOffset==0x200);
     assert(q->readSurfaces==7 && q->writeSurfaces==2 && !q->readBuffers);
     const uint8_t *jobs=(const uint8_t *)input+sizeof(*q);
@@ -119,6 +132,15 @@ static kern_return_t transport(void *opaque,uint32_t selector,const void *input,
      * These must reflect actual caller filtering, not hardcoded nearest. */
     uint32_t samplerWord;memcpy(&samplerWord,jobs+0x680,4);
     assert((samplerWord&3)==(t->linearSampler?0u:3u));
+    if(t->packedSource){
+        /* Hardware descriptor, not a format guard: RGB5_A1_UNORM enum=65
+         * from released v4.xml; BGRA R/B swizzle0x60a, identity0x688. */
+        uint32_t tex[8];memcpy(tex,jobs+0x600,sizeof(tex));
+        assert((tex[2]&0x3fffff)==((65u<<12)|0x60a));
+        uint64_t pointer;int32_t row;uint32_t span;
+        memcpy(&pointer,jobs+0x620,8);memcpy(&row,jobs+0x628,4);memcpy(&span,jobs+0x62c,4);
+        assert(pointer==0x10000000&&row==1088&&span==1047744);
+    }
     uint32_t primitive,number,invocations;uint64_t address;
     memcpy(&primitive,jobs+0x128,4);memcpy(&number,jobs+0x134,4);
     memcpy(&address,jobs+0x138,8);memcpy(&invocations,jobs+0x20,4);
@@ -164,6 +186,20 @@ static MTLRenderPipelineDescriptor *descriptor(const A5MaliCompiledProfile *p,A5
         a.sourceRGBBlendFactor=c->sourceRGB;a.destinationRGBBlendFactor=c->destinationRGB;
         a.sourceAlphaBlendFactor=c->sourceAlpha;a.destinationAlphaBlendFactor=c->destinationAlpha;}
     return d;
+}
+static A5MaliMetalTexture *sourceTexture(A5MaliRestrictedDevice *device,Transport *t)
+{
+ if(!t->packedSource)return [device hostTestTextureWithResource:
+     (A5MaliResource){0x100000001,64,64,256,A5MaliRead}];
+ MTLTextureDescriptor*d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+     MTLPixelFormatBGR5A1Unorm width:542 height:963 mipmapped:NO];
+ d.storageMode=MTLStorageModeShared;d.usage=MTLTextureUsageShaderRead|MTLTextureUsageRenderTarget;
+ A5MaliTextureAllocationLayout layout;assert(A5MaliBuildTextureAllocationLayout(d,&layout,NULL));
+ layout.backingRowBytes=1088;layout.totalBytes=1047744;
+ layout.levels[0].rowBytes=1088;layout.levels[0].byteLength=1047744;
+ A5MaliSurface*surface=[[device privateDevice]hostTestSurfaceWithResource:
+     (A5MaliResource){0x100000001,542,963,1088,A5MaliRead|A5MaliWrite}];
+ return [[A5MaliMetalTexture alloc]initWithSurface:surface device:device descriptor:d layout:layout external:YES];
 }
 static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCandidate *pipeline,
     A5MaliMetalTexture *source,A5MaliMetalTexture *destination,Transport *t,
@@ -221,8 +257,8 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliReadSurfCa
 }
 int main(void)
 {
- for(unsigned width=2;width<=4;width+=2)@autoreleasepool {
-    Transport t={0};t.indexSize=width;t.profile=A5MaliCompiledProfileForID(100);assert(t.profile);
+ for(unsigned packed=0;packed<=1;++packed)for(unsigned width=2;width<=4;width+=2)@autoreleasepool {
+    Transport t={0};t.indexSize=width;t.packedSource=packed;t.profile=A5MaliCompiledProfileForID(packed?99:100);assert(t.profile);
     const uint32_t sequence[6]={2,0,1,2,1,3};
     for(unsigned i=0;i<6;++i)memcpy(t.indices+i*width,sequence+i,width);
     memset(t.vertex,0x31,sizeof(t.vertex));memset(t.matrix,0x42,sizeof(t.matrix));
@@ -257,8 +293,7 @@ int main(void)
         commandCapabilities:63 operationCapabilities:127|(1u<<7)|(1u<<8)|(1u<<13)|(1u<<14)|(1u<<16)|(1u<<17)];
     assert(![wrong newRenderPipelineStateWithDescriptor:d error:NULL]);
     @autoreleasepool {
-      A5MaliMetalTexture *source=[device hostTestTextureWithResource:
-          (A5MaliResource){0x100000001,64,64,256,A5MaliRead}];
+      A5MaliMetalTexture *source=sourceTexture(device,&t);
       A5MaliMetalTexture *destination=[device hostTestTextureWithResource:
           (A5MaliResource){0x100000002,32,32,128,A5MaliWrite}];
       A5MaliMetalBuffer *b=encode(device,pipeline,source,destination,&t,NO,NO);
@@ -278,8 +313,7 @@ int main(void)
       assert(b.status==MTLCommandBufferStatusError && t.queries==4 && t.submits==2);t.failImport=NO;
     }
     @autoreleasepool {
-      A5MaliMetalTexture *source=[device hostTestTextureWithResource:
-          (A5MaliResource){0x100000001,64,64,256,A5MaliRead}];
+      A5MaliMetalTexture *source=sourceTexture(device,&t);
       A5MaliMetalTexture *destination=[device hostTestTextureWithResource:
           (A5MaliResource){0x100000002,32,32,128,A5MaliWrite}];
       for(unsigned fault=1;fault<=3;++fault){t.indexFault=fault;
@@ -303,12 +337,19 @@ int main(void)
     for(unsigned i=0;i<t.imports;++i)assert(!t.imported[i]);
     t.privateIndex=NO;t.failPrivateRead=NO;t.linearSampler=YES;
     @autoreleasepool {
-      A5MaliMetalTexture *source=[device hostTestTextureWithResource:(A5MaliResource){0x100000001,64,64,256,A5MaliRead}];
+      A5MaliMetalTexture *source=sourceTexture(device,&t);
       A5MaliMetalTexture *destination=[device hostTestTextureWithResource:(A5MaliResource){0x100000002,32,32,128,A5MaliWrite}];
       unsigned before=t.queries,submitted=t.submits;
       A5MaliMetalBuffer *linear=encode(device,pipeline,source,destination,&t,NO,NO);
       [linear commit];[linear waitUntilCompleted];
       assert(linear.status==MTLCommandBufferStatusCompleted&&t.queries==before+1&&t.submits==submitted+1);
+      if(t.packedSource)for(unsigned fault=1;fault<=3;++fault){
+        t.sourceFault=fault;unsigned queried=t.queries,done=t.submits;
+        A5MaliMetalBuffer *badSource=encode(device,pipeline,source,destination,&t,NO,NO);
+        [badSource commit];[badSource waitUntilCompleted];
+        assert(badSource.status==MTLCommandBufferStatusError&&t.queries==queried+1&&t.submits==done);
+      }
+      t.sourceFault=0;before=t.queries-1;submitted=t.submits-1;
       /* Last command for these aliases: an attempted GPU submission without
        * both terminal fences is quarantined, never immediately recycled. */
       t.badFence=YES;A5MaliMetalBuffer *failed=encode(device,pipeline,source,destination,&t,NO,NO);
@@ -318,7 +359,7 @@ int main(void)
     assert(t.imports>0);
     for(unsigned i=0;i+1<t.imports;++i)assert(!t.imported[i]);
     assert(t.imported[t.imports-1]);
-    printf("profile100 indexed u16/u32: actual native index descriptor, commit snapshots, private reads, exact vertex bounds, inactive RT1, allocation/alias/fence gates passed\n");
+    printf("profile%u source%u indexed u16/u32: actual native index descriptor, commit snapshots, private reads, exact vertex bounds, inactive RT1, allocation/alias/fence gates passed\n",t.profile->profileID,packed?43:80);
  }
  return 0;
 }

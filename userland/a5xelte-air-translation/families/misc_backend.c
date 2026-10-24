@@ -143,15 +143,92 @@ static bool lower_half(nir_builder *b, nir_alu_instr *alu, void *data)
    nir_def_replace(&alu->def, nir_f2f32(b, nir_f2f16(b, nir_ssa_for_alu_src(b,alu,0))));
    return true;
 }
+struct a5_fragcoord_lowering { unsigned base; };
+/* Driver locations are assigned before dead varyings are optimized away. Keep
+ * that descriptor ABI: FragCoord follows the entire original input extent,
+ * rather than reusing a dead slot or assuming that a shader has two inputs.
+ * A dual-UV shader also exports color at base 2, so a literal 2 aliases it.
+ */
+static bool a5_fragcoord_layout(nir_shader *nir,struct a5_fragcoord_lowering *out)
+{
+   unsigned end=0;
+   nir_foreach_shader_in_variable(var,nir){
+      if(var->data.location<VARYING_SLOT_VAR0)continue;
+      unsigned slots=glsl_count_attribute_slots(var->type,false);
+      unsigned base=var->data.driver_location;
+      if(!slots || base>=A5_DYNAMIC_MAX_IO || slots>A5_DYNAMIC_MAX_IO-base){
+         fprintf(stderr,"dynamic fragment declared varying extent base=%u slots=%u\n",base,slots);
+         return false;
+      }
+      end=MAX2(end,base+slots);
+   }
+   nir_foreach_function_impl(impl,nir){nir_foreach_block(block,impl){nir_foreach_instr(instr,block){
+      if(instr->type!=nir_instr_type_intrinsic)continue;
+      nir_intrinsic_instr *in=nir_instr_as_intrinsic(instr);
+      if(in->intrinsic!=nir_intrinsic_load_input &&
+         in->intrinsic!=nir_intrinsic_load_interpolated_input)continue;
+      nir_io_semantics sem=nir_intrinsic_io_semantics(in);
+      unsigned base=nir_intrinsic_base(in);
+      if(!sem.num_slots || base>=A5_DYNAMIC_MAX_IO ||
+         sem.num_slots>A5_DYNAMIC_MAX_IO-base){
+         fprintf(stderr,"dynamic fragment varying extent base=%u slots=%u\n",base,sem.num_slots);
+         return false;
+      }
+      end=MAX2(end,base+sem.num_slots);
+   }}}
+   /* One further slot is needed only when FragCoord is actually present. */
+   nir_foreach_function_impl(impl,nir){nir_foreach_block(block,impl){nir_foreach_instr(instr,block){
+      if(instr->type==nir_instr_type_intrinsic &&
+         nir_instr_as_intrinsic(instr)->intrinsic==nir_intrinsic_load_frag_coord &&
+         end>=A5_DYNAMIC_MAX_IO){
+         fprintf(stderr,"dynamic fragment position has no free varying slot\n");
+         return false;
+      }
+   }}}
+   out->base=end;return true;
+}
 static bool lower_fragcoord(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
-   bool dynamic=data!=NULL;
+   const struct a5_fragcoord_lowering *layout=data;
    if (intr->intrinsic != nir_intrinsic_load_frag_coord) return false;
    b->cursor = nir_before_instr(&intr->instr);
-   nir_def *value = nir_load_input(b,4,32,nir_imm_int(b,0),.base=dynamic?2:0,
+   nir_def *value = nir_load_input(b,4,32,nir_imm_int(b,0),.base=layout?layout->base:0,
       .io_semantics.location=VARYING_SLOT_POS,.io_semantics.num_slots=1,
       .dest_type=nir_type_float32);
    nir_def_rewrite_uses(&intr->def,value); return true;
+}
+/* Mesa26.2.4 Midgard's mir_derivative_mode maps each fine/coarse/default
+ * family to the same hardware derivative mode. Its NIR dispatcher only
+ * accepts the default spelling. Canonicalize that existing hardware mapping
+ * before dispatch instead of letting a valid fine derivative hit its assert.
+ * The texture derivative pipe operates on float32; preserve half precision
+ * at the boundary with explicit conversions.
+ */
+static bool lower_derivative(nir_builder *b,nir_intrinsic_instr *in,void *data)
+{
+   struct lowering *ctx=data;
+   bool dx;
+   switch(in->intrinsic){
+   case nir_intrinsic_ddx:case nir_intrinsic_ddx_fine:case nir_intrinsic_ddx_coarse:dx=true;break;
+   case nir_intrinsic_ddy:case nir_intrinsic_ddy_fine:case nir_intrinsic_ddy_coarse:dx=false;break;
+   default:return false;
+   }
+   if(b->shader->info.stage!=MESA_SHADER_FRAGMENT ||
+      !in->def.num_components || in->def.num_components>4 ||
+      (in->def.bit_size!=16 && in->def.bit_size!=32) ||
+      nir_src_num_components(in->src[0])!=in->def.num_components ||
+      nir_src_bit_size(in->src[0])!=in->def.bit_size){
+      fprintf(stderr,"unsupported Midgard derivative shape\n");ctx->invalid=true;return false;
+   }
+   if(in->def.bit_size==32){
+      nir_intrinsic_op canonical=dx?nir_intrinsic_ddx:nir_intrinsic_ddy;
+      if(in->intrinsic==canonical)return false;
+      in->intrinsic=canonical;return true;
+   }
+   b->cursor=nir_before_instr(&in->instr);
+   nir_def *source=nir_f2f32(b,in->src[0].ssa);
+   nir_def *value=dx?nir_ddx(b,source):nir_ddy(b,source);
+   nir_def_replace(&in->def,nir_f2f16(b,value));return true;
 }
 static bool lower_texture(nir_builder *b, nir_instr *instr, void *data)
 {
@@ -281,6 +358,10 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage,
    if(stage==MESA_SHADER_FRAGMENT && !dynamic)
       NIR_PASS(_,nir,nir_shader_intrinsics_pass,select_target,nir_metadata_control_flow,NULL);
    NIR_PASS(_,nir,nir_opt_constant_folding);
+   struct a5_fragcoord_lowering fragcoord={0};
+   if(dynamic && stage==MESA_SHADER_FRAGMENT && !a5_fragcoord_layout(nir,&fragcoord)){
+      ralloc_free(nir);return 2;
+   }
    struct pan_compile_inputs inputs={.gpu_id=0x07201000,.is_blit=true,.no_idvs=true};
    struct pan_shader_info info={0};struct util_dynarray binary=UTIL_DYNARRAY_INIT;
    nir_shader_gather_info(nir,nir_shader_get_entrypoint(nir));
@@ -305,8 +386,9 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage,
    NIR_PASS(_,nir,nir_shader_intrinsics_pass,a5_lower_ssbo_sysval,nir_metadata_control_flow,&resources);
    NIR_PASS(_,nir,nir_shader_intrinsics_pass,lower_push,nir_metadata_control_flow,&ctx);
    if(stage==MESA_SHADER_FRAGMENT)
-      NIR_PASS(_,nir,nir_shader_intrinsics_pass,lower_fragcoord,nir_metadata_control_flow,(void*)dynamic);
+      NIR_PASS(_,nir,nir_shader_intrinsics_pass,lower_fragcoord,nir_metadata_control_flow,dynamic?&fragcoord:NULL);
    NIR_PASS(_,nir,nir_shader_alu_pass,lower_half,nir_metadata_control_flow,NULL);
+   NIR_PASS(_,nir,nir_shader_intrinsics_pass,lower_derivative,nir_metadata_control_flow,&ctx);
    NIR_PASS(_,nir,nir_opt_dce);
    if(resources.invalid||ctx.invalid){fprintf(stderr,"unsupported resource ABI\n");return 2;}
    nir_validate_shader(nir,"family real resource lowering");

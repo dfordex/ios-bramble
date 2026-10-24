@@ -272,6 +272,81 @@ static BOOL staticFragmentABI(const A5MaliCompiledProfile *p,BOOL *color) {
     }
     return NO;
 }
+/* Float2 positions use Metal's missing-component rule (z=0,w=1) in
+ * the actual native fetch descriptor. Blend adaptation changes only RSD state,
+ * never the authenticated program or a shader's inline blend operation. */
+static BOOL sourceOverAttachment(MTLRenderPipelineColorAttachmentDescriptor *a) {
+    return a.writeMask==MTLColorWriteMaskAll&&a.isBlendingEnabled&&
+        a.rgbBlendOperation==MTLBlendOperationAdd&&a.alphaBlendOperation==MTLBlendOperationAdd&&
+        a.sourceRGBBlendFactor==MTLBlendFactorOne&&a.sourceAlphaBlendFactor==MTLBlendFactorOne&&
+        a.destinationRGBBlendFactor==MTLBlendFactorOneMinusSourceAlpha&&
+        a.destinationAlphaBlendFactor==MTLBlendFactorOneMinusSourceAlpha;
+}
+A5MaliDynamicPipelineEntry *A5MaliAdaptCompiledPipeline(MTLRenderPipelineDescriptor *d,
+    BOOL *suppliesInactiveColor1,NSError **error) {
+    if(error)*error=nil;if(suppliesInactiveColor1)*suppliesInactiveColor1=NO;
+    id v=d.vertexFunction,f=d.fragmentFunction;
+    if(![v isMemberOfClass:A5MaliMetalFunction.class]||![f isMemberOfClass:A5MaliMetalFunction.class]||
+       [v dynamicShader]||[f dynamicShader])return nil;
+    size_t count=0;const A5MaliCompiledProfile *profiles=A5MaliCompiledProfiles(&count);
+    for(size_t i=0;i<count;i++){
+        const A5MaliCompiledProfile *p=profiles+i;
+        BOOL blur=p->profileID>=99&&p->profileID<=108;
+        BOOL generic=p->profileID>=600&&p->profileID<=606;
+        BOOL misc=p->profileID==200||p->profileID==202||p->profileID==206;
+        if((!blur&&!generic&&!misc)||p->attributeCount!=4||p->layoutCount!=1||
+            p->attributes[0].index||p->attributes[0].format!=31||p->attributes[0].offset||
+            p->attributes[0].bufferIndex!=1||!p->attachmentContracts||!p->attachmentContractCount)continue;
+        MTLRenderPipelineDescriptor *check=[d copy];
+        BOOL float2=d.vertexDescriptor.attributes[0].format==MTLVertexFormatFloat2;
+        BOOL packed=d.colorAttachments[0].pixelFormat==MTLPixelFormatBGR5A1Unorm&&p->profileID>=602&&p->profileID<=606;
+        if(float2){check.vertexDescriptor=[d.vertexDescriptor copy];check.vertexDescriptor.attributes[0].format=MTLVertexFormatFloat4;}
+        if(packed)check.colorAttachments[0].pixelFormat=MTLPixelFormatBGRA8Unorm;
+        BOOL inactive=NO;uint32_t inactiveFormat=A5MaliCompiledInactiveColor1Format(p);
+        MTLRenderPipelineColorAttachmentDescriptor *a1=check.colorAttachments[1];
+        if(inactiveFormat&&!a1.pixelFormat&&!a1.isBlendingEnabled&&
+            (a1.writeMask==MTLColorWriteMaskAll||a1.writeMask==MTLColorWriteMaskNone)&&
+            !a1.rgbBlendOperation&&!a1.alphaBlendOperation&&a1.sourceRGBBlendFactor==1&&
+            a1.sourceAlphaBlendFactor==1&&!a1.destinationRGBBlendFactor&&!a1.destinationAlphaBlendFactor){
+            a1.pixelFormat=inactiveFormat;a1.writeMask=MTLColorWriteMaskNone;inactive=YES;
+        }
+        NSError *unused=nil;const A5MaliCompiledProfile *selected=A5MaliSelectCompiledProfile(check,&unused);
+        BOOL addBlend=NO;
+        if(selected!=p&&p->colorFormats[0]==80&&sourceOverAttachment(d.colorAttachments[0])&&
+            !(p->flags&(A5MaliProfileInlineSourceOver|A5MaliProfileNotExecutable))&&
+            p->passCount==1&&p->passes&&p->passes[0].logicalTarget==0){
+            /* Use an existing exact copy contract as the authentication proof.
+             * Only ONE / ONE_MINUS_SRC_ALPHA is implemented by the encoder. */
+            MTLRenderPipelineColorAttachmentDescriptor *a0=check.colorAttachments[0];
+            a0.blendingEnabled=NO;a0.destinationRGBBlendFactor=a0.destinationAlphaBlendFactor=MTLBlendFactorZero;
+            selected=A5MaliSelectCompiledProfile(check,&unused);addBlend=selected==p;
+        }
+        if(selected!=p||(!float2&&!packed&&!addBlend))continue;
+        A5MaliDynamicPipelineEntry *e=[A5MaliDynamicPipelineEntry new];
+        e->_owners=@[v,f];e->_profile=*p;
+        if(float2){memcpy(e->_attributes,p->attributes,sizeof(e->_attributes));e->_attributes[0].format=29;e->_profile.attributes=e->_attributes;}
+        if(packed)e->_profile.colorFormats[0]=43;
+        if(addBlend){
+            unsigned copyContract=0;
+            for(;copyContract<p->attachmentContractCount;copyContract++){
+                A5MaliCompiledProfile single=*p;single.attachmentContracts=p->attachmentContracts+copyContract;single.attachmentContractCount=1;
+                if(!A5MaliCompiledDescriptorMismatch(&single,check))break;
+            }
+            if(copyContract==p->attachmentContractCount)continue;
+            e->_attachments[0]=p->attachmentContracts[copyContract];e->_attachments[1]=e->_attachments[0];
+            e->_attachments[1].attachments[0]=(A5MaliCompiledAttachmentState){15,1,0,0,1,5,1,5};
+            e->_profile.attachmentContracts=e->_attachments;e->_profile.attachmentContractCount=2;
+            e->_profile.flags|=A5MaliProfileSourceOverBlend;
+        }
+        MTLRenderPipelineDescriptor *actual=[d copy];
+        if(inactive){actual.colorAttachments[1].pixelFormat=inactiveFormat;actual.colorAttachments[1].writeMask=MTLColorWriteMaskNone;}
+        NSString *mismatch=A5MaliCompiledDescriptorMismatch(&e->_profile,actual);
+        if(mismatch){if(error)*error=unsupported(mismatch);continue;}
+        if(suppliesInactiveColor1)*suppliesInactiveColor1=inactive;
+        return e;
+    }
+    return nil;
+}
 A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescriptor *d,NSError **error) {
     if(error)*error=nil;
     id v=d.vertexFunction,f=d.fragmentFunction;
@@ -347,6 +422,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     }
     const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
     for(unsigned i=0;i<4;++i)e->_attributes[i]=(A5MaliCompiledVertexAttribute){i,formats[i],offsets[i],1};
+    if(d.vertexDescriptor.attributes[0].format==MTLVertexFormatFloat2)e->_attributes[0].format=29;
     e->_layout=(A5MaliCompiledVertexLayout){1,48,1,1};
     for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i){unsigned over=c==1&&i==0;
         e->_attachments[c].attachments[i]=(A5MaliCompiledAttachmentState){15,over,0,0,1,over?5u:0u,1,over?5u:0u};}

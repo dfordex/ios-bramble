@@ -239,7 +239,7 @@ static int dynamic_images(uint8_t*d,const A5RuntimeMiscDraw*m){
  * The captured FS constant blob and FB1 uniform are dead in this exact code.
  */
 static int generic_color_contract(const A5MaliCompiledProfile*p){
- const unsigned sourceOver=p->profileID==602;
+ const unsigned sourceOver=!!(p->flags&A5MaliProfileSourceOverBlend);
  if((p->profileID!=600&&p->profileID!=601&&p->profileID!=602)||
     p->flags!=(sourceOver?A5MaliProfileSourceOverBlend:0)||p->passCount!=1||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
@@ -252,7 +252,7 @@ static int generic_color_contract(const A5MaliCompiledProfile*p){
  for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return 0;
  static const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
  for(unsigned i=0;i<4;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
-  if(a->index!=i||a->format!=formats[i]||a->offset!=offsets[i]||a->bufferIndex!=1)return 0;
+  if(a->index!=i||(a->format!=formats[i]&&(i||a->format!=29))||a->offset!=offsets[i]||a->bufferIndex!=1)return 0;
  }
  const A5MaliCompiledVertexLayout*l=p->layouts;
  if(l->index!=1||l->stride!=48||l->stepFunction!=1||l->stepRate!=1)return 0;
@@ -301,7 +301,7 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
  for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return 0;
  static const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
  for(unsigned i=0;i<4;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
-  if(a->index!=i||a->format!=formats[i]||a->offset!=offsets[i]||a->bufferIndex!=1)return 0;
+  if(a->index!=i||(a->format!=formats[i]&&(i||a->format!=29))||a->offset!=offsets[i]||a->bufferIndex!=1)return 0;
  }
  const A5MaliCompiledVertexLayout*l=p->layouts;
  if(l->index!=1||l->stride!=48||l->stepFunction!=1||l->stepRate!=1)return 0;
@@ -371,7 +371,7 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return 0;
  static const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
  for(unsigned i=0;i<4;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
-  if(a->index!=i||a->format!=formats[i]||a->offset!=offsets[i]||a->bufferIndex!=1)return 0;
+  if(a->index!=i||(a->format!=formats[i]&&(i||a->format!=29))||a->offset!=offsets[i]||a->bufferIndex!=1)return 0;
  }
  const A5MaliCompiledVertexLayout*l=p->layouts;
  if(l->index!=1||l->stride!=48||l->stepFunction!=1||l->stepRate!=1)return 0;
@@ -526,7 +526,8 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
   uint64_t vertex;unsigned push,available;
   if(!bind_buffer(m,d,&arena,&r->vertexBuffers[1],r->vertexCount*48,&vertex,&push,&available))return A5RuntimeBounds;
   vertex+=push;unsigned low=(unsigned)(vertex&63);vertex&=~UINT64_C(63);
-  attr(d,ATTRS,0,MALI_RGBA32F,0x688,low);
+  attr(d,ATTRS,0,p->attributes[0].format==29?MALI_RG32F:MALI_RGBA32F,
+       p->attributes[0].format==29?RG_SWIZZLE:0x688,low);
   if(generic_color||(p->flags&A5MaliProfileVertexColorOnly))attr(d,ATTRS+8,0,MALI_RGBA16F,0x688,low+32);
   else{attr(d,ATTRS+8,0,MALI_RG32F,RG_SWIZZLE,low+16);
    if(p->flags&A5MaliProfileVertexTwoUV){attr(d,ATTRS+16,0,MALI_RG32F,RG_SWIZZLE,low+24);attr(d,ATTRS+24,0,MALI_RGBA16F,0x688,low+32);}
@@ -689,7 +690,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
    (r->blend&&(!(p->flags&A5MaliProfileSourceOverBlend)||
      (out->metalPixelFormat==115&&!(p->flags&A5MaliProfileInlineSourceOver))))||
    ((p->flags&A5MaliProfileInlineSourceOver)&&r->blend!=A5RuntimeBlendPremultipliedSourceOver))return A5RuntimeUnsupported;
- if(generic_color&&p->profileID!=602&&r->blend!=A5RuntimeBlendCopy)return A5RuntimeUnsupported;
+ if(generic_color&&!(p->flags&A5MaliProfileSourceOverBlend)&&r->blend!=A5RuntimeBlendCopy)return A5RuntimeUnsupported;
  if(!isfinite(r->viewportX)||!isfinite(r->viewportY)||!isfinite(r->viewportWidth)||!isfinite(r->viewportHeight)||
    !isfinite(r->viewportNear)||!isfinite(r->viewportFar)||r->viewportWidth<=0||r->viewportHeight<=0||
    r->viewportX<0||r->viewportY<0||r->viewportWidth>4096-r->viewportX||r->viewportHeight>4096-r->viewportY||

@@ -25,6 +25,10 @@ void A5MaliTestDynamicFormat43(const A5MaliCompiledProfile*p,unsigned format,uns
  assert(A5MaliEncodeRuntimeMiscPass(&m,jobs,sizeof(jobs))==A5RuntimeOK);
  assert(!memcmp(jobs+0x6000,p->passes[0].vertex.bytes,p->passes[0].vertex.byteCount));
  assert(!memcmp(jobs+0x8000,p->passes[0].fragment.bytes,p->passes[0].fragment.byteCount));
+ pan_unpack((const struct mali_attribute_packed*)(jobs+0x800),ATTRIBUTE,position);
+ unsigned rg=MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9);
+ assert(position.format==((p->attributes[0].format==29?MALI_RG32F:MALI_RGBA32F)<<12|
+        (p->attributes[0].format==29?rg:0x688)));
  check_preload(jobs,m.draw.descriptorGPUVA,m.colorAttachments);
  pan_section_unpack(jobs+0x300,FRAMEBUFFER,PARAMETERS,fb);
  assert(fb.internal_format==(format==43?MALI_COLOR_BUFFER_INTERNAL_FORMAT_R5G5B5A1:MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8));

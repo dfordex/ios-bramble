@@ -41,7 +41,8 @@ int main(int argc,char**argv){@autoreleasepool{
   d.vertexDescriptor.attributes[a->index].offset=a->offset;d.vertexDescriptor.attributes[a->index].bufferIndex=a->bufferIndex;
  }
  d.vertexDescriptor.layouts[1].stride=48;d.vertexDescriptor.layouts[1].stepFunction=MTLVertexStepFunctionPerVertex;d.vertexDescriptor.layouts[1].stepRate=1;
- for(unsigned f=0;f<2;f++)for(unsigned blend=0;blend<2;blend++){
+ for(unsigned xy=0;xy<2;xy++)for(unsigned f=0;f<2;f++)for(unsigned blend=0;blend<2;blend++){
+  d.vertexDescriptor.attributes[0].format=xy?29:31;
   unsigned format=f?43:80;d.colorAttachments[0].pixelFormat=format;
   d.colorAttachments[0].blendingEnabled=blend;
   d.colorAttachments[0].sourceRGBBlendFactor=d.colorAttachments[0].sourceAlphaBlendFactor=MTLBlendFactorOne;
@@ -61,17 +62,21 @@ int main(int argc,char**argv){@autoreleasepool{
    error=nil;id function=[library newFunctionWithName:@(stage?source->fragmentName:source->vertexName)constantValues:constants error:&error];assert(function&&!error);
    if(stage)d.fragmentFunction=function;else d.vertexFunction=function;
   }
-  for(unsigned target=0;target<2;target++)for(unsigned blend=0;blend<2;blend++){
+  for(unsigned xy=0;xy<2;xy++)for(unsigned target=0;target<2;target++)for(unsigned blend=0;blend<2;blend++){
+   d.vertexDescriptor.attributes[0].format=xy?29:31;
    unsigned format=target?43:80;d.colorAttachments[0].pixelFormat=format;
    d.colorAttachments[0].blendingEnabled=blend;
    d.colorAttachments[0].sourceRGBBlendFactor=d.colorAttachments[0].sourceAlphaBlendFactor=MTLBlendFactorOne;
    d.colorAttachments[0].destinationRGBBlendFactor=d.colorAttachments[0].destinationAlphaBlendFactor=blend?MTLBlendFactorOneMinusSourceAlpha:MTLBlendFactorZero;
    error=nil;A5MaliReadSurfCandidate*p=[device newRenderPipelineStateWithDescriptor:d error:&error];if(!p)NSLog(@"static%u target%u: %@",profileID,format,error);assert(p&&!error);
    const A5MaliCompiledProfile*actual=[p profile];A5MaliCompiledProfile expected=*source;expected.colorFormats[0]=format;
-   assert(actual->profileID==profileID&&!memcmp(actual,&expected,sizeof(expected))&&source->colorFormats[0]==80);
+   assert(actual->profileID==profileID&&source->colorFormats[0]==80&&source->attributes[0].format==31);
+   if(xy){assert(actual->attributes!=source->attributes&&actual->attributes[0].format==29);expected.attributes=actual->attributes;}
+   assert(!memcmp(actual,&expected,sizeof(expected)));
    if(format==43){assert(actual!=source);[owners addObject:p];}
    A5MaliTestDynamicFormat43(actual,format,blend);
   }
+  d.vertexDescriptor.attributes[0].format=31;
   // Packing adaptation must preserve every other descriptor restriction.
   d.colorAttachments[0].pixelFormat=43;d.vertexDescriptor.layouts[1].stride=40;error=nil;
   assert(!A5MaliComposeDynamicPipeline(d,&error)&&error);d.vertexDescriptor.layouts[1].stride=48;
