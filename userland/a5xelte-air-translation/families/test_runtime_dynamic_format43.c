@@ -29,6 +29,23 @@ void A5MaliTestDynamicFormat43(const A5MaliCompiledProfile*p,unsigned format,uns
  unsigned rg=MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9);
  assert(position.format==((p->attributes[0].format==29?MALI_RG32F:MALI_RGBA32F)<<12|
         (p->attributes[0].format==29?rg:0x688)));
+ if(p->profileID==A5MaliDynamicProfileID){
+  /* Sparse Metal color index3 must become the correct compact native slot,
+   * with the original half4 byte offset, independent of absent unused UVs. */
+  unsigned compact=!!(p->flags&A5MaliProfileVertexColorOnly),dual=!!(p->flags&A5MaliProfileVertexTwoUV);
+  unsigned colorSlot=compact?1:dual?3:2;
+  pan_unpack((const struct mali_attribute_packed*)(jobs+0x800+8*colorSlot),ATTRIBUTE,color);
+  assert(color.buffer_index==position.buffer_index&&color.offset==position.offset+32);
+  assert(color.format==((MALI_RGBA16F<<12)|0x688));
+  if(!compact){
+   pan_unpack((const struct mali_attribute_packed*)(jobs+0x808),ATTRIBUTE,uv0);
+   assert(uv0.offset==position.offset+16&&uv0.format==((MALI_RG32F<<12)|rg));
+  }
+  if(dual){
+   pan_unpack((const struct mali_attribute_packed*)(jobs+0x810),ATTRIBUTE,uv1);
+   assert(uv1.offset==position.offset+24&&uv1.format==((MALI_RG32F<<12)|rg));
+  }
+ }
  check_preload(jobs,m.draw.descriptorGPUVA,m.colorAttachments);
  pan_section_unpack(jobs+0x300,FRAMEBUFFER,PARAMETERS,fb);
  assert(fb.internal_format==(format==43?MALI_COLOR_BUFFER_INTERNAL_FORMAT_R5G5B5A1:MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8));

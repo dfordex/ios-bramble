@@ -420,8 +420,16 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
             e->_pushes[pushCount++]=ps[i];
         }
     }
+    /* Native attribute locations are compacted by the compiler. Metal keeps
+     * position/UV0/UV1/color at indices 0/1/2/3: color remains index3 even when
+     * native location1 is color. Require every consumed Metal field, while
+     * allowing absent unused UV fields. Present unused fields still receive
+     * the same exact packing checks as the legacy four-field descriptor. */
     const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
-    for(unsigned i=0;i<4;++i)e->_attributes[i]=(A5MaliCompiledVertexAttribute){i,formats[i],offsets[i],1};
+    unsigned attributeCount=0,requiredAttributes=vertexColorOnly?0x9u:vertexTwoUV?0xfu:0xbu;
+    for(unsigned i=0;i<4;++i)if((requiredAttributes&(1u<<i))||
+        d.vertexDescriptor.attributes[i].format!=MTLVertexFormatInvalid)
+        e->_attributes[attributeCount++]=(A5MaliCompiledVertexAttribute){i,formats[i],offsets[i],1};
     if(d.vertexDescriptor.attributes[0].format==MTLVertexFormatFloat2)e->_attributes[0].format=29;
     e->_layout=(A5MaliCompiledVertexLayout){1,48,1,1};
     for(unsigned c=0;c<2;++c)for(unsigned i=0;i<8;++i){unsigned over=c==1&&i==0;
@@ -434,7 +442,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
         .colorFormats={(uint32_t)target},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
             (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0)|(vertexTwoUV?A5MaliProfileVertexTwoUV:0)|(fragmentTwoUV?A5MaliProfileFragmentTwoUV:0)|(fragmentColorOnly?A5MaliProfileFragmentColorOnly:0),.passes=&e->_pass,.passCount=1,
         .resources=e->_resources,.resourceCount=resourceCount,.pushFields=e->_pushes,.pushFieldCount=pushCount,
-        .attributes=e->_attributes,.attributeCount=4,.layouts=&e->_layout,.layoutCount=1,
+        .attributes=e->_attributes,.attributeCount=attributeCount,.layouts=&e->_layout,.layoutCount=1,
         .attachmentContracts=e->_attachments,.attachmentContractCount=2,.immutableSamplers=e->_samplers,.immutableSamplerCount=immutableCount};
 #if __has_include("A5MaliCompiledRegistryData.inc") || defined(A5_MALI_REQUIRE_COMPILED_REGISTRY)
     if(!A5MaliDynamicRuntimeProfileSupported(&e->_profile))

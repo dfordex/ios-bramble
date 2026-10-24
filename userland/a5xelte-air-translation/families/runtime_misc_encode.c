@@ -364,15 +364,22 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
     (p->colorFormats[0]!=80&&p->colorFormats[0]!=43)||p->viewportWidth||p->viewportHeight||
-    p->attributeCount!=4||!p->attributes||p->layoutCount!=1||!p->layouts||
+    p->attributeCount<2||p->attributeCount>4||!p->attributes||p->layoutCount!=1||!p->layouts||
     !p->resourceCount||p->resourceCount>16||!p->resources||
     !p->pushFieldCount||p->pushFieldCount>16||!p->pushFields||
     p->attachmentContractCount!=2||!p->attachmentContracts)return 0;
  for(unsigned i=1;i<8;++i)if(p->colorFormats[i])return 0;
  static const unsigned formats[]={31,29,29,27},offsets[]={0,16,24,32};
- for(unsigned i=0;i<4;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
-  if(a->index!=i||(a->format!=formats[i]&&(i||a->format!=29))||a->offset!=offsets[i]||a->bufferIndex!=1)return 0;
+ unsigned attributeMask=0,requiredAttributes=(p->flags&A5MaliProfileVertexColorOnly)?0x9u:
+  (p->flags&A5MaliProfileVertexTwoUV)?0xfu:0xbu;
+ for(unsigned i=0;i<p->attributeCount;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
+  unsigned index=a->index;
+  if(index>=4||(i&&index<=p->attributes[i-1].index)||
+     (a->format!=formats[index]&&(index||a->format!=29))||
+     a->offset!=offsets[index]||a->bufferIndex!=1)return 0;
+  attributeMask|=1u<<index;
  }
+ if((attributeMask&requiredAttributes)!=requiredAttributes)return 0;
  const A5MaliCompiledVertexLayout*l=p->layouts;
  if(l->index!=1||l->stride!=48||l->stepFunction!=1||l->stepRate!=1)return 0;
  unsigned textures=0,samplers=0,fetches=0;uint32_t textureBindings[4]={0},samplerBindings[4]={0};
