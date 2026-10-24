@@ -14,19 +14,25 @@ import tempfile
 import mkpayload
 
 
-def main():
+def argument_parser():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('reference_boot', type=Path)
     ap.add_argument('kernel', type=Path, help='fresh linked unstripped arm64 kernel')
     ap.add_argument('output_boot', type=Path)
     ap.add_argument('--install-bundle', action='store_true',
                     help='install the locally embedded bundle through the mounted HFS VFS')
-    ap.add_argument('--test-downsample', action='store_true',
+    downsample = ap.add_mutually_exclusive_group()
+    downsample.add_argument('--test-downsample', action='store_true',
                     help='run the actual translated downsample4 shaders once on private GPU memory')
+    downsample.add_argument('--skip-downsample', action='store_true',
+                    help='write a5downsampletest=0, replacing any inherited test setting')
     ap.add_argument('--compiler', action='store_true',
                     help='enable signed on-device compiler helpers embedded by patches0172/0173')
-    ap.add_argument('--test-shader-suite', action='store_true',
+    suite = ap.add_mutually_exclusive_group()
+    suite.add_argument('--test-shader-suite', action='store_true',
                     help='run the locally embedded Mac shader GPU fixture suite')
+    suite.add_argument('--skip-shader-suite', action='store_true',
+                    help='write a5shadersuite=0, replacing any inherited test setting')
     ap.add_argument('--native-rendering', action='store_true',
                     help='enable the privileged local Metal native queue; requires a compiled registry bundle')
     ap.add_argument('--restore-display-apps', action='store_true',
@@ -35,6 +41,29 @@ def main():
                     help='enable bounded UI thread samples and independent exception-output budgets')
     ap.add_argument('--storage-multiblock', action='store_true',
                     help='enable bounded 32-sector eMMC read/write batches')
+    return ap
+
+
+def selftest_boot_arguments(args):
+    """Only explicit test/skip choices override inherited optional test gates."""
+    required = {}
+    for key, test, skip in (
+            ('a5shadersuite', args.test_shader_suite, args.skip_shader_suite),
+            ('a5downsampletest', args.test_downsample, args.skip_downsample)):
+        if test or skip:
+            required[key] = '1' if test else '0'
+    return required
+
+
+def rewrite_boot_arguments(words, required):
+    # Remove every inherited occurrence: PE_parse_boot_argn must not find an
+    # older =1 before the explicit =0. Unrelated/native settings are retained.
+    return ([word for word in words if word.split('=', 1)[0] not in required] +
+            [f'{key}={value}' for key, value in required.items()])
+
+
+def main():
+    ap = argument_parser()
     args = ap.parse_args()
     if args.output_boot.exists():
         ap.error('output exists; choose a new private output path')
@@ -55,6 +84,7 @@ def main():
         ap.error('reference ADT is truncated')
     words = payload[0x48:0x2a8].split(b'\0', 1)[0].decode('ascii').split()
     required = {'a5gpu': '8', 'a5gpuclient': '1', 'a5metal': '1'}
+    required.update(selftest_boot_arguments(args))
     if args.native_rendering:
         if not args.install_bundle:
             ap.error('--native-rendering requires --install-bundle')
@@ -64,7 +94,6 @@ def main():
     if args.test_shader_suite:
         if b'A5XELTE G3D SUITE: completed passed=' not in args.kernel.read_bytes():
             ap.error('kernel lacks the generated Mac shader suite')
-        required['a5shadersuite'] = '1'
     if args.test_downsample:
         if b'actual QuartzCore downsample_blur_vert_lph/downsample_4_frag_lph start' not in args.kernel.read_bytes():
             ap.error('kernel lacks the actual translated downsample4 fixture/test')
@@ -76,7 +105,6 @@ def main():
                        b'A5XELTE G3D: full-panel tile bounds=0..67,0..119;'):
             if marker not in args.kernel.read_bytes():
                 ap.error('kernel lacks the released T720 initialization/panel-bounds corrections')
-        required['a5downsampletest'] = '1'
     if args.install_bundle:
         if b'A5XELTE Metal install:' not in args.kernel.read_bytes():
             ap.error('kernel lacks the embedded bundle installer')
@@ -108,8 +136,7 @@ def main():
         if b'A5XELTE eMMC: bounded CMD23/CMD18/CMD25 blocks=' not in args.kernel.read_bytes():
             ap.error('kernel lacks bounded eMMC multi-block transfers')
         required['a5emmc_blocks'] = '32'
-    words = [w for w in words if w.split('=', 1)[0] not in required]
-    words += [f'{k}={v}' for k, v in required.items()]
+    words = rewrite_boot_arguments(words, required)
     cmdline = ' '.join(words)
     if len(cmdline.encode()) >= mkpayload.BOOT_LINE_LENGTH:
         ap.error('boot arguments would be truncated')

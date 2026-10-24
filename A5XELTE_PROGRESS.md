@@ -732,3 +732,9 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 -0215b packer rearrangesonlyequal-sizedDTBHblobslots/entryoffsets andguardswhole-selected-FDTstagingrange; kernel/loader/ADT/arguments/21cacheoutputs/47fixturesunchanged. Physicalcorrectionpending. See[layout report](docs/a5xelte-0215-boot-layout.md).
 
 - **0215b installed:** same31,924,240bytepayloadguardedwrite/sync/reboot; onlyBOOT-carriedDTBHslotlayout/digestchanged,all6logicalblobs/loader/kernel/cachebyte-identical. SelectedFDTwhole41fda800..41ff4800before42000000.10tests/independentimagecomparisonpass. ActualXNUentrypendinguserreport; no physicalbootfixclaimyet.
+
+## 2026-10-24 — 0215b boots; new DS4 fixture poisons pre-runtime GPU queue
+
+- XNUtextphysicallyreported; newflush19/151,324rawbytes reaches4/4CPUs,HFS,launchd/backboardd/SpringBoard; no panic/CRASHrecord. All82files/21persistentcompiledpublicationsvalidate/sync0. EarlyDTBresetcheckpointpassed.
+- FirstfatalGPUeventisnewDS4u16fragmentfence94/MMU1/faultVA04000080. Omittedfixturepreloadrelocationleft04000000;queuequarantinepreventsRuntimeReady,then20selector4mapsfailNoResources. No successfulnativeGPUframe; oldfinalpipelineissueunreached.
+- Fixturepreloadcorrected0203e000, only3bytesperpayload;decodedpointerchecksrejectbotholdactualbadfixturesandacceptbothnew,oracles/codeunchanged.0216normalUIexplicitlyskipsoptionalGPUselftests,retainsnativeGPU/mandatorybootstrap/21cachepublications. See[readout](docs/a5xelte-0215b-log-review.md).

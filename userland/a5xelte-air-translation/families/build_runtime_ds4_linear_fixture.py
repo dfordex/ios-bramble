@@ -73,13 +73,29 @@ def main():
         objects.append(str(obj))
     exe = out/'builder'
     subprocess.run(['cc', *objects, '-o', str(exe)], check=True)
+    audit_object = out/'fixture-bounds.o'
+    compile_runtime(a.mesa_build.resolve(), audit_object, 'host',
+                    here/'test_runtime_ds4_fixture_bounds.c')
+    audit = out/'fixture-bounds'
+    subprocess.run(['cc', str(audit_object), '-o', str(audit)], check=True)
     cases = []
     for bits in (16, 32):
         name = f'actual_ds4_linear_indexed_u{bits}_fractional_clamp'
         payload = out/(name+'-payload.bin')
         expected = out/(name+'-expected.bin')
         subprocess.run([str(exe), str(payload), str(bits)], check=True)
+        subprocess.run([str(audit), str(payload)], check=True)
         data = payload.read_bytes()
+        # Reproduce the exact physical fault by restoring only the stale
+        # production destination pointer in a separate negative fixture.
+        import struct
+        stale = bytearray(data)
+        struct.pack_into('<Q', stale, 0x19a0, 0x04000000)
+        stale_payload = out/(name+'-stale-preload-negative.bin')
+        stale_payload.write_bytes(stale)
+        rejected = subprocess.run([str(audit), str(stale_payload)], capture_output=True, text=True)
+        if rejected.returncode != 1 or 'preload-destination-texture:0x4000000' not in rejected.stderr:
+            raise ValueError('range audit failed to reject actual stale preload pointer')
         if len(data) != 0x40000 or data[0x4000:0x4000+3472] != Path(fs['path']).read_bytes():
             raise ValueError('DS4 shader changed')
         source = data[0x3a000:0x3e000]
@@ -97,6 +113,7 @@ def main():
             'immutable': [{'offset': 0x39c00, 'bytes': 6*(bits//8)},
                           {'offset': 0x3a000, 'bytes': 0x4000}, {'offset': 0x3f000, 'bytes': 4096}],
             'profile': 99, 'fragment_sha256': DS4_SHA,
+            'gpu_range_audit': 'Decoded preload/draw/FB/UBO/code/index spans fit02000000..02040000; direct SFBD load aliases zero; exact04000000 stale preload negative rejects',
             'sampler': {'min': 'linear', 'mag': 'linear', 'address': 'clamp-to-edge', 'levels': 1},
             'oracle': 'Actual DS4 ordered four weighted half taps; exact dyadic bilinear numerator/256 with RGB EDR=.5; left/bottom clamp; full4096bytes',
             'nearest_counterfactual_different_bytes_over_tolerance': different,

@@ -58,7 +58,19 @@ int main(int argc,char **argv){
  MALI_SURFACE_WITH_STRIDE_pack((struct mali_surface_with_stride_packed*)(out+0x620),&source);
  pan_unpack((struct mali_framebuffer_parameters_packed*)(out+0x320),FRAMEBUFFER_PARAMETERS,fb);
  fb.color_writeback.base=d.descriptorGPUVA+0x3e000;
+ /* SFBD load addresses alias clear fields. The production preserve path is
+  * its explicit texture-copy TILER job; keep both direct interpretations zero. */
+ fb.color_preload_enable=false;fb.color_load_address=0;
+ fb.color_load_row_stride=0;fb.color_load_surface_stride=0;
+ fb.clear_color_0=fb.clear_color_1=fb.clear_color_2=fb.clear_color_3=0;
  MALI_FRAMEBUFFER_PARAMETERS_pack((struct mali_framebuffer_parameters_packed*)(out+0x320),&fb);
+ /* The preserve TILER executes even for a copy draw. Relocate its actual
+  * destination texture as well as the SFBD writeback. Leaving this at the
+  * production test VA0x04000000 caused the physical0x04000080 read fault. */
+ pan_unpack((struct mali_surface_with_stride_packed*)(out+0x19a0),SURFACE_WITH_STRIDE,preload);
+ assert(preload.pointer==d.destination.gpuVA);
+ preload.pointer=d.descriptorGPUVA+0x3e000;
+ MALI_SURFACE_WITH_STRIDE_pack((struct mali_surface_with_stride_packed*)(out+0x19a0),&preload);
  for(unsigned y=0;y<64;++y)for(unsigned x=0;x<64;++x){
   unsigned at=0x3a000+(y*64+x)*4,blue=(x/7)&1,green=(y/7)&1;
   out[at]=255*blue;out[at+1]=255*green;out[at+2]=255*(blue^green);out[at+3]=255;
