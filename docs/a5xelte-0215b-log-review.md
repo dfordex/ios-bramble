@@ -29,3 +29,7 @@ Corrected physical DS4 fixture pixel results remain pending in a separate opt-in
 ## 0216 build checkpoint
 
 Full XNU make exits0. BOOT remains31,924,240bytes and preserves the physically booted0215b loader, ADT and safe DTBH byte for byte. The exact signed provider,21cache publications and45previous fixtures remain unchanged; both corrected DS4 payloads are verified inside the linked kernel. Command line546bytes explicitly disables optional fixture boots and retains native GPU, compiler, framebuffer,4CPUs and32-sector storage. No physical UI result is claimed before reboot observation.
+
+## Installation checkpoint
+
+Guarded TWRP/model/BOOTp10/capacity checks pass. Direct offset-zero write acknowledges31,924,240bytes, sync succeeds and reboot is requested. No BOOT backup, post-write readback/hash or full USERDATA transfer. Physical native resource mapping, first GPU presentation and lock-screen response remain pending the next capture.
