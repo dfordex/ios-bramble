@@ -693,3 +693,5 @@ Stage the iPhone 8 Plus userland in an exact-size HFSX USERDATA image, select it
 - **Local gates:** ActualnewFunction/factory/Query17/Submit18/emittercopy+sourceover, compact602/full603/dualcolorplanes, uniform/alias/fenceandmalformedIO/flag/liveness/fetchnegativespass.18nativewrappers/finaliOScompile andsignedproviderpass.31filepayload40,707,850raw/9,854,181packedactualpreflightpass.44physicalcasesretainold42andaddindependent2240orderedcolor/176constantoracles; devicepixelsandwake/buttonprogressionpending. See[0213](docs/a5xelte-0213-untextured-native-fragments.md).
 
 - **0213 final local build:** Prioractual2448fetchand2592/1328pairregressionsalsopass; fullXNUexit0. BOOT31,776,784bytesfits32MiB, exact0212loader/ADT, finalsignedprovider/verifiedcompiler/fourcompletepublicationsand44casesembedded;4cores/32blockstorageunchanged. Physicalpixel/buttontransitionresultpending.
+
+- **0213 installed:** Sourceff396d7pushed; guardedoffset-zeroBOOTp10writeacknowledges31,776,784bytes,synccomplete/rebootrequested. NoBOOTbackup/readback/hash/fullUSERDATAtransfer. Actualnew44-casepixelsandHome/Power/backboardd/Attentionruntimepending.

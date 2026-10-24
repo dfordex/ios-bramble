@@ -70,5 +70,15 @@ negative cache contracts. Repository validation203patches/41Python/10shell passe
 Full XNU compile/link/dSYM/strip/symsets completes exit0. BOOT31,776,784bytes
 fits32MiB; loader/ADT remain identical to0212, and the exact signed provider,
 unchanged verified compiler and all four complete publications are embedded.
-It retains four tested CPUs and32-sector storage batches. Device installation
-and44-case/transition runtime results follow after writing.
+It retains four tested CPUs and32-sector storage batches. Installation is recorded below;44-case/transition runtime results remain
+pending.
+
+
+## Installed0213
+
+Sourceff396d7 was committed and pushed before installation. Recovery/model/TWRP,
+BOOT p10 and32MiB capacity guards pass. Direct offset-zero write acknowledges
+31,776,784bytes in2.24seconds, sync completes and reboot is requested. No BOOT
+backup, post-write readback/hash or whole USERDATA transfer occurs. Test clock
+screen progression, then single Home/Power transitions and read the44-case GPU
+and backboardd/Attention connection results from the next recovery log.
