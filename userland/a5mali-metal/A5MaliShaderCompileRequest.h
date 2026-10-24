@@ -8,7 +8,7 @@ typedef NS_ENUM(NSInteger, A5MaliShaderForwardResult) {
     A5MaliShaderForwardFailed = 0,
     A5MaliShaderForwardQueued = 1,
     A5MaliShaderForwardAlreadyQueued = 2,
-    A5MaliShaderForwardBusy = 3, /* retry; no request was published */
+    A5MaliShaderForwardBusy = 3, /* lock/quota pressure: retry same identity; no request published */
 };
 
 /* These immutable descriptions are requests, never executable Metal objects.

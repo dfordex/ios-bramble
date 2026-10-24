@@ -147,7 +147,7 @@ BOOL A5MaliEncodeTextureMipmaps(A5MaliCommandBuffer *commands,A5MaliMetalTexture
 {
     if(!texture||texture.storageMode==MTLStorageModeMemoryless)return NO;
     if(texture.mipmapLevelCount==1)return YES;
-    if(texture.textureType!=MTLTextureType2D||texture.pixelFormat!=MTLPixelFormatBGRA8Unorm)return NO;
+    if(texture.textureType!=MTLTextureType2D||(texture.pixelFormat!=MTLPixelFormatBGRA8Unorm&&texture.pixelFormat!=MTLPixelFormatRGBA8Unorm))return NO;
     for(NSUInteger level=1;level<texture.mipmapLevelCount;++level){
         A5MaliTextureLevelLayout l={0};if(![texture getLevelLayout:&l level:level])return NO;
         if(!encode(commands,texture,level-1,texture,level,MTLOriginMake(0,0,0),

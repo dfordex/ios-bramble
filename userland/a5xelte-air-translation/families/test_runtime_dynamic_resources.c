@@ -62,6 +62,18 @@ int main(void){
 
  assert(A5MaliDynamicRuntimeProfileSupported(&p));
  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+ /* RGBA source and BGRA target: red and blue cannot be aliased. Both
+  * the compact Texture3 and reflected multi-resource descriptor paths count. */
+ for(unsigned rgba=0;rgba<2;rgba++){
+  m.fragmentTextures[3].metalPixelFormat=rgba?70:80;
+  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+  pan_unpack((struct mali_texture_packed*)(descriptor+0x600),TEXTURE,order);
+  assert((order.format>>12)==MALI_RGBA8_UNORM&&(order.format&0xfff)==(rgba?0x688:0x60a));
+  const unsigned char texel[4]={0x19,0x73,0xe1,0x85};
+  assert(texel[(order.format&7)]==(rgba?0x19:0xe1));
+  assert(texel[((order.format>>6)&7)]==(rgba?0xe1:0x19));
+ }
+ m.fragmentTextures[3].metalPixelFormat=80;
  /* Extra resource: a separate half4 noise/LUT texture with a different Metal
   * sampler slot. The emitter must use reflected indices, not Texture3/S0. */
  resources[5]=(A5MaliCompiledResource){2,2,7,6,1,1,0,0,0,0};
@@ -82,6 +94,13 @@ int main(void){
  assert(tex.width==256&&tex.height==1&&(tex.format>>12)==MALI_RGBA16F);
  assert(surf.pointer==m.fragmentTextures[7].gpuVA&&surf.row_stride==2048);
  assert(sampler.minify_nearest&&sampler.magnify_nearest&&sampler.normalized_coordinates);
+ for(unsigned rgba=0;rgba<2;rgba++){
+  m.fragmentTextures[3].metalPixelFormat=rgba?70:80;
+  assert(A5MaliEncodeRuntimeMiscPass(&m,descriptor,sizeof(descriptor))==A5RuntimeOK);
+  pan_unpack((struct mali_texture_packed*)(descriptor+0x4000),TEXTURE,expanded);
+  assert((expanded.format>>12)==MALI_RGBA8_UNORM&&(expanded.format&0xfff)==(rgba?0x688:0x60a));
+ }
+ m.fragmentTextures[3].metalPixelFormat=80;
  /* Native slot holes are permitted only where compiler liveness omitted a
   * descriptor; counts cover the highest live slot and the hole remains zero. */
  resources[5].nativeIndex=resources[6].nativeIndex=3;

@@ -230,6 +230,19 @@ static NSString *boundedFunctionIdentifier(NSString *name)
     return [name rangeOfCharacterFromSet:invalid].location==NSNotFound ? name : @"<invalid>";
 }
 
+/* Independent terminal receipts cannot be consumed by verbose successful
+ * specializations. Preserve the actual error instead of a generic wrapper. */
+static void logFunctionFailure(NSString *name,NSString *requestID,NSError *error)
+{
+    static atomic_uint failures;
+    if(atomic_fetch_add_explicit(&failures,1,memory_order_relaxed)>=32)return;
+    NSString *reason=[error.localizedDescription stringByReplacingOccurrencesOfString:@"\n" withString:@" "]?:@"unknown";
+    if(reason.length>384)reason=[reason substringToIndex:384];
+    fprintf(stderr,"A5XELTE Metal function terminal: function=%s request=%s domain=%s code=%ld reason=%s\n",
+        boundedFunctionIdentifier(name).UTF8String,requestID.UTF8String?:"unavailable",
+        error.domain.UTF8String?:"unknown",(long)error.code,reason.UTF8String);
+}
+
 static void logConstantArray(NSArray *array,BOOL indexed,unsigned request)
 {
     if (![array isKindOfClass:[NSArray class]]) {
@@ -590,8 +603,6 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
     }
     A5MaliMetalFunction *function = [self newFunctionWithName:snapshot.name
         constantValues:snapshot.constantValues error:error];
-    if (!function && error)
-        *error = libraryError(@"function is outside the authenticated compiled library profiles");
     return function;
 }
 
@@ -620,11 +631,11 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
         }
         logFunctionSpecialization(name,constants);
 #if A5_MALI_DYNAMIC_SHADER_COMPILER
-        MTLFunctionType stage=0;
+        NSError *payloadError=nil;MTLFunctionType stage=0;
         if([name hasPrefix:@"fixed_vert_"]||[name containsString:@"_vert"])stage=MTLFunctionTypeVertex;
         else if([name hasPrefix:@"fixed_frag_"]||[name containsString:@"_frag"])stage=MTLFunctionTypeFragment;
-        NSDictionary *payload=stage?A5MaliShaderCompileFunctionPayload(name,stage,constants,error):nil;
-        NSString *requestID=payload?A5MaliShaderCompileRequestID(payload,error):nil;
+        NSDictionary *payload=stage?A5MaliShaderCompileFunctionPayload(name,stage,constants,&payloadError):nil;
+        NSString *requestID=payload?A5MaliShaderCompileRequestID(payload,&payloadError):nil;
         if(requestID){
             unsigned ticks=0;BOOL queued=NO;
             for(;;){
@@ -636,13 +647,15 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
                         name.UTF8String,entry.stage,entry.shader->byteCount);
                     return [[A5MaliMetalFunction alloc]initWithLibrary:self dynamicShader:entry];
                 }
-                if(failure.code!=ENOENT){if(error)*error=failure;return nil;}
+                if(failure.code!=ENOENT){logFunctionFailure(name,requestID,failure);if(error)*error=failure;return nil;}
                 if(!queued){
                     NSString *forwardedID=nil;
-                    A5MaliShaderForwardResult forwarded=A5MaliForwardShaderCompileRequest(payload,&forwardedID,error);
-                    if(forwarded==A5MaliShaderForwardFailed)return nil;
+                    NSError *forwardError=nil;
+                    A5MaliShaderForwardResult forwarded=A5MaliForwardShaderCompileRequest(payload,&forwardedID,&forwardError);
+                    if(forwarded==A5MaliShaderForwardFailed){logFunctionFailure(name,requestID,forwardError);if(error)*error=forwardError;return nil;}
                     if(![forwardedID isEqual:requestID]){
-                        if(error)*error=libraryError(@"compiler request identity changed");
+                        NSError *identityError=libraryError(@"compiler request identity changed");
+                        logFunctionFailure(name,requestID,identityError);if(error)*error=identityError;
                         return nil;
                     }
                     queued=forwarded==A5MaliShaderForwardQueued||forwarded==A5MaliShaderForwardAlreadyQueued;
@@ -657,7 +670,12 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
             }
         }
 #endif
-        if (error) *error = libraryError(@"no compiled AIR function-constant variant matches");
+        NSError *unmatched=nil;
+#if A5_MALI_DYNAMIC_SHADER_COMPILER
+        unmatched=payloadError;
+#endif
+        if(!unmatched)unmatched=libraryError(@"no compiled AIR function-constant variant matches");
+        logFunctionFailure(name,nil,unmatched);if(error)*error=unmatched;
         return nil;
     }
     A5MaliMetalFunction *function = [self newFunctionWithName:name];

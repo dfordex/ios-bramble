@@ -98,7 +98,7 @@ static void renderer(uint8_t*d,uint64_t VA,int home,int clear,int generic_color,
 static int span(uint64_t a,uint64_t n){return a&&n&&a<(UINT64_C(1)<<40)&&n<=(UINT64_C(1)<<40)-a;}
 static int overlap(uint64_t a,uint64_t n,uint64_t b,uint64_t m){return a<b+m&&b<a+n;}
 static int shader_tag(unsigned t){return t>=2&&t<=15&&t!=6&&t!=7;}
-static unsigned bpp(unsigned f){return f==80?4:f==115?8:(f==1||f==10)?1:(f==30||f==43)?2:0;}
+static unsigned bpp(unsigned f){return (f==70||f==80)?4:f==115?8:(f==1||f==10)?1:(f==30||f==43)?2:0;}
 static int valid_image(const A5RuntimeImage*i){unsigned n=bpp(i->metalPixelFormat);
  return n&&span(i->gpuVA,i->bytes)&&!(i->gpuVA&63)&&i->width&&i->width<=2048&&i->height&&i->height<=2048&&
  i->rowBytes>=i->width*n&&!(i->rowBytes&15)&&(uint64_t)i->rowBytes*i->height<=i->bytes;
@@ -121,8 +121,8 @@ static int textured_image(uint8_t*d,const A5RuntimeMiscDraw*m){
  const A5RuntimeImage*im=&m->fragmentTextures[3];const A5RuntimeSampler*s=&m->fragmentSamplers[0];
  uint64_t VA=m->draw.descriptorGPUVA;
  if(!textured_sampler(s)||!valid_image(im)||
-    (im->metalPixelFormat!=80&&im->metalPixelFormat!=30&&im->metalPixelFormat!=10&&im->metalPixelFormat!=1)||
-    (m->draw.profile->profileID==603&&im->metalPixelFormat!=80)||
+    (im->metalPixelFormat!=70&&im->metalPixelFormat!=80&&im->metalPixelFormat!=30&&im->metalPixelFormat!=10&&im->metalPixelFormat!=1)||
+    (m->draw.profile->profileID==603&&im->metalPixelFormat!=80&&im->metalPixelFormat!=70)||
     (m->draw.profile->profileID==606&&im->metalPixelFormat!=1)||
     (uint64_t)im->rowBytes*im->height>INT32_MAX||
     overlap(im->gpuVA,im->bytes,VA,SIZE))return A5RuntimeUnsupported;
@@ -130,9 +130,9 @@ static int textured_image(uint8_t*d,const A5RuntimeMiscDraw*m){
   const A5RuntimeImage*dest=&m->colorAttachments[m->draw.profile->passes[i].logicalTarget];
   if(overlap(im->gpuVA,im->bytes,dest->gpuVA,dest->bytes))return A5RuntimeUnsupported;
  }
- const unsigned format=im->metalPixelFormat==80?MALI_RGBA8_UNORM:
+ const unsigned format=(im->metalPixelFormat==70||im->metalPixelFormat==80)?MALI_RGBA8_UNORM:
   im->metalPixelFormat==30?MALI_RG8_UNORM:MALI_R8_UNORM;
- const unsigned swizzle=im->metalPixelFormat==80?0x60a:
+ const unsigned swizzle=im->metalPixelFormat==80?0x60a:im->metalPixelFormat==70?0x688:
   im->metalPixelFormat==30?RG_SWIZZLE:im->metalPixelFormat==1?A_SWIZZLE:R_SWIZZLE;
  pan_pack((struct mali_texture_packed*)(d+TEX0),TEXTURE,c){
   c.width=im->width;c.height=im->height;c.array_size=1;c.levels=1;
@@ -200,15 +200,15 @@ static int dynamic_images(uint8_t*d,const A5RuntimeMiscDraw*m){
       1,0,state->lodMinClamp,state->lodMaxClamp};
   }else sm=m->fragmentSamplers+sampler->metalIndex;
   if((!(sampler->flags&A5MaliResourceImmutableSampler)&&!textured_sampler(sm))||!valid_image(im)||
-     (im->metalPixelFormat!=80&&im->metalPixelFormat!=115&&im->metalPixelFormat!=30&&im->metalPixelFormat!=10&&im->metalPixelFormat!=1)||
+     (im->metalPixelFormat!=70&&im->metalPixelFormat!=80&&im->metalPixelFormat!=115&&im->metalPixelFormat!=30&&im->metalPixelFormat!=10&&im->metalPixelFormat!=1)||
      overlap(im->gpuVA,im->bytes,va,SIZE))return A5RuntimeUnsupported;
   for(unsigned j=0;j<p->passCount;j++){
    const A5RuntimeImage*out=m->colorAttachments+p->passes[j].logicalTarget;
    if(overlap(im->gpuVA,im->bytes,out->gpuVA,out->bytes))return A5RuntimeUnsupported;
   }
-  unsigned format=im->metalPixelFormat==80?MALI_RGBA8_UNORM:
+  unsigned format=(im->metalPixelFormat==70||im->metalPixelFormat==80)?MALI_RGBA8_UNORM:
    im->metalPixelFormat==115?MALI_RGBA16F:im->metalPixelFormat==30?MALI_RG8_UNORM:MALI_R8_UNORM;
-  unsigned swizzle=im->metalPixelFormat==80?0x60a:im->metalPixelFormat==115?0x688:
+  unsigned swizzle=im->metalPixelFormat==80?0x60a:(im->metalPixelFormat==70||im->metalPixelFormat==115)?0x688:
    im->metalPixelFormat==30?RG_SWIZZLE:im->metalPixelFormat==1?A_SWIZZLE:R_SWIZZLE;
   unsigned tex=DYNAMIC_TEX+r->nativeIndex*64;
   pan_pack((struct mali_texture_packed*)(d+tex),TEXTURE,c){

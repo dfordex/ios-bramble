@@ -15,8 +15,8 @@ int main(void)
 {
  @autoreleasepool{
  unsigned context=0;A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:transport context:&context commandCapabilities:63 operationCapabilities:0x7ffff];
- const MTLPixelFormat formats[]={80,115,1,10,30,55,23,25,43,105};
- for(unsigned f=0;f<10;++f)for(unsigned one=0;one<2;++one){
+ const MTLPixelFormat formats[]={70,80,115,1,10,30,55,23,25,43,105};
+ for(unsigned f=0;f<sizeof(formats)/sizeof(formats[0]);++f)for(unsigned one=0;one<2;++one){
   A5MaliPrivateBuffer*b=[d newBufferWithLength:4096 options:0];assert(b&&b.contents);memset(b.contents,0xa5,b.length);
   MTLTextureDescriptor*desc=descriptor(formats[f],one);NSUInteger pixel=A5MaliTexturePixelBytes(formats[f]);
   A5MaliMetalTexture*t=(id)[b newLinearTextureWithDescriptor:desc offset:64 bytesPerRow:128 bytesPerImage:1024];assert(t);
@@ -37,6 +37,18 @@ int main(void)
   BOOL raised=NO;@try{[t getBytes:out bytesPerRow:128 fromRegion:MTLRegionMake2D(12,0,2,1) mipmapLevel:0];}@catch(NSException*e){raised=YES;}assert(raised);
   assert(![t getLevelLayout:&l level:1]);
  }
+ MTLTextureDescriptor*rgba=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:70 width:37 height:37 mipmapped:NO];
+ rgba.storageMode=MTLStorageModeShared;rgba.usage=MTLTextureUsageShaderRead;
+ A5MaliPrivateBuffer*rgbaBuffer=[d newBufferWithLength:8192 options:0];
+ A5MaliMetalTexture*rgbaTexture=(id)[rgbaBuffer newLinearTextureWithDescriptor:rgba offset:0 bytesPerRow:192 bytesPerImage:7060];
+ A5MaliTextureLevelLayout rgbaLayout;
+ assert(rgbaTexture&&[rgbaTexture getLevelLayout:&rgbaLayout level:0]&&rgbaLayout.byteLength==7104);
+ assert(A5MaliTexturePixelCode(rgbaTexture.pixelFormat)==0x52474241);
+ uint8_t rgbaPixel[4]={0x19,0x73,0xe1,0x85},rgbaOut[4]={0};
+ [rgbaTexture replaceRegion:MTLRegionMake2D(36,36,1,1) mipmapLevel:0 withBytes:rgbaPixel bytesPerRow:4];
+ [rgbaTexture getBytes:rgbaOut bytesPerRow:4 fromRegion:MTLRegionMake2D(36,36,1,1) mipmapLevel:0];
+ assert(!memcmp(rgbaPixel,rgbaOut,4)&&!memcmp((uint8_t*)rgbaBuffer.contents+7056,rgbaPixel,4));
+ assert(![rgbaBuffer newLinearTextureWithDescriptor:rgba offset:0 bytesPerRow:192 bytesPerImage:7059]);
  A5MaliPrivateBuffer*b=[d newBufferWithLength:4096 options:0];MTLTextureDescriptor*good=descriptor(80,NO);
  A5MaliMetalTexture*publicView=(id)[b newTextureWithDescriptor:good offset:64 bytesPerRow:128];
  assert(publicView&&publicView.buffer==b&&publicView.bufferBytesPerImage==512);
@@ -94,6 +106,6 @@ int main(void)
   assert(!memcmp((uint8_t*)pages+64,in,8));
  }
  assert(weak&&!releases);held=nil;assert(!weak&&releases==1);
- puts("linear buffer textures: public+SPI real alias, ten formats,1D/2D paddedstrides/offsets, latewrites, CPU ranges, descriptor/lifetime and invalid bounds PASS (CPU/mock transport; no GPU pixels)");
+ puts("linear buffer textures: public+SPI real alias, eleven formats,1D/2D paddedstrides/offsets, latewrites, CPU ranges, descriptor/lifetime and invalid bounds PASS (CPU/mock transport; no GPU pixels)");
  }return 0;
 }

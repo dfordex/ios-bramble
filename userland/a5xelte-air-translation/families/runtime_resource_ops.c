@@ -32,7 +32,7 @@ static void p32(uint8_t*d,unsigned p,uint32_t n){memcpy(d+p,&n,4);}
 static void p64(uint8_t*d,unsigned p,uint64_t n){memcpy(d+p,&n,8);}
 static int span(uint64_t a,uint64_t n){return a&&n&&a<(UINT64_C(1)<<40)&&n<=(UINT64_C(1)<<40)-a;}
 static int overlap(uint64_t a,uint64_t n,uint64_t b,uint64_t m){return a<b+m&&b<a+n;}
-static unsigned bpp(unsigned fmt){switch(fmt){case 1:case 10:return 1;case 30:case 43:case 23:case 25:return 2;case 80:case 55:return 4;case 105:case 115:return 8;default:return 0;}}
+static unsigned bpp(unsigned fmt){switch(fmt){case 1:case 10:return 1;case 30:case 43:case 23:case 25:return 2;case 70:case 80:case 55:return 4;case 105:case 115:return 8;default:return 0;}}
 static int image(const A5RuntimeImage*i,unsigned type,unsigned n){return n&&span(i->gpuVA,i->bytes)&&!(i->gpuVA&63)&&i->width&&i->width<=4096&&i->height&&i->height<=4096&&
  (type==A5ResourceTexture2D||(type==A5ResourceTexture1D&&i->height==1))&&
  i->rowBytes>=i->width*n&&!(i->rowBytes&15)&&(uint64_t)i->rowBytes*i->height<=i->bytes&&i->bytes<=32u*1024*1024;}
@@ -50,7 +50,7 @@ static void buf(uint8_t*d,unsigned p,uint64_t va,unsigned stride,unsigned bytes)
 static void tex(uint8_t*d,unsigned p,unsigned table,uint64_t va,const A5RuntimeImage*im,unsigned type,unsigned bits,int mip){
  unsigned fmt=mip?MALI_RGBA8_UNORM:bits==8?MALI_R8_UNORM:bits==16?MALI_R16UI:bits==32?MALI_R32UI:MALI_RG32UI;
  pan_pack((struct mali_texture_packed*)(d+p),TEXTURE,c){c.width=im->width;c.height=im->height;c.array_size=1;c.levels=1;
- c.format=(fmt<<12)|(mip?0x60a:bits==64?RG:R);c.dimension=type==A5ResourceTexture1D?MALI_TEXTURE_DIMENSION_1D:MALI_TEXTURE_DIMENSION_2D;
+ c.format=(fmt<<12)|(mip?(im->metalPixelFormat==80?0x60a:0x688):bits==64?RG:R);c.dimension=type==A5ResourceTexture1D?MALI_TEXTURE_DIMENSION_1D:MALI_TEXTURE_DIMENSION_2D;
  c.texel_ordering=MALI_TEXTURE_LAYOUT_LINEAR;c.swizzle=0x688;}
  pan_pack((struct mali_surface_with_stride_packed*)(d+p+32),SURFACE_WITH_STRIDE,c){c.pointer=im->gpuVA;c.row_stride=im->rowBytes;c.surface_stride=im->rowBytes*im->height;}
  p64(d,table,va+p);
@@ -82,7 +82,7 @@ static int encode(const A5RuntimeResourceOp*r,uint8_t*d){
  int mip=r->operation==A5ResourceGenerateMip;
  if(!r->width||!r->height||r->destinationX>=r->destination.width||r->destinationY>=r->destination.height||r->width>r->destination.width-r->destinationX||r->height>r->destination.height-r->destinationY)return A5RuntimeBounds;
  if(mip){
- if(r->source.metalPixelFormat!=80||r->sourceType!=A5ResourceTexture2D||r->destinationType!=A5ResourceTexture2D||r->sourceX||r->sourceY||r->destinationX||r->destinationY||
+ if((r->source.metalPixelFormat!=80&&r->source.metalPixelFormat!=70)||r->sourceType!=A5ResourceTexture2D||r->destinationType!=A5ResourceTexture2D||r->sourceX||r->sourceY||r->destinationX||r->destinationY||
  r->width!=r->destination.width||r->height!=r->destination.height||r->destination.width!=(r->source.width>1?r->source.width/2:1)||r->destination.height!=(r->source.height>1?r->source.height/2:1))return A5RuntimeUnsupported;
  }else if(r->sourceX>=r->source.width||r->sourceY>=r->source.height||r->width>r->source.width-r->sourceX||r->height>r->source.height-r->sourceY)return A5RuntimeBounds;
  const A5ResourceShader*vs=shader(0,0,2),*fs=shader(mip?2:1,bits,dim);if(!vs||!fs)return A5RuntimeUnsupported;
@@ -99,7 +99,7 @@ static int encode(const A5RuntimeResourceOp*r,uint8_t*d){
  pan_section_pack(d+FB,FRAMEBUFFER,LOCAL_STORAGE,c){c.wls_instances=MALI_LOCAL_STORAGE_NO_WORKGROUP_MEM;}
  pan_section_pack(d+FB,FRAMEBUFFER,PARAMETERS,c){c.internal_format=(mip||bits==8)?MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8:MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW_VALUE;
  c.color_writeback_format=mip?MALI_COLOR_FORMAT_R8G8B8A8:bits==8?MALI_COLOR_FORMAT_R8:bits==16?MALI_COLOR_FORMAT_1_16B_CHANNEL:bits==32?MALI_COLOR_FORMAT_1_32B_CHANNEL:MALI_COLOR_FORMAT_2_32B_CHANNELS;
- c.swizzle=mip?0x60a:bits==8?R:0x688;c.color_write_enable=true;c.color_block_format=MALI_BLOCK_FORMAT_LINEAR;c.tie_break_rule=MALI_TIE_BREAK_RULE_MINUS_180_IN_0_OUT;
+ c.swizzle=mip?(r->destination.metalPixelFormat==80?0x60a:0x688):bits==8?R:0x688;c.color_write_enable=true;c.color_block_format=MALI_BLOCK_FORMAT_LINEAR;c.tie_break_rule=MALI_TIE_BREAK_RULE_MINUS_180_IN_0_OUT;
  c.bound_max_x=r->destination.width-1;c.bound_max_y=r->destination.height-1;c.color_writeback.base=r->destination.gpuVA;c.color_writeback.row_stride=r->destination.rowBytes;}
  unsigned tiles=((r->destination.width+1023)/1024)*((r->destination.height+1023)/1024),header=0x200+((tiles*8)/0x200)*0x200,full=0x200+tiles*0x200;
  pan_section_pack(d+FB,FRAMEBUFFER,TILER,c){c.polygon_list=va+POLY;c.polygon_list_body=va+POLY+header;c.polygon_list_size=full;c.hierarchy_mask=0x1c7;c.heap_start=va+HEAP;c.heap_end=va+HEAP_END;}p32(d,POLY+header,0xa0000000);

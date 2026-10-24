@@ -356,7 +356,7 @@ A5MaliShaderForwardResult A5MaliForwardShaderCompileRequest(NSDictionary *payloa
     unsigned count=0;struct dirent *entry;
     while((entry=readdir(entries)))if(entry->d_name[0]!='.'&&++count>=kMaxPending)break;
     closedir(entries);
-    if(count>=kMaxPending){reason=@"per-UID pending request limit64 reached";goto done;}
+    if(count>=kMaxPending){result=A5MaliShaderForwardBusy;goto done;}
     static atomic_uint serial;unsigned next=atomic_fetch_add_explicit(&serial,1,memory_order_relaxed);
     temp=[NSString stringWithFormat:@".tmp-%d-%u-%08x",getpid(),next,arc4random()];
     file=openat(dir,temp.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);

@@ -25,6 +25,7 @@
 #else
 #error "expected a real textured603/604/605/606 profile"
 #endif
+#define MALI_RGBA8_TEST_FORMAT 187u
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +51,7 @@ typedef enum {Good,FailBulk,FailQuery,FailSubmit,FailMissingClamp,FailShortClamp
 typedef struct {
     Fault fault;
     BOOL blend;
+    unsigned sourceFormat;
     unsigned creates,bulkCalls,queries,submits,releases,deallocations;
     size_t length,uploaded;
     uint8_t *host,*expected,*actual;
@@ -140,6 +142,8 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
      * alpha for A8; ordinary R8's implicit alpha one would render opaque. */
     assert((u32(j+0x608)&0x3fffff)==((163u<<12)|0x124u));
 #endif
+    if(s->sourceFormat==70||s->sourceFormat==80)
+        assert((u32(j+0x608)&0x3fffff)==((MALI_RGBA8_TEST_FORMAT<<12)|(s->sourceFormat==70?0x688u:0x60au)));
     assert(u32(j+0x600)==((16u-1)<<16|31u));
     assert(u64(j+0x620)==UINT64_C(0x13000080)&&u32(j+0x628)==256&&u32(j+0x62c)==4096);
     assert(u64(j+0x680)==A5NativeJobVA+0x600);
@@ -273,6 +277,7 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,id pipelineState,
 static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sourceFormat)
 {
     State s={.fault=fault,.blend=blend,.length=0x101000};
+    s.sourceFormat=sourceFormat;
     s.profile=A5MaliCompiledProfileForID(A5_TEST_TEXTURED_PROFILE);assert(s.profile);
     s.expected=malloc(s.length);s.actual=calloc(1,s.length);
     assert(s.expected&&s.actual);
@@ -368,6 +373,10 @@ static void runCase(Fault fault,BOOL useSPI,BOOL blend)
 }
 int main(void)
 {
+#if A5_TEST_TEXTURED_PROFILE != 606 && !A5_TEST_DYNAMIC_SHADER
+    runCaseFormat(Good,NO,NO,MTLPixelFormatRGBA8Unorm);
+    runCaseFormat(Good,YES,YES,MTLPixelFormatRGBA8Unorm);
+#endif
     runCase(Good,NO,NO);runCase(Good,YES,NO);
     runCase(Good,NO,YES);runCase(Good,YES,YES);
 #if A5_TEST_TEXTURED_PROFILE == 604 || A5_TEST_TEXTURED_PROFILE == 605

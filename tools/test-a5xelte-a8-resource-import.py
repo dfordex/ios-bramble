@@ -15,6 +15,11 @@ test = r'''
 #include <cassert>
 #include <cstdint>
 int main() {
+    assert(a5g3d_resource_format_bytes(0x52474241) == 4);
+    assert(a5g3d_resource_format_bytes(0x42475241) == 4);
+    assert(a5g3d_resource_linear_layout(0x52474241,4,37,37,192,0,8192));
+    assert(!a5g3d_resource_linear_layout(0x52474241,4,37,37,192,0,7103));
+    assert(!a5g3d_resource_linear_layout(0x52474241,1,37,37,192,0,8192));
     assert(a5g3d_resource_format_bytes(0x41303038) == 1);
     assert(a5g3d_resource_format_bytes(0x4c303038) == 1);
     assert(!a5g3d_resource_format_bytes(1)); // Metal enum is not import identity.
@@ -35,4 +40,4 @@ with tempfile.TemporaryDirectory(prefix='a5-a8-resource-') as temp:
     subprocess.run(['clang++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
                     '-fsanitize=address,undefined', str(source), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
-print('A8 kernel import: distinct identity, exact live span, byte count, short allocation and overflow checks PASS')
+print('A8/RGBA8 kernel import: distinct identity, exact live span, byte count, short allocation and overflow checks PASS')

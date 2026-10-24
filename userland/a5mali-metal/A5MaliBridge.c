@@ -194,7 +194,7 @@ kern_return_t A5MaliImportSurface(A5MaliClient *client,
         return kIOReturnBadArgument;
     }
     HandleRequest map = { header(sizeof(map)), reply.handle };
-    uint32_t elementBytes = reply.format==0x42475241 ? 4 :
+    uint32_t elementBytes = (reply.format==0x42475241||reply.format==0x52474241) ? 4 :
         reply.format==0x52476841 ? 8 :
         (reply.format==0x41303038||reply.format==0x4c303038) ? 1 :
         reply.format==0x32433038 ? 2 : reply.format==0x4c303066 ? 4 :

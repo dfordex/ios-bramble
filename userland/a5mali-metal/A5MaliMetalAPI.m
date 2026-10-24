@@ -421,18 +421,14 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         logPipelineDecision(self,descriptor,0,YES,@"legacy read_surf operation4");
         return [[A5MaliReadSurfCandidate alloc]initWithDevice:self];
     }
-    /* Capture the actual complete pipeline, not an inferred state from one
-     * fragment constant. The worker independently validates and compiles it. */
+    /* Already executable pipelines need no compiler request. Keep a pure
+     * identity for optional cache lookup without consuming the bounded spool. */
     NSString *compileRequestID=nil;
+    NSDictionary *compileRequest=nil;
     if(authenticatedPair && [vertex compileRequestPayload] && [fragment compileRequestPayload]) {
-        NSError *requestError=nil;
-        NSDictionary *request=A5MaliShaderCompilePipelinePayload(descriptor,
-            [vertex compileRequestPayload],[fragment compileRequestPayload],&requestError);
-        A5MaliShaderForwardResult forwarded=request?A5MaliForwardShaderCompileRequest(request,&compileRequestID,&requestError):A5MaliShaderForwardFailed;
-        static atomic_uint requestReceipts;
-        if(atomic_fetch_add_explicit(&requestReceipts,1,memory_order_relaxed)<16)
-            fprintf(stderr,"A5XELTE Metal compile request: pipeline vertex=%s fragment=%s result=%ld request=%s\n",
-                [[vertex name]UTF8String],[[fragment name]UTF8String],(long)forwarded,compileRequestID.UTF8String?:"unavailable");
+        compileRequest=A5MaliShaderCompilePipelinePayload(descriptor,
+            [vertex compileRequestPayload],[fragment compileRequestPayload],NULL);
+        if(compileRequest)compileRequestID=A5MaliShaderCompileRequestID(compileRequest,NULL);
     }
     NSError *rejection=nil;
     uint32_t profileID=0;
@@ -509,6 +505,15 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
             @"authenticated native profile registry is unavailable in this build";
         rejection=[NSError errorWithDomain:@"com.orhunnx.a5xelte.mali" code:kIOReturnUnsupported
             userInfo:@{NSLocalizedDescriptionKey:reason}];
+    }
+    if(compileRequest){
+        NSError *requestError=nil;NSString *forwardedID=nil;
+        A5MaliShaderForwardResult forwarded=A5MaliForwardShaderCompileRequest(compileRequest,&forwardedID,&requestError);
+        static atomic_uint requestReceipts;
+        if(atomic_fetch_add_explicit(&requestReceipts,1,memory_order_relaxed)<32)
+            fprintf(stderr,"A5XELTE Metal compile request: rejected pipeline vertex=%s fragment=%s result=%ld request=%s reason=%s\n",
+                [[vertex name]UTF8String],[[fragment name]UTF8String],(long)forwarded,
+                forwardedID.UTF8String?:compileRequestID.UTF8String?:"unavailable",requestError.localizedDescription.UTF8String?:"queued-or-busy");
     }
     A5MaliLogPipelineRejection("factory",descriptor,0,rejection.localizedDescription);
     logPipelineDecision(self,descriptor,profileID,NO,rejection.localizedDescription);
@@ -1369,7 +1374,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(!source||!destination)resourceReason="missing-image";
         else if(source.device!=_buffer.device||destination.device!=_buffer.device)resourceReason="image-device";
         else if(textureBackingAliases(source,destination))resourceReason="image-storage-alias";
-        else if(source.pixelFormat!=MTLPixelFormatBGRA8Unorm &&
+        else if(source.pixelFormat!=MTLPixelFormatRGBA8Unorm && source.pixelFormat!=MTLPixelFormatBGRA8Unorm &&
             source.pixelFormat!=MTLPixelFormatBGR5A1Unorm)resourceReason="source-format";
         else if(!source.privateSurface||!destination.privateSurface)resourceReason="image-backing";
         else if(destination.pixelFormat!=profile->colorFormats[0])resourceReason="target-format";
@@ -1636,14 +1641,14 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
         if(r->kind!=A5MaliResourceTexture)continue;
         if(r->stage!=A5MaliStageFragment || r->metalIndex>=31)return rejectMiscResource(_buffer.diagnosticID,profile,indexed,"texture-resource-contract",r,nil,nil,nil,0);
         A5MaliMetalTexture *image=textures[@(r->metalIndex)];
-        BOOL sourceFormat=image.pixelFormat==MTLPixelFormatBGRA8Unorm;
+        BOOL sourceFormat=image.pixelFormat==MTLPixelFormatBGRA8Unorm||image.pixelFormat==MTLPixelFormatRGBA8Unorm;
         if(profile->profileID==604 || profile->profileID==605)
             sourceFormat|=image.pixelFormat==MTLPixelFormatR8Unorm || image.pixelFormat==MTLPixelFormatRG8Unorm;
         /* The coord5/image17 contract is validated with real alpha-only
          * textures. Other source formats need their own pixel proof. */
         if(profile->profileID==606)sourceFormat=image.pixelFormat==MTLPixelFormatA8Unorm;
         if(profile->profileID==A5MaliDynamicProfileID)sourceFormat=
-            image.pixelFormat==MTLPixelFormatBGRA8Unorm||image.pixelFormat==MTLPixelFormatA8Unorm||
+            image.pixelFormat==MTLPixelFormatBGRA8Unorm||image.pixelFormat==MTLPixelFormatRGBA8Unorm||image.pixelFormat==MTLPixelFormatA8Unorm||
             image.pixelFormat==MTLPixelFormatR8Unorm||image.pixelFormat==MTLPixelFormatRG8Unorm||
             image.pixelFormat==MTLPixelFormatRGBA16Float;
         if(!image)return rejectMiscResource(_buffer.diagnosticID,profile,indexed,"source-missing",r,nil,nil,nil,0);

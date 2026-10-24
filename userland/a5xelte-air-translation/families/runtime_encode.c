@@ -117,7 +117,7 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
     !fs->workRegisters||fs->workRegisters>16||vs->tlsBytes||vs->wlsBytes||fs->wlsBytes||
     (fs->tlsBytes!=0&&fs->tlsBytes!=32&&fs->tlsBytes!=64))return A5RuntimeUnsupported;
  if(!span(r->descriptorGPUVA,A5RuntimeJobBytes)||(r->descriptorGPUVA&4095)||
-    !(r->source.metalPixelFormat==80||r->source.metalPixelFormat==43)||
+    !(r->source.metalPixelFormat==70||r->source.metalPixelFormat==80||r->source.metalPixelFormat==43)||
     !image(&r->source,r->source.metalPixelFormat==43?2:4)||
     !(r->destination.metalPixelFormat==80||r->destination.metalPixelFormat==115)||
     !image(&r->destination,r->destination.metalPixelFormat==115?8:4)||
@@ -199,7 +199,7 @@ static int encode(const A5RuntimeDraw*r,uint8_t*d){
   * padded rows; no CPU conversion or substitute allocation is involved. */
  pan_pack((struct mali_texture_packed*)(d+TEX),TEXTURE,c){
   c.width=r->source.width;c.height=r->source.height;c.array_size=1;c.levels=1;
-  c.format=((r->source.metalPixelFormat==43?MALI_RGB5_A1_UNORM:MALI_RGBA8_UNORM)<<12)|0x60a;
+  c.format=((r->source.metalPixelFormat==43?MALI_RGB5_A1_UNORM:MALI_RGBA8_UNORM)<<12)|(r->source.metalPixelFormat==70?0x688:0x60a);
   c.dimension=MALI_TEXTURE_DIMENSION_2D;
   c.texel_ordering=MALI_TEXTURE_LAYOUT_LINEAR;c.swizzle=0x688;
  }

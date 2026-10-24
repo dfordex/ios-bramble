@@ -179,7 +179,9 @@ int main(void)
         assert(fread(log.mutableBytes,1,log.length,capture)==log.length);fclose(capture);
         NSString *diagnostic=[[NSString alloc]initWithData:log encoding:NSUTF8StringEncoding];assert(diagnostic);
         NSUInteger lines=[[diagnostic componentsSeparatedByString:@"\n"]count]-1;
-        assert(lines>0&&lines<=32); /* process bound survives a repeated reject loop */
+        assert(lines>0&&lines<=80); /* independent terminal48 + generic32 limits */
+        assert([[diagnostic componentsSeparatedByString:@"pipeline terminal:"]count]-1==40);
+        assert([[diagnostic componentsSeparatedByString:@"Metal pipeline: rejected"]count]-1<=32);
         assert([diagnostic containsString:@"vertex=downsample_blur_vert_lph"]);
         assert([diagnostic containsString:@"RT1={f:80,w:0,b:0"]);
         assert([diagnostic containsString:@"VB1=48/1/1"]);
