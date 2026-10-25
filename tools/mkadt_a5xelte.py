@@ -10,6 +10,7 @@ from pathlib import Path
 
 import adt
 import mkadt
+import a5xelte_identity
 
 
 def set_prop(node, name, value):
@@ -28,7 +29,8 @@ def child(node, name):
 
 
 def build():
-    root = mkadt.build(seed=os.urandom(64), qemu=True)
+    # The donor's optional /product is D22AP-specific Apple metadata.
+    root = mkadt.build(seed=os.urandom(64), qemu=True, donor_product=False)
     set_prop(root, 'compatible', mkadt.cstr('samsung,a5xelte') +
              mkadt.cstr('samsung,exynos7580') + mkadt.cstr('AppleARM'))
     chosen = child(root, 'chosen')
@@ -117,7 +119,7 @@ def build():
     root.children.append(mkadt.node('a5xelte-emmc', [
         ('reg', mkadt.u64(0x13540000, 0x2000)),
     ]))
-    return root
+    return a5xelte_identity.apply(root)
 
 
 if __name__ == '__main__':

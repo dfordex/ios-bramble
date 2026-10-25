@@ -30,15 +30,17 @@ enum { ARENA=0x20000,ARENA_END=0x30000 };
  * draws reserve a full 16-byte position, 2-byte point size, two 8-byte UVs
  * and one 16-byte colour for every vertex. No output plane aliases another
  * plane, the bounded input arena, or the fixed 0x40000-byte job allocation. */
-enum { LARGE_POS=0x30000,LARGE_PSIZ=0x34000,LARGE_VARY=0x34800,
-       LARGE_VARY_STEP=0x2000 };
-_Static_assert(LARGE_POS+16*A5RuntimeMiscMaxVertices<=LARGE_PSIZ,"large positions");
-_Static_assert(LARGE_PSIZ+2*A5RuntimeMiscMaxVertices<=LARGE_VARY,"large point sizes");
-_Static_assert(LARGE_VARY+2*LARGE_VARY_STEP+16*A5RuntimeMiscMaxVertices<=SIZE,"large varyings");
-static unsigned position_offset(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?LARGE_POS:POS;}
-static unsigned point_size_offset(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?LARGE_PSIZ:PSIZ;}
-static unsigned varying_offset(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?LARGE_VARY:VARY_DATA;}
-static unsigned varying_step(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?LARGE_VARY_STEP:0x1000;}
+/* Pack outputs from the real count, aligned to64 bytes. Above1280 vertices
+ * borrow16KiB from the input arena. All five planes for1600 vertices then
+ * fit in80KiB, without changing the kernel's fixed256KiB job ABI. */
+enum { LARGE_POS=0x2c000 };
+_Static_assert(LARGE_POS+50*A5RuntimeMiscMaxVertices<=SIZE,"large dual UV");
+static unsigned aligned_plane(unsigned size){return (size+63u)&~63u;}
+static unsigned position_offset(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMiscCompactVertices?LARGE_POS:POS;}
+static unsigned point_size_offset(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?position_offset(r)+aligned_plane(r->vertexCount*16):PSIZ;}
+static unsigned varying_offset(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?point_size_offset(r)+aligned_plane(r->vertexCount*2):VARY_DATA;}
+static unsigned varying_step(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?aligned_plane(r->vertexCount*8):0x1000;}
+uint32_t A5MaliRuntimeMiscInlineCapacity(uint32_t count){return (count>A5RuntimeMiscCompactVertices?LARGE_POS:ARENA_END)-ARENA;}
 _Static_assert(MALI_ATTRIBUTE_BUFFER_LENGTH == 16, "v4 attribute table stride");
 /* ATTRIBUTE buffer_index counts 16-byte descriptors, not 32-byte allocations.
  * Keep the deliberately padded special InstanceID at physical slot2. */
@@ -520,8 +522,8 @@ int A5MaliDynamicRuntimeProfileSupported(const A5MaliCompiledProfile*p){
  return p&&dynamic_textured_contract(p);
 }
 uint32_t A5MaliRuntimeMiscVertexLimit(const A5MaliCompiledProfile*p){
- return p&&((p->profileID>=600&&p->profileID<=606)||p->profileID==A5MaliDynamicProfileID)?
-  A5RuntimeMiscMaxVertices:A5RuntimeMaxVertices;
+ if(!p||!((p->profileID>=600&&p->profileID<=606)||p->profileID==A5MaliDynamicProfileID))return A5RuntimeMaxVertices;
+ return A5RuntimeMiscMaxVertices;
 }
 uint32_t A5MaliRuntimeVertexSpan(const A5MaliCompiledProfile*p,uint32_t count){
  if(!p||!count||count>A5MaliRuntimeMiscVertexLimit(p))return 0;
@@ -552,7 +554,8 @@ static int bind_buffer(const A5RuntimeMiscDraw*m,uint8_t*d,unsigned*arena,
  const A5RuntimeBuffer*b,unsigned need,uint64_t*addr,unsigned*push,unsigned*available){
  if(!need||b->offset>b->bytes||need>b->bytes-b->offset)return 0;
  if(b->cpuBytes){
-  unsigned at=(*arena+63)&~63u;if(at>ARENA_END||need>ARENA_END-at)return 0;
+  unsigned end=ARENA+A5MaliRuntimeMiscInlineCapacity(m->draw.vertexCount);
+  unsigned at=(*arena+63)&~63u;if(at>end||need>end-at)return 0;
   memcpy(d+at,b->cpuBytes+b->offset,need);*arena=(at+need+63)&~63u;
   *addr=m->draw.descriptorGPUVA+at;*push=0;*available=need;return 1;
  }
@@ -723,7 +726,8 @@ static int index_data(uint8_t*d,const A5RuntimeDraw*r,unsigned arena,uint64_t*gp
  }
  if(max+1!=r->vertexCount)return A5RuntimeUnsupported;
  unsigned at=(arena+63)&~63u;
- if(at>ARENA_END||need>ARENA_END-at)return A5RuntimeBounds;
+ unsigned end=ARENA+A5MaliRuntimeMiscInlineCapacity(r->vertexCount);
+ if(at>end||need>end-at)return A5RuntimeBounds;
  memcpy(d+at,b->cpuBytes+b->offset,need);
  *gpuVA=r->descriptorGPUVA+at;
  return A5RuntimeOK;

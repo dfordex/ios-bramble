@@ -1828,6 +1828,14 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
                     if(!handle){
                         NSUInteger required=(indexed && !stage && slot.unsignedIntegerValue==1)?
                             A5MaliRuntimeVertexSpan(profile,(uint32_t)submittedVertexCount):windows[stage][slot].unsignedIntegerValue;
+                        /* The large output layout borrows part of the input
+                         * arena. Retain/upload oversized real vertex snapshots
+                         * through the same bounded BO planner as storage binds.
+                         * Reserve16KiB for inline uniforms and index bytes. */
+                        BOOL vertexUpload=!path && !stage && slot.unsignedIntegerValue==1 &&
+                            submittedVertexCount>A5RuntimeMiscCompactVertices &&
+                            required>A5MaliRuntimeMiscInlineCapacity((uint32_t)submittedVertexCount)-0x4000u;
+                        if(vertexUpload)[storageSlots[stage] addObject:slot];
                         if([storageSlots[stage] containsObject:slot]){
                             if(required>A5NativeBufferMax||required>4u*A5NativeBufferMax-uploadBytes)return kIOReturnNoResources;
                             uploadBytes+=required;

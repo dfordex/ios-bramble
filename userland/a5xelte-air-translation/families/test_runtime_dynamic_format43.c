@@ -12,11 +12,11 @@ void A5MaliTestDynamicFormat43(const A5MaliCompiledProfile *,unsigned,unsigned);
 void A5MaliCheckPackedVertexUpload(const uint8_t *,const uint8_t *,unsigned,uint32_t);
 static void check_lines_and_large_vertices(A5RuntimeMiscDraw original){
  static uint8_t jobs[A5RuntimeJobBytes];
- static const unsigned counts[]={2,164,176,186,196,256,257,312,330,1023,1024};
+ static const unsigned counts[]={2,164,176,186,196,256,257,312,330,1023,1024,1204,1279,1280,1281,1535,1536,1599,1600};
  const A5MaliCompiledProfile*p=original.draw.profile;
- assert(A5MaliRuntimeMiscVertexLimit(p)==1024);
+ unsigned limit=A5MaliRuntimeMiscVertexLimit(p);assert(limit==1600);
  for(unsigned topology=0;topology<4;topology++)for(unsigned ci=0;ci<sizeof(counts)/sizeof(counts[0]);ci++){
-  unsigned count=counts[ci];
+  unsigned count=counts[ci];if(count>limit)continue;
   unsigned primitive=topology==0?A5RuntimeLine:topology==1?A5RuntimeLineStrip:
    topology==2?A5RuntimeTriangle:A5RuntimeTriangleStrip;
   if((topology==0&&count%2)||(topology==2&&(count<3||count%3))||(topology==3&&count<3))continue;
@@ -40,7 +40,7 @@ static void check_lines_and_large_vertices(A5RuntimeMiscDraw original){
   for(unsigned i=0;i<vs.shader.varying_count;i++){
    pan_unpack((const struct mali_attribute_buffer_packed*)(jobs+0xa80+16*i),ATTRIBUTE_BUFFER,plane);
    starts[i]=plane.pointer;ends[i]=plane.pointer+plane.size;
-   assert(plane.pointer>=m.draw.descriptorGPUVA+0x30000&&plane.size==count*plane.stride&&
+   assert(plane.pointer>=m.draw.descriptorGPUVA+(count>1280?0x2c000:0x30000)&&plane.size==count*plane.stride&&
     ends[i]<=m.draw.descriptorGPUVA+sizeof(jobs));
    for(unsigned j=0;j<i;j++)assert(ends[i]<=starts[j]||ends[j]<=starts[i]);
   }
@@ -55,9 +55,9 @@ static void check_lines_and_large_vertices(A5RuntimeMiscDraw original){
   /* The encoder has emitted addresses, not CPU-generated output pixels. */
   for(unsigned i=0x30000;i<sizeof(jobs);i++)assert(!jobs[i]);
  }
- A5RuntimeMiscDraw m=original;m.draw.vertexCount=1025;m.draw.primitive=A5RuntimeLineStrip;
- m.draw.vertexBuffers[1]=(A5RuntimeBuffer){0x08000000,1025*2048,0,NULL};
- assert(!A5MaliRuntimeVertexSpan(p,1025));
+ A5RuntimeMiscDraw m=original;m.draw.vertexCount=limit+1;m.draw.primitive=A5RuntimeLineStrip;
+ m.draw.vertexBuffers[1]=(A5RuntimeBuffer){0x08000000,(limit+1)*2048,0,NULL};
+ assert(!A5MaliRuntimeVertexSpan(p,limit+1));
  assert(A5MaliEncodeRuntimeMiscPass(&m,jobs,sizeof(jobs))==A5RuntimeUnsupported);
  for(unsigned i=0;i<sizeof(jobs);i++)assert(!jobs[i]);
  m.draw.vertexCount=165;m.draw.primitive=A5RuntimeLine;

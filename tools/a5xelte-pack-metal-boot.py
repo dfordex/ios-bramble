@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Prepare an opt-in discovery BOOT using a known-working Samsung XNU BOOT.
 
-Reuses its loader and ADT; replaces the XNU payload. Does not flash or install
+Reuses its loader and hardware ADT, normalizes the A5 iOS identity and replaces
+the XNU payload. Does not flash or install
 the separately built Metal bundle. All binary inputs/outputs stay private.
 """
 import argparse
@@ -12,6 +13,7 @@ import sys
 import tempfile
 
 import mkpayload
+import a5xelte_identity
 
 
 def argument_parser():
@@ -165,6 +167,7 @@ def main():
             payload[adt_off:adt_off + adt_size], ref[page:page + ks],
             *struct.unpack_from('<2Q', payload, 0x38), args.ram_mib,
             args.loader_path.read_bytes() if args.loader_path else None)
+        adt_blob = a5xelte_identity.rewrite(adt_blob)
     except (ValueError, OSError, struct.error) as exc:
         ap.error(str(exc))
     words = payload[0x48:0x2a8].split(b'\0', 1)[0].decode('ascii').split()
@@ -257,6 +260,7 @@ def main():
     print(f'kernel entry={info["entry"]}; chained fixups={info["fixups"]}')
     print(f'boot arguments: {cmdline}')
     print(f'managed RAM: {args.ram_mib} MiB at 0x80000000')
+    print(f'iOS identity: {a5xelte_identity.PRODUCT_TYPE} / {a5xelte_identity.BOARD_TYPE}')
     if args.ram_mib == 736:
         print('736 MiB is physically unverified: verify XNU memory/page counts and sustained allocation on device.')
     print('Companion: /System/Library/Extensions/A5MaliMetal.bundle (' +

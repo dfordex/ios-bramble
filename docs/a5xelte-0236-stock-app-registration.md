@@ -60,3 +60,10 @@ Guarded model/recovery/BOOT p10/capacity checks pass; the write acknowledges all
 readback, whole-root transfer, recovery/EFS/radio/GPT write is performed. The
 artifact and private receipts are saved under workspace research/builds/0236.
 On-device registration receipts and visible application icons remain pending.
+
+## Device result
+
+The next full ring verifies all three apps on attempt one, matching valid
+proxies, `VERIFIED selected=3` and helper exit0. The user confirms the apps
+appear. The severe graphics delay remains; see the separate
+[0236 readout and 0237 corrections](a5xelte-0237-identity-and-large-draws.md).

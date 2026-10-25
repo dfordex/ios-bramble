@@ -14,7 +14,8 @@
 @interface A5MaliRestrictedDevice (RetirementTest)
 - (A5MaliDevice*)privateDevice;
 @end
-enum {Success,EncodingError,PreSubmitError,KernelRejected,Timeout,BadReply};
+enum {Success,EncodingError,PreSubmitError,KernelRejected,StaleEpoch,
+      ResourceMissing,ResourceLimit,IOError,Timeout,BadReply};
 typedef struct{unsigned mode,submits,releases;} State;
 static kern_return_t wire(void*context,uint32_t selector,const void*in,size_t n,void*out,size_t*z){
  State*s=context;
@@ -23,6 +24,10 @@ static kern_return_t wire(void*context,uint32_t selector,const void*in,size_t n,
  assert(selector==A5NativeSubmitSelector&&n==sizeof(A5NativeSubmitRequest)+A5NativeJobBytes);
  const A5NativeSubmitRequest*q=in;assert(q->profileID==0);s->submits++;
  if(s->mode==Timeout)return kIOReturnTimeout;
+ if(s->mode==StaleEpoch)return kIOReturnNotReady;
+ if(s->mode==ResourceMissing)return kIOReturnNotFound;
+ if(s->mode==ResourceLimit)return kIOReturnNoResources;
+ if(s->mode==IOError)return kIOReturnIOError;
  A5NativeSubmitResult r={.header={1,sizeof(r),0,0},.fragmentFence=41};
  if(s->mode==KernelRejected){r.status=1;r.fragmentFence=0;}
  if(s->mode==BadReply)r.header.size=0;
@@ -54,7 +59,7 @@ int main(){@autoreleasepool{
   [b commit];[b waitUntilCompleted];
   assert(b.status==(mode==Success?MTLCommandBufferStatusCompleted:MTLCommandBufferStatusError));
   assert(state.submits==((mode==EncodingError||mode==PreSubmitError)?0u:1u));
-  BOOL ambiguous=mode==Timeout||mode==BadReply;
+  BOOL ambiguous=mode==Timeout||mode==BadReply||mode==IOError;
   assert((owner!=nil)==ambiguous&&state.releases==!ambiguous);
   /* Keep b alive: success/cancellation releases are not delayed until dealloc. */
   assert([b privateBuffer]&&b.status>=MTLCommandBufferStatusCompleted);

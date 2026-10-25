@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <sys/sysctl.h>
 #include <errno.h>
 #include <string.h>
 #include "../../a5xelte-stock-apps/A5StockApps.h"
@@ -46,6 +47,13 @@ int main(int argc,char **argv)
 {
     if(argc==2&&!strcmp(argv[1],"--register-stock-apps"))return A5RegisterSelectedStockApps();
     if(argc!=1)return 64;
+    const char *identityKeys[]={"hw.machine","hw.product","hw.model","hw.target"};
+    for(unsigned i=0;i<sizeof(identityKeys)/sizeof(identityKeys[0]);i++){
+        char value[128]={0};size_t length=sizeof(value)-1;
+        int result=sysctlbyname(identityKeys[i],value,&length,NULL,0);
+        fprintf(stderr,"A5XELTE Identity: %s=%s result=%d\n",
+            identityKeys[i],result?"unavailable":value,result);
+    }
     /* A fresh signed process keeps registration's XPC/container startup out
      * of Metal discovery. Retain the parent until it finishes so launchd
      * cannot discard an unowned child when this one-shot job exits. */

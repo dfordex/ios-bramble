@@ -13,7 +13,7 @@ static const A5MaliCompiledProfile *profile(unsigned id){
  assert(!"required real profile missing");return NULL;
 }
 static void input_arena_bounds(A5MaliCompiledProfile p){
- static uint8_t uniforms[2][31][4096],vertices[1024*68],jobs[A5RuntimeJobBytes];
+ static uint8_t uniforms[2][31][4096],vertices[A5RuntimeMiscMaxVertices*68],jobs[A5RuntimeJobBytes];
  A5MaliCompiledVertexLayout layout=*p.layouts;p.layouts=&layout;
  A5RuntimeMiscDraw m={0};m.draw.profile=&p;m.draw.descriptorGPUVA=0x02000000;
  m.draw.vertexCount=1024;m.draw.primitive=A5RuntimeLine;
@@ -29,6 +29,14 @@ static void input_arena_bounds(A5MaliCompiledProfile p){
  }
  m.draw.vertexBuffers[1]=(A5RuntimeBuffer){0,sizeof(vertices),0,vertices};
  assert(layout.stride==48&&A5MaliEncodeRuntimeMiscPass(&m,jobs,sizeof(jobs))==A5RuntimeOK);
+ m.draw.vertexCount=1600;
+ assert(A5MaliRuntimeMiscInlineCapacity(1600)==0xc000);
+ assert(A5MaliEncodeRuntimeMiscPass(&m,jobs,sizeof(jobs))==A5RuntimeBounds);
+ for(unsigned i=0;i<sizeof(jobs);i++)assert(!jobs[i]);
+ m.draw.vertexBuffers[1].cpuBytes=NULL;m.draw.vertexBuffers[1].gpuVA=0x08000000;
+ assert(A5MaliEncodeRuntimeMiscPass(&m,jobs,sizeof(jobs))==A5RuntimeOK);
+ m.draw.vertexBuffers[1].cpuBytes=vertices;m.draw.vertexBuffers[1].gpuVA=0;
+ m.draw.vertexCount=1024;
  /* A larger legal interleaved stride does not make the 64KiB snapshot
   * arena grow into the GPU's output planes. Require the real upload route. */
  layout.stride=68;assert(A5MaliRuntimeVertexSpan(&p,1024)>0x10000);
@@ -41,7 +49,7 @@ int main(void){
  unsigned cases=0;
  for(unsigned id=602;id<=606;id++){
   const A5MaliCompiledProfile*p=profile(id);
-  assert(A5MaliRuntimeMiscVertexLimit(p)==1024);
+  assert(A5MaliRuntimeMiscVertexLimit(p)==1600);
   A5MaliTestDynamicFormat43(p,80,0);cases++;
  }
  /* The same genuinely compiled UV shader pair also exercises the dynamic
@@ -57,6 +65,6 @@ int main(void){
  assert(A5RuntimeMaxVertices==256);
  for(unsigned id=99;id<=108;id++)assert(A5MaliRuntimeMiscVertexLimit(profile(id))==256);
  assert(A5MaliRuntimeMiscVertexLimit(profile(206))==256);
- puts("PASS 6 real static/dynamic shader pairs: lines/line-strip/triangles, 2..1024 native vertices, nonoverlapping output planes and rejection/zeroing; old blur/home bound256 (no GPU execution)");
+ puts("PASS 6 real static/dynamic shader pairs: lines/line-strip/triangles, 2..1600 native vertices, nonoverlapping output planes and rejection/zeroing; old blur/home bound256 (no GPU execution)");
  assert(cases==6);return 0;
 }

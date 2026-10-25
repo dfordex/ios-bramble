@@ -11,7 +11,8 @@
 extern "C" {
 #endif
 enum { A5RuntimeJobBytes=0x40000, A5RuntimeMaxVertices=256,
-       A5RuntimeMiscMaxVertices=1024,
+       A5RuntimeMiscMaxVertices=1600,
+       A5RuntimeMiscCompactVertices=1280,
        A5RuntimeMaxIndices=1536,
        A5RuntimeVertexOffset=0, A5RuntimeTilerOffset=0x100,
        A5RuntimeFragmentOffset=0x200 };

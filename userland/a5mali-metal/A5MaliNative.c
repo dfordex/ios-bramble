@@ -80,7 +80,15 @@ kern_return_t A5MaliSubmitNative(A5MaliClient *c,const A5NativeSubmitRequest *q,
  if(!c || !(c->gpuCommandsSupported&A5NativeCapability) || !c->call){free(input);return kIOReturnUnsupported;}
  submissionMayBeActive=1;
  kern_return_t kr=nativeCall(c,A5NativeSubmitSelector,input,count,&r,&size);
- free(input); if (kr) return kr;
+ free(input); if (kr) {
+  /* Selector18 returns these exact resource/epoch errors before dispatch.
+   * Started jobs report through r.status instead. Do not quarantine every
+   * retained surface for a stale mapping epoch or a preflight resource miss.
+   * Transport errors, timeouts and malformed replies remain uncertain. */
+  if(kr==kIOReturnNotReady || kr==kIOReturnNotFound || kr==kIOReturnNoResources)
+   submissionMayBeActive=0;
+  return kr;
+ }
  if (!valid(r.header,sizeof(r),size) || r.reserved || r.status>5)
   return kIOReturnBadArgument;
  if (r.status) {

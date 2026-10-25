@@ -19,13 +19,14 @@ typedef struct {
     uint16_t color[4];uint8_t padding[8];
 } Vertex;
 _Static_assert(sizeof(Vertex)==48,"stock packing0");
+enum { PrivateBytes=0x20000 };
 typedef struct {
     unsigned queries,submits,vertexCount,indexCount,indexSize;
     MTLPrimitiveType primitive;
     BOOL failSubmit;
     BOOL failPrivateRead,privateAllocated[4];
     unsigned privateCreates,privateReads,privateWrites,privateReleases;
-    uint8_t privateBytes[4][8192];
+    uint8_t privateBytes[4][PrivateBytes];
     Vertex vertices[A5RuntimeMiscMaxVertices];
     float matrix[16];
     uint8_t indices[A5RuntimeMaxIndices*4];
@@ -48,9 +49,9 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
     if(selector==A5MaliRelease||selector==A5MaliUnmap)return KERN_SUCCESS;
     if(selector==8){
         const Create *q=input;assert(inputBytes==sizeof(*q)&&*outputBytes==sizeof(Created));
-        assert(q->h.version==1&&q->h.size==sizeof(*q)&&q->usage==3&&q->bytes<=8192);
+        assert(q->h.version==1&&q->h.size==sizeof(*q)&&q->usage==3&&q->bytes<=PrivateBytes);
         unsigned slot=0;while(slot<4&&s->privateAllocated[slot])++slot;assert(slot<4);
-        s->privateAllocated[slot]=YES;memset(s->privateBytes[slot],0,8192);++s->privateCreates;
+        s->privateAllocated[slot]=YES;memset(s->privateBytes[slot],0,PrivateBytes);++s->privateCreates;
         Created done={.h={1,sizeof(done),0,0},.handle=UINT64_C(0x100000101)+slot,.bytes=q->bytes,.usage=q->usage};
         memcpy(output,&done,sizeof(done));*outputBytes=sizeof(done);return KERN_SUCCESS;
     }
@@ -69,23 +70,38 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
         memcpy(done.bytes,s->privateBytes[slot]+q->offset,q->length);
         memcpy(output,&done,sizeof(done));*outputBytes=sizeof(done);return KERN_SUCCESS;
     }
+    if(selector==A5NativeBulkWriteSelector){
+        const A5NativeBulkWriteRequest*q=input;
+        unsigned slot=(unsigned)(q->handle-UINT64_C(0x100000101));
+        assert(slot<4&&s->privateAllocated[slot]&&q->header.size==inputBytes);
+        assert(inputBytes==sizeof(*q)+q->length&&q->offset<=PrivateBytes&&q->length<=PrivateBytes-q->offset);
+        memcpy(s->privateBytes[slot]+q->offset,(const uint8_t*)input+sizeof(*q),q->length);
+        return KERN_SUCCESS;
+    }
     if(selector==A5NativeQuerySelector){
         const A5NativeQueryRequest *q=input;
         assert(inputBytes==sizeof(*q)&&*outputBytes==sizeof(A5NativeQueryResult));
         assert(q->surfaces[0]==UINT64_C(0x100000001));
-        for(unsigned i=0;i<A5NativeSlots;++i){assert(!q->buffers[i]);if(i)assert(!q->surfaces[i]);}
+        for(unsigned i=0;i<A5NativeSlots;++i)if(i)assert(!q->surfaces[i]);
         A5NativeQueryResult mapped={.header={1,sizeof(mapped),0,0},
             .jobVA=A5NativeJobVA,.jobBytes=A5NativeJobBytes,.flags=93};
         mapped.surfaces[0]=(A5NativeSpan){q->surfaces[0],UINT64_C(0x10000000),4096,
             32,32,128,UINT32_C(0x42475241),A5MaliRead|A5MaliWrite};
+        for(unsigned i=0;i<A5NativeSlots;++i)if(q->buffers[i]){
+            unsigned slot=(unsigned)(q->buffers[i]-UINT64_C(0x100000101));
+            assert(slot<4&&s->privateAllocated[slot]);
+            mapped.buffers[i]=(A5NativeSpan){.token=q->buffers[i],.gpuVA=0x20000000+slot*0x800000,
+                .bytes=PrivateBytes,.usage=3};
+        }
         memcpy(output,&mapped,sizeof(mapped));*outputBytes=sizeof(mapped);++s->queries;return KERN_SUCCESS;
     }
     assert(selector==A5NativeSubmitSelector);
     const A5NativeSubmitRequest *q=input;
     assert(inputBytes==sizeof(*q)+A5NativeJobBytes&&q->profileID==602&&q->mappingEpoch==93);
     assert(q->jobBytes==A5NativeJobBytes&&q->vertexOffset==0&&q->tilerOffset==0x100&&q->fragmentOffset==0x200);
-    assert(q->readSurfaces==1&&q->writeSurfaces==1&&q->readBuffers==0);
-    for(unsigned i=0;i<A5NativeSlots;++i)assert(!q->buffers[i]);
+    BOOL uploaded=s->vertexCount>A5RuntimeMiscCompactVertices;
+    assert(q->readSurfaces==1&&q->writeSurfaces==1&&q->readBuffers==(uploaded?1u:0u));
+    for(unsigned i=uploaded?1:0;i<A5NativeSlots;++i)assert(!q->buffers[i]);
     const uint8_t *jobs=(const uint8_t *)input+sizeof(*q);
     float sy,oy;memcpy(&sy,jobs+0x1000+516,4);memcpy(&oy,jobs+0x1000+532,4);
     assert(sy+oy==0&&-sy+oy==32); /* Metal NDC +Y maps to top */
@@ -110,7 +126,11 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
         assert(bytes<=0x30000-at&&!memcmp(jobs+at,s->indices,bytes));
     }else assert(!address);
     assert(u32(jobs+0x20)==s->vertexCount-1&&u32(jobs+0x120)==s->vertexCount-1);
-    assert(contains(jobs+0x20000,0x10000,s->vertices,s->vertexCount*sizeof(Vertex)));
+    if(uploaded){
+        unsigned slot=(unsigned)(q->buffers[0]-UINT64_C(0x100000101));
+        assert(slot<4&&s->privateAllocated[slot]);
+        assert(!memcmp(s->privateBytes[slot],s->vertices,s->vertexCount*sizeof(Vertex)));
+    }else assert(contains(jobs+0x20000,0x10000,s->vertices,s->vertexCount*sizeof(Vertex)));
     assert(contains(jobs+0x20000,0x10000,s->matrix,sizeof(s->matrix)));
     assert(A5NativeCheckJobChain(jobs,A5NativeJobBytes,A5NativeJobVA,0,0x100,0x200,NO)==1);
     ++s->submits;if(s->failSubmit)return kIOReturnTimeout;
@@ -238,7 +258,7 @@ int main(void)
         }
         s.matrix[0]=1.25f;s.matrix[5]=1.75f;s.matrix[10]=2;s.matrix[15]=1;s.matrix[12]=-.75f;s.matrix[13]=.25f;
         A5MaliRestrictedDevice *device=[[A5MaliRestrictedDevice alloc]initWithTransport:transport context:&s
-            commandCapabilities:63 operationCapabilities:127|(1u<<7)|(1u<<8)|(1u<<13)|(1u<<14)|(1u<<16)|(1u<<17)];
+            commandCapabilities:63 operationCapabilities:127|(1u<<7)|(1u<<8)|(1u<<13)|(1u<<14)|(1u<<16)|(1u<<17)|(1u<<18)];
         A5MaliRestrictedDevice *other=[[A5MaliRestrictedDevice alloc]initWithTransport:transport context:&s
             commandCapabilities:63 operationCapabilities:127|(1u<<16)|(1u<<17)];
         A5MaliReadSurfCandidate *p=pipeline(device,&s);
@@ -262,7 +282,7 @@ int main(void)
         s.vertexCount=6;setIndices(&s,many,A5RuntimeMaxIndices,4);
         b=encode(device,other,p,target,&s,MTLIndexTypeUInt32,12,1,Good);[b commit];[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusCompleted);
-        const unsigned lineCounts[]={2,164,176,186,196,256,312,330,1024};
+        const unsigned lineCounts[]={2,164,176,186,196,256,312,330,1024,1204,1280,1536,1600};
         for(unsigned i=0;i<sizeof(lineCounts)/sizeof(lineCounts[0]);i++){
             s.vertexCount=lineCounts[i];s.primitive=MTLPrimitiveTypeLine;s.indexCount=s.indexSize=0;
             unsigned previous=s.submits;b=nonindexed(device,p,target,&s);[b commit];[b waitUntilCompleted];
@@ -272,6 +292,8 @@ int main(void)
                 i%2?12:6,0,Good);[b commit];[b waitUntilCompleted];
             assert(b.status==MTLCommandBufferStatusCompleted&&s.submits==previous+1);
         }
+        assert(s.privateCreates==4&&s.privateReleases==4);
+        for(unsigned i=0;i<4;i++)assert(!s.privateAllocated[i]);
         s.vertexCount=331;s.primitive=MTLPrimitiveTypeLineStrip;s.indexCount=s.indexSize=0;
         b=nonindexed(device,p,target,&s);[b commit];[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusCompleted);
@@ -291,9 +313,9 @@ int main(void)
         unsigned before=s.submits;b=encode(device,other,p,target,&s,MTLIndexTypeUInt32,12,0,Unaligned);
         [b commit];[b waitUntilCompleted];assert(b.status==MTLCommandBufferStatusError&&s.submits==before);
         for(unsigned attempt=0;attempt<2;++attempt){
-            unsigned queries=s.queries,submits=s.submits,reads=s.privateReads;
+            unsigned queries=s.queries,submits=s.submits,reads=s.privateReads,creates=s.privateCreates;
             b=encode(device,other,p,target,&s,MTLIndexTypeUInt32,12,0,attempt?PrivateReadFailure:PrivateGood);
-            assert(s.privateCreates==attempt+1&&s.privateWrites>=2*(attempt+1));
+            assert(s.privateCreates==creates+1&&s.privateWrites>=2*(attempt+1));
             assert(s.privateReads==reads); /* no read occurs while encoding */
             s.failPrivateRead=attempt!=0;
             dispatch_semaphore_t done=dispatch_semaphore_create(0);
@@ -319,7 +341,7 @@ int main(void)
         assert(b.status==MTLCommandBufferStatusError&&b.error.code==kIOReturnTimeout&&s.submits==before+1);
         assert(!b.privateBuffer.completedFence.fragmentFence);
         s.failSubmit=NO;
-        puts("indexed602 Metal wrappers: u16/u32 ordered native indices, actual line/line-strip topology, 2..1024 vertices, late commit snapshots/rebind retention, bounds/device rejection and terminal fences PASS (mock transport; no GPU pixels)");
+        puts("indexed602 Metal wrappers: u16/u32 ordered native indices, actual line/line-strip topology, 2..1600 vertices, real vertex BO uploads, late commit snapshots/rebind retention, bounds/device rejection and terminal fences PASS (mock transport; no GPU pixels)");
     }
     return 0;
 }

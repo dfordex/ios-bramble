@@ -49,6 +49,8 @@ uint32_t A5MaliRuntimeVertexSpan(const A5MaliCompiledProfile *,uint32_t count);
 /* Only generic/reflected layouts use the expanded, nonoverlapping output
  * planes. Older path/blur/home emitters retain their verified 256 bound. */
 uint32_t A5MaliRuntimeMiscVertexLimit(const A5MaliCompiledProfile *);
+/* CPU snapshot arena shrinks when large output planes borrow its tail. */
+uint32_t A5MaliRuntimeMiscInlineCapacity(uint32_t vertexCount);
 int A5MaliEncodeRuntimeMiscPass(const A5RuntimeMiscDraw *, void *, size_t);
 #ifdef __cplusplus
 }
