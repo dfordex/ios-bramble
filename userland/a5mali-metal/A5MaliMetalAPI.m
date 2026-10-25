@@ -1598,16 +1598,19 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
     const A5MaliCompiledProfile *profile=pipeline.profile;
     BOOL indexed=indexBinding!=nil;
     NSUInteger primitiveCount=indexed?indexCount:count;
+    BOOL line=primitiveType==MTLPrimitiveTypeLine||primitiveType==MTLPrimitiveTypeLineStrip;
+    uint32_t vertexLimit=A5MaliRuntimeMiscVertexLimit(profile);
     if(!profile || !(profile->profileID==200 || profile->profileID==202 ||
         profile->profileID==204 || profile->profileID==206 || profile->profileID==207 ||
         (profile->profileID>=600 && profile->profileID<=606) || profile->profileID==A5MaliDynamicProfileID ||
         (profile->profileID>=300 && profile->profileID<=302)) ||
-        !profile->passCount || profile->passCount>2 || primitiveCount<3 ||
-        (!indexed && count>A5RuntimeMaxVertices) ||
+        !profile->passCount || profile->passCount>2 || primitiveCount<(line?2u:3u) ||
+        (!indexed && count>vertexLimit) ||
         (indexed && ((profile->profileID!=602 && !compiledTexturedProfile(profile->profileID)) || indexCount>A5RuntimeMaxIndices ||
             (indexSize!=2 && indexSize!=4) || indexBinding.device!=_buffer.device ||
             indexBinding.length!=indexCount*indexSize || !indexBinding.buffer.readyForRead)) ||
-        (primitiveType!=MTLPrimitiveTypeTriangle && primitiveType!=MTLPrimitiveTypeTriangleStrip) ||
+        (!line && primitiveType!=MTLPrimitiveTypeTriangle && primitiveType!=MTLPrimitiveTypeTriangleStrip) ||
+        (primitiveType==MTLPrimitiveTypeLine && primitiveCount%2) ||
         (primitiveType==MTLPrimitiveTypeTriangle && primitiveCount%3))return rejectMiscResource(_buffer.diagnosticID,profile,indexed,"pipeline-index-contract",NULL,nil,nil,nil,0);
     BOOL path=profile->profileID>=300 && profile->profileID<=302;
     BOOL textured=compiledTexturedProfile(profile->profileID);
@@ -1736,7 +1739,7 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
                 uint32_t maximum=0;
                 for(NSUInteger i=0;i<indexCount;++i){
                     uint32_t value=0;memcpy(&value,(const uint8_t *)indices.bytes+i*indexSize,indexSize);
-                    if(value>=A5RuntimeMaxVertices)return kIOReturnBadArgument;
+                    if(value>=vertexLimit)return kIOReturnBadArgument;
                     maximum=MAX(maximum,value);
                 }
                 submittedVertexCount=(NSUInteger)maximum+1;
@@ -1748,7 +1751,9 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
                     (unsigned long)indexBinding.offset,(unsigned long)submittedVertexCount);
             }
             A5RuntimeMiscDraw command={.draw={.profile=profile,.vertexCount=(uint32_t)submittedVertexCount,
-                .primitive=primitiveType==MTLPrimitiveTypeTriangle?A5RuntimeTriangle:A5RuntimeTriangleStrip,
+                .primitive=primitiveType==MTLPrimitiveTypeLine?A5RuntimeLine:
+                    primitiveType==MTLPrimitiveTypeLineStrip?A5RuntimeLineStrip:
+                    primitiveType==MTLPrimitiveTypeTriangle?A5RuntimeTriangle:A5RuntimeTriangleStrip,
                 .blend=(profile->flags&A5MaliProfileRenderState)?A5RuntimeBlendState:sourceOver?((profile->flags&A5MaliProfileScreenBlend)?A5RuntimeBlendScreen:A5RuntimeBlendPremultipliedSourceOver):A5RuntimeBlendCopy,
                 .scissorX=(uint32_t)scissor.x,.scissorY=(uint32_t)scissor.y,
                 .scissorWidth=(uint32_t)scissor.width,.scissorHeight=(uint32_t)scissor.height,

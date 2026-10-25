@@ -168,7 +168,7 @@ static BOOL sameStageProgram(const A5MaliCompiledProfile *p,const A5MaliCompiled
     return counts[0]==counts[1];
 }
 static BOOL vertexABI(A5MaliDynamicShaderCacheEntry *e,const A5MaliCompiledProfile *p,
-    BOOL *colorOnly,BOOL *twoUV,NSString **reason) {
+    BOOL *colorOnly,BOOL *twoUV,BOOL *noColor,NSString **reason) {
     if(!e){
         if(sameStageProgram(p,A5MaliCompiledProfileForID(602),A5MaliStageVertex)){*colorOnly=YES;return YES;}
         if(sameStageProgram(p,A5MaliCompiledProfileForID(603),A5MaliStageVertex)){*colorOnly=NO;return YES;}
@@ -186,16 +186,22 @@ static BOOL vertexABI(A5MaliDynamicShaderCacheEntry *e,const A5MaliCompiledProfi
     unsigned compactInputs[]={15,16},compactInputBases[]={0,1},compactInputMasks[]={15,15};
     unsigned dualLocations[]={0,12,32,33,34},dualBases[]={0,1,2,3,4},dualMasks[]={15,1,3,3,15};
     unsigned dualInputs[]={15,16,17,18},dualInputBases[]={0,1,2,3},dualInputMasks[]={15,3,3,15};
+    BOOL uvOnly=attributes==3&&
+        ioShape(e.nativeABI[@"inputs"],dualInputs,dualInputBases,dualInputMasks,3)&&
+        ioShape(e.nativeABI[@"outputs"],dualLocations,dualBases,dualMasks,4);
     if((attributes!=2&&attributes!=3&&attributes!=4)||
-       !ioShape(e.nativeABI[@"inputs"],compact?compactInputs:dual?dualInputs:fullInputs,
+       (!uvOnly&&(!ioShape(e.nativeABI[@"inputs"],compact?compactInputs:dual?dualInputs:fullInputs,
            compact?compactInputBases:dual?dualInputBases:fullInputBases,compact?compactInputMasks:dual?dualInputMasks:fullInputMasks,compact?2:dual?4:3)||
        !ioShape(e.nativeABI[@"outputs"],compact?compactLocations:dual?dualLocations:fullLocations,
-           compact?compactBases:dual?dualBases:fullBases,compact?compactMasks:dual?dualMasks:fullMasks,compact?3:dual?5:4)){
+           compact?compactBases:dual?dualBases:fullBases,compact?compactMasks:dual?dualMasks:fullMasks,compact?3:dual?5:4)))){
         *reason=@"vertex.reflected-input-export-layout";return NO;
     }
     NSArray *vertexAttributes=compact?
         @[@{@"location":@0,@"binding":@0,@"format":@109,@"offset":@0},
-          @{@"location":@1,@"binding":@0,@"format":@97,@"offset":@32}]:dual?
+          @{@"location":@1,@"binding":@0,@"format":@97,@"offset":@32}]:uvOnly?
+        @[@{@"location":@0,@"binding":@0,@"format":@109,@"offset":@0},
+          @{@"location":@1,@"binding":@0,@"format":@103,@"offset":@16},
+          @{@"location":@2,@"binding":@0,@"format":@103,@"offset":@24}]:dual?
         @[@{@"location":@0,@"binding":@0,@"format":@109,@"offset":@0},
           @{@"location":@1,@"binding":@0,@"format":@103,@"offset":@16},
           @{@"location":@2,@"binding":@0,@"format":@103,@"offset":@24},
@@ -207,7 +213,7 @@ static BOOL vertexABI(A5MaliDynamicShaderCacheEntry *e,const A5MaliCompiledProfi
         @"input_rate":@0,@"divisor":@1,@"stride":@{@"Static":@48}}],
         @"attributes":vertexAttributes,@"pulled":@[],@"variant_pulled":@[]};
     if(![e.reflection[@"vertex_input"] isEqual:want]){*reason=@"vertex.reflected-Metal-packing";return NO;}
-    *colorOnly=compact;*twoUV=dual;return YES;
+    *colorOnly=compact;*twoUV=dual||uvOnly;*noColor=uvOnly;return YES;
 }
 static BOOL fragmentABI(A5MaliDynamicShaderCacheEntry *e,BOOL *color,BOOL *fetch,BOOL *position,BOOL *noInputs,BOOL *twoUV,BOOL *colorOnly,NSString **reason) {
     *reason=@"fragment.native-attributes-or-sampled-count";
@@ -425,9 +431,9 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
         return rejectPipeline(vf,ff,@"pipeline.source-snapshot",snapshotError,error);
     const A5MaliCompiledProfile *vp=vs?NULL:A5MaliCompiledProfileForID(vf.specializationProfileID);
     const A5MaliCompiledProfile *fp=fs?NULL:A5MaliCompiledProfileForID(ff.specializationProfileID);
-    BOOL color=NO,fetch=NO,position=NO,noInputs=NO,vertexColorOnly=NO,vertexTwoUV=NO,fragmentTwoUV=NO,fragmentColorOnly=NO;
+    BOOL color=NO,fetch=NO,position=NO,noInputs=NO,vertexColorOnly=NO,vertexTwoUV=NO,vertexNoColor=NO,fragmentTwoUV=NO,fragmentColorOnly=NO;
     NSString *predicate=nil;
-    BOOL vertexOK=vertexABI(vs,vp,&vertexColorOnly,&vertexTwoUV,&predicate);
+    BOOL vertexOK=vertexABI(vs,vp,&vertexColorOnly,&vertexTwoUV,&vertexNoColor,&predicate);
     BOOL fragmentOK=vertexOK&&(fs?fragmentABI(fs,&color,&fetch,&position,&noInputs,&fragmentTwoUV,&fragmentColorOnly,&predicate):
         staticFragmentABI(fp,&color));
     if(vertexOK&&!fs&&!fragmentOK)predicate=@"fragment.static-native-ABI";
@@ -436,6 +442,9 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     }
     if(vertexOK&&fragmentOK&&fragmentTwoUV&&!vertexTwoUV){
         fragmentOK=NO;predicate=@"link.second-fragment-UV-not-exported-by-vertex";
+    }
+    if(vertexOK&&fragmentOK&&color&&vertexNoColor){
+        fragmentOK=NO;predicate=@"link.fragment-color-not-exported-by-vertex";
     }
     if(!vertexOK||!fragmentOK)
         return rejectPipeline(vf,ff,predicate,unsupported([NSString stringWithFormat:
@@ -477,7 +486,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     NSUInteger stride=d.vertexDescriptor.layouts[1].stride;
     if(stride<8||stride>2048||(stride&3))
         return rejectPipeline(vf,ff,@"descriptor.vertex-stride",unsupported(@"vertex stride requires 8..2048 bytes, aligned to 4"),error);
-    unsigned attributeCount=0,requiredAttributes=vertexColorOnly?0x9u:vertexTwoUV?0xfu:0xbu;
+    unsigned attributeCount=0,requiredAttributes=vertexColorOnly?0x9u:vertexNoColor?0x7u:vertexTwoUV?0xfu:0xbu;
     for(unsigned i=0;i<4;++i)if((requiredAttributes&(1u<<i))||
         d.vertexDescriptor.attributes[i].format!=MTLVertexFormatInvalid){
         NSUInteger offset=d.vertexDescriptor.attributes[i].offset;
@@ -499,7 +508,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
         .vertexName=e->_vertexName.UTF8String,.fragmentName=e->_fragmentName.UTF8String,
         .colorFormats={(uint32_t)target},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
             A5MaliProfileRenderState|(shaderBlend?A5MaliProfileShaderBlend:0)|
-            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0)|(vertexTwoUV?A5MaliProfileVertexTwoUV:0)|(fragmentTwoUV?A5MaliProfileFragmentTwoUV:0)|(fragmentColorOnly?A5MaliProfileFragmentColorOnly:0)|
+            (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0)|(vertexTwoUV?A5MaliProfileVertexTwoUV:0)|(vertexNoColor?A5MaliProfileVertexNoColor:0)|(fragmentTwoUV?A5MaliProfileFragmentTwoUV:0)|(fragmentColorOnly?A5MaliProfileFragmentColorOnly:0)|
             (fs&&!noInputs&&!fragmentColorOnly&&![fs.nativeABI[@"native_info"][@"textures"] unsignedIntValue]?A5MaliProfileFragmentNoTextures:0),.passes=&e->_pass,.passCount=1,
         .resources=e->_resources,.resourceCount=resourceCount,.pushFields=e->_pushes,.pushFieldCount=pushCount,
         .attributes=e->_attributes,.attributeCount=attributeCount,.layouts=&e->_layout,.layoutCount=1,
@@ -515,7 +524,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     static unsigned acceptedDiagnostics=0;
     if(__atomic_fetch_add(&acceptedDiagnostics,1,__ATOMIC_RELAXED)<32)fprintf(stderr,
         "A5XELTE Metal dynamic link: accepted vertex=%s vertex_profile=%u vertex_dynamic=%u vertex_abi=%s fragment=%s fragment_profile=%u fragment_dynamic=%u fs_no_inputs=%u fetch=%u vertex_stride=%u vertex_fields=%u\n",
-        vf.name.UTF8String,vf.specializationProfileID,!!vs,vertexColorOnly?"position-color":vertexTwoUV?"position-two-uv-color":"position-uv-color",
+        vf.name.UTF8String,vf.specializationProfileID,!!vs,vertexColorOnly?"position-color":vertexNoColor?"position-two-uv":vertexTwoUV?"position-two-uv-color":"position-uv-color",
         ff.name.UTF8String,ff.specializationProfileID,!!fs,noInputs,fetch,e->_layout.stride,attributeCount);
     return e;
 }

@@ -11,12 +11,14 @@
 extern "C" {
 #endif
 enum { A5RuntimeJobBytes=0x40000, A5RuntimeMaxVertices=256,
+       A5RuntimeMiscMaxVertices=1024,
        A5RuntimeMaxIndices=1536,
        A5RuntimeVertexOffset=0, A5RuntimeTilerOffset=0x100,
        A5RuntimeFragmentOffset=0x200 };
 enum { A5RuntimeOK=0, A5RuntimeInvalid=1, A5RuntimeUnsupported=2,
        A5RuntimeBounds=3 };
-enum { A5RuntimeTriangle=3, A5RuntimeTriangleStrip=4 };
+enum { A5RuntimeLine=1, A5RuntimeLineStrip=2,
+       A5RuntimeTriangle=3, A5RuntimeTriangleStrip=4 };
 enum { A5RuntimeBlendCopy=0, A5RuntimeBlendPremultipliedSourceOver=1, A5RuntimeBlendScreen=2, A5RuntimeBlendState=3 };
 typedef struct {
     uint64_t gpuVA;

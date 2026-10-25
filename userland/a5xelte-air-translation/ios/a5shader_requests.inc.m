@@ -476,6 +476,7 @@ static BOOL a5DynamicConstants(id array,BOOL indexed)
     return YES;
 }
 #import "../../a5mali-metal/A5MaliBlendRequest.h"
+#import "../../a5mali-metal/A5MaliImmutableSampler.h"
 static BOOL a5DynamicRequest(NSDictionary *request,NSString *librarySHA)
 {
     NSMutableDictionary *plain=[request mutableCopy];id blend=plain[@"blend_state"];
@@ -529,6 +530,24 @@ static NSArray *a5DynamicConstantArguments(NSArray *named,NSArray *indexed)
     }
     return result;
 }
+/* These stock stages share two texture coordinates and no color varying.
+ * Linking either against fixed_vert/fixed_frag is semantically invalid. */
+static BOOL a5VariableBlurStage(NSDictionary *request)
+{
+    return ([request[@"stage"] isEqual:@"vertex"]&&
+        [request[@"function"] isEqual:@"variable_blur_vert_lph"])||
+        ([request[@"stage"] isEqual:@"fragment"]&&
+        [request[@"function"] isEqual:@"variable_blur_downsample_frag_lph"]);
+}
+static NSDictionary *a5DynamicScaffold(NSDictionary *request,NSDictionary *fallback)
+{
+    if(!a5VariableBlurStage(request))return fallback;
+    NSMutableDictionary *pair=[fallback mutableCopy];
+    pair[@"vertex_function"]=@"variable_blur_vert_lph";
+    pair[@"fragment_function"]=@"variable_blur_downsample_frag_lph";
+    pair[@"vertex_constants"]=@[];pair[@"fragment_constants"]=@[];
+    return pair;
+}
 static NSDictionary *a5DynamicIdentity(NSDictionary *request,BOOL success)
 {
     NSMutableDictionary *identity=[@{@"schema":@2,@"kind":@"dynamic-stage",@"request_id":request[@"request_id"],
@@ -537,7 +556,7 @@ static NSDictionary *a5DynamicIdentity(NSDictionary *request,BOOL success)
         @"function":request[@"function"],@"stage_compiled":@(success),@"pipeline_compatible":@NO,
         @"named_constants_sha256":digest(a5Canonical(request[@"named_constants"])),
         @"indexed_constants_sha256":digest(a5Canonical(request[@"indexed_constants"])),
-        @"support_generation":@2} mutableCopy];
+        @"support_generation":a5VariableBlurStage(request)?@3:@2} mutableCopy];
     if(request[@"blend_state"])identity[@"blend_state"]=request[@"blend_state"];
     return identity;
 }
@@ -569,16 +588,67 @@ static void a5DynamicFailure(NSDictionary *request,NSString *reason)
         [request[@"stage"] UTF8String],[request[@"request_id"] UTF8String],reason.UTF8String);
 }
 
-/* One generation-scoped retry for the feature newly implemented here.
- * Prior workers saved only the bounded child-failure text, not a typed feature
- * code, so require the complete authenticated fragment request's explicit
- * destination-read constants as well as its matching old failed receipt.
+/* The 0234 worker died after saving this exact authenticated request's
+ * private failure, before it had a typed public terminal receipt. Preserve
+ * that old status as a typed failed receipt, so the same crash-resumable
+ * retirement transaction below handles status-only and published failures.
+ * The generation archive prevents a current failure from retrying forever. */
+static void a5MaterializePriorBlurFailure(NSDictionary *request)
+{
+    if(!a5VariableBlurStage(request))return;
+    NSString *key=request[@"request_id"];
+    NSString *archive=[@".variable-blur-old-generation3-" stringByAppendingString:key];
+    int root=open(publishedRoot.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(root<0)fail(@"cannot open blur publication root");
+    struct stat st;
+    for(NSString *name in @[key,archive]){
+        if(!fstatat(root,name.fileSystemRepresentation,&st,AT_SYMLINK_NOFOLLOW)){
+            close(root);return;
+        }
+        if(errno!=ENOENT)fail(@"cannot inspect prior blur publication");
+    }
+    if(close(root))fail(@"cannot close prior blur publication root");
+    NSString *folder=[cacheRoot stringByAppendingPathComponent:@"request-status"];
+    int directory=open(folder.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(directory<0){if(errno==ENOENT)return;fail(@"untrusted prior blur status directory");}
+    if(fstat(directory,&st)||st.st_uid!=geteuid()||(st.st_mode&07777)!=0700)
+        fail(@"untrusted prior blur status directory");
+    NSString *name=[key stringByAppendingString:@".json"];
+    int fd=openat(directory,name.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+    if(fd<0){int error=errno;close(directory);if(error==ENOENT)return;
+        fail(@"untrusted prior blur status");}
+    if(fstat(fd,&st)||!S_ISREG(st.st_mode)||st.st_uid!=geteuid()||st.st_nlink!=1||
+       (st.st_mode&07777)!=0600||st.st_size<=0||st.st_size>16384)
+        fail(@"untrusted prior blur status");
+    NSMutableData *data=[NSMutableData dataWithLength:(NSUInteger)st.st_size];
+    uint8_t *cursor=data.mutableBytes;size_t left=data.length;
+    while(left){ssize_t n=read(fd,cursor,left);if(n<0&&errno==EINTR)continue;
+        if(n<=0)fail(@"short prior blur status");cursor+=n;left-=n;}
+    uint8_t extra;if(read(fd,&extra,1)||close(fd)||close(directory))
+        fail(@"prior blur status changed");
+    NSDictionary *status=[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    if(!a5ExactKeys(status,@[@"schema",@"request_id",@"status",@"reason"])||
+       ![status[@"schema"] isEqual:@1]||![status[@"request_id"] isEqual:key]||
+       ![status[@"status"] isKindOfClass:NSString.class]||
+       ![status[@"reason"] isKindOfClass:NSString.class])fail(@"invalid prior blur status identity");
+    NSString *reason=status[@"reason"];
+    if(![status[@"status"] isEqual:@"failed"]||reason.length>4096||
+       ![reason hasPrefix:@"compiler/validator failed; see "])return;
+    NSMutableDictionary *receipt=[a5DynamicIdentity(request,NO) mutableCopy];
+    receipt[@"support_generation"]=@2;receipt[@"error"]=reason;
+    a5PublishDynamic(request,receipt,@{});
+}
+
+/* One generation-scoped retry per newly implemented feature. Require the
+ * complete authenticated request's destination-read constants or exact stock
+ * variable-blur function, together with its matching old failed receipt.
  * No successful publication, current-generation failure or other feature is
  * retired. Renamed evidence remains root-owned and cannot be overwritten.
  */
-static void a5RetirePriorFetchFailure(NSDictionary *request)
+static void a5RetirePriorFeatureFailure(NSDictionary *request)
 {
-    if(![request[@"stage"] isEqual:@"fragment"])return;
+    BOOL blur=a5VariableBlurStage(request);
+    if(!blur&&![request[@"stage"] isEqual:@"fragment"])return;
     BOOL fetch=NO,destination=NO;
     for(NSDictionary *constant in request[@"named_constants"]){
         if([constant[@"name"] isEqual:@"fc_framebuffer_fetch"])
@@ -586,9 +656,9 @@ static void a5RetirePriorFetchFailure(NSDictionary *request)
         if([constant[@"name"] isEqual:@"fc_dest_count"])
             destination=[constant[@"type"] isEqual:@49]&&![constant[@"raw"] isEqual:@"00"];
     }
-    if(!fetch||!destination)return;
+    if(!blur&&(!fetch||!destination))return;
     NSString *key=request[@"request_id"];
-    NSString *retired=[@".fetch-old-generation2-" stringByAppendingString:key];
+    NSString *retired=[(blur?@".variable-blur-old-generation3-":@".fetch-old-generation2-") stringByAppendingString:key];
     int root=open(publishedRoot.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
     if(root<0)fail(@"cannot open fetch publication root");
     BOOL archived=NO;
@@ -613,10 +683,13 @@ static void a5RetirePriorFetchFailure(NSDictionary *request)
         if(n<=0)fail(@"short prior fetch receipt");cursor+=n;length-=n;}
     uint8_t extra;if(read(fd,&extra,1)||close(fd))fail(@"prior fetch receipt changed");
     NSDictionary *receipt=[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-    if([receipt[@"stage_compiled"] isEqual:@YES]||receipt[@"support_generation"]){
+    id generation=receipt[@"support_generation"];
+    if([receipt[@"stage_compiled"] isEqual:@YES]||
+       (generation&&(!blur||![generation isEqual:@2]))){
         close(publication);close(root);return;}
     NSMutableDictionary *identity=[a5DynamicIdentity(request,NO) mutableCopy];
-    [identity removeObjectForKey:@"support_generation"];
+    if(generation)identity[@"support_generation"]=generation;
+    else [identity removeObjectForKey:@"support_generation"];
     NSString *reason=receipt[@"error"];
     if(![reason isKindOfClass:NSString.class]||reason.length>4096||
        ![reason hasPrefix:@"compiler/validator failed; see "]){
@@ -670,7 +743,8 @@ static void a5RetirePriorFetchFailure(NSDictionary *request)
        current.st_dev!=file.st_dev||current.st_ino!=file.st_ino||
        renameatx_np(statuses,name.fileSystemRepresentation,statuses,archive.fileSystemRepresentation,RENAME_EXCL)||
        fsync(statuses)||close(statuses))fail(@"cannot retire prior fetch private status");
-    fprintf(stderr,"A5XELTE shader compiler: RETRY framebuffer-fetch support_generation=2 request=%s\n",key.UTF8String);
+    fprintf(stderr,"A5XELTE shader compiler: RETRY %s support_generation=%u request=%s\n",
+        blur?"variable-blur-companion":"framebuffer-fetch",blur?3:2,key.UTF8String);
 }
 
 static NSNumber *a5DynamicBufferSize(NSDictionary *reflection,NSString *title,NSDictionary *slot)
@@ -731,12 +805,7 @@ static NSString *a5DynamicABI(NSDictionary *reflection,NSString *stage)
                 NSDictionary *texture=source[@"texture"],*sampler=source[@"sampler"];
                 NSDictionary *selection=sampler[@"sampler"];
                 if(selection[@"Constexpr"]){
-                    if(![binding[@"immutable_sampler"] isEqual:@{
-                        @"mag_filter":@0,@"min_filter":@0,@"mipmap_mode":@0,
-                        @"address_mode_u":@0,@"address_mode_v":@0,@"address_mode_w":@0,
-                        @"mip_lod_bias":@0,@"max_anisotropy":NSNull.null,@"compare":NSNull.null,
-                        @"min_lod":@0,@"max_lod":@0.25,@"border_color":@0,
-                        @"reduction":@0,@"border_components":NSNull.null}])
+                    if(!A5MaliDecodeImmutableSampler(binding[@"immutable_sampler"],textures,NULL))
                         fail(@"unsupported immutable dynamic sampler state");
                 }else if(!a5ExactKeys(selection,@[@"Slot"])||
                     binding[@"immutable_sampler"]!=NSNull.null)
@@ -799,6 +868,7 @@ static void a5CompileDynamic(NSString *self,NSDictionary *request,NSDictionary *
     NSString *key=request[@"request_id"],*stage=request[@"stage"];
     NSString *final=[publishedRoot stringByAppendingPathComponent:key];
     if([NSFileManager.defaultManager fileExistsAtPath:final])return;
+    scaffold=a5DynamicScaffold(request,scaffold);
     activeRequestKey=key;
     activeDynamicRequest=[request copy];
     serviceCheckpoint("dispatch",key,stage);
@@ -975,7 +1045,7 @@ static void a5HandleRequest(NSString *self, NSDictionary *request,
     NSDictionary *scaffold=nil;
     for(NSDictionary *candidate in knownProfiles)if([candidate[@"profile_id"] isEqual:@603])scaffold=candidate;
     BOOL dynamic=scaffold&&a5DynamicRequest(request,scaffold[@"metallib_sha256"]);
-    if(dynamic)a5RetirePriorFetchFailure(request);
+    if(dynamic){a5MaterializePriorBlurFailure(request);a5RetirePriorFeatureFailure(request);}
     if(dynamic&&[NSFileManager.defaultManager fileExistsAtPath:
         [publishedRoot stringByAppendingPathComponent:key]])return;
     if (a5HasTerminalRequestStatus(key,known,dynamic?request:nil)) return;

@@ -138,7 +138,18 @@ static int a5_dynamic_analyze(nir_shader *nir,const struct a5_dynamic_profile *p
          unsigned bytes=in->def.num_components*in->def.bit_size/8;
          if(ubo>=8 || !bytes || offset>576 || bytes>576-offset)return 0;
          unsigned bound=576;
+         /* lower_texture/lower_sysvals reserve one record per reflected native
+          * texture: levels/width/height and minLOD/maxLOD/bias. The runtime
+          * fills these from that texture and its actual sampler descriptor. */
+         bool texture_sysval=false;
+         if(!ubo&&nir->info.stage==MESA_SHADER_FRAGMENT)
+            for(unsigned t=0;t<profile->profile.texture_count;t++){
+               unsigned base=352+32*t;
+               if((offset>=base&&offset+bytes<=base+12)||
+                  (offset>=base+16&&offset+bytes<=base+28))texture_sysval=true;
+            }
          if(!ubo && !(offset<=profile->profile.push_bytes && bytes<=profile->profile.push_bytes-offset) &&
+            !texture_sysval &&
             !(nir->info.stage==MESA_SHADER_FRAGMENT && profile->blend.enabled && offset>=480 && offset+bytes<=496) &&
             !(nir->info.stage==MESA_SHADER_VERTEX &&
               ((offset>=512 && offset+bytes<=524)||(offset>=528 && offset+bytes<=540)))){

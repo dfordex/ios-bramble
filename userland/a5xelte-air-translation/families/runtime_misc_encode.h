@@ -46,6 +46,9 @@ int A5MaliDynamicRuntimeProfileSupported(const A5MaliCompiledProfile *);
  * layouts use the application's stride/offsets, including the last field;
  * legacy static profiles preserve their original 48-byte record contract. */
 uint32_t A5MaliRuntimeVertexSpan(const A5MaliCompiledProfile *,uint32_t count);
+/* Only generic/reflected layouts use the expanded, nonoverlapping output
+ * planes. Older path/blur/home emitters retain their verified 256 bound. */
+uint32_t A5MaliRuntimeMiscVertexLimit(const A5MaliCompiledProfile *);
 int A5MaliEncodeRuntimeMiscPass(const A5RuntimeMiscDraw *, void *, size_t);
 #ifdef __cplusplus
 }

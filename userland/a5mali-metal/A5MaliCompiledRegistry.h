@@ -47,7 +47,9 @@ enum { A5MaliProfileFixedViewport = 1, A5MaliProfileNearestSampler = 2,
        A5MaliProfileFragmentNoTextures = 262144,
        A5MaliProfileScreenBlend = 524288,
        A5MaliProfileRenderState = 1048576,
-       A5MaliProfileShaderBlend = 2097152 };
+       A5MaliProfileShaderBlend = 2097152,
+       /* Reflected position/two-UV vertex program with no color input/export. */
+       A5MaliProfileVertexNoColor = 4194304 };
 enum { A5MaliDynamicProfileID = 65536 };
 
 typedef struct {

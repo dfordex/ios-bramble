@@ -26,6 +26,19 @@ enum { RG_SWIZZLE=MALI_CHANNEL_R|(MALI_CHANNEL_G<<3)|(MALI_CHANNEL_0<<6)|(MALI_C
  A_SWIZZLE=MALI_CHANNEL_0|(MALI_CHANNEL_0<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_R<<9),
  R_SWIZZLE=MALI_CHANNEL_R|(MALI_CHANNEL_0<<3)|(MALI_CHANNEL_0<<6)|(MALI_CHANNEL_1<<9) };
 enum { ARENA=0x20000,ARENA_END=0x30000 };
+/* Preserve the device-tested small layout byte-for-byte. Larger generic
+ * draws reserve a full 16-byte position, 2-byte point size, two 8-byte UVs
+ * and one 16-byte colour for every vertex. No output plane aliases another
+ * plane, the bounded input arena, or the fixed 0x40000-byte job allocation. */
+enum { LARGE_POS=0x30000,LARGE_PSIZ=0x34000,LARGE_VARY=0x34800,
+       LARGE_VARY_STEP=0x2000 };
+_Static_assert(LARGE_POS+16*A5RuntimeMiscMaxVertices<=LARGE_PSIZ,"large positions");
+_Static_assert(LARGE_PSIZ+2*A5RuntimeMiscMaxVertices<=LARGE_VARY,"large point sizes");
+_Static_assert(LARGE_VARY+2*LARGE_VARY_STEP+16*A5RuntimeMiscMaxVertices<=SIZE,"large varyings");
+static unsigned position_offset(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?LARGE_POS:POS;}
+static unsigned point_size_offset(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?LARGE_PSIZ:PSIZ;}
+static unsigned varying_offset(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?LARGE_VARY:VARY_DATA;}
+static unsigned varying_step(const A5RuntimeDraw*r){return r->vertexCount>A5RuntimeMaxVertices?LARGE_VARY_STEP:0x1000;}
 _Static_assert(MALI_ATTRIBUTE_BUFFER_LENGTH == 16, "v4 attribute table stride");
 /* ATTRIBUTE buffer_index counts 16-byte descriptors, not 32-byte allocations.
  * Keep the deliberately padded special InstanceID at physical slot2. */
@@ -225,11 +238,21 @@ static int dynamic_images(uint8_t*d,const A5RuntimeMiscDraw*m){
    c.minify_nearest=sm->minFilter==A5RuntimeSamplerNearest;
    c.magnify_nearest=sm->magFilter==A5RuntimeSamplerNearest;
    c.mipmap_mode=MALI_MIPMAP_MODE_NEAREST;
-   c.wrap_mode_s=sm->sAddressMode==A5RuntimeSamplerRepeat?MALI_WRAP_MODE_REPEAT:MALI_WRAP_MODE_CLAMP_TO_EDGE;
-   c.wrap_mode_t=sm->tAddressMode==A5RuntimeSamplerRepeat?MALI_WRAP_MODE_REPEAT:MALI_WRAP_MODE_CLAMP_TO_EDGE;
-   c.wrap_mode_r=sm->rAddressMode==A5RuntimeSamplerRepeat?MALI_WRAP_MODE_REPEAT:MALI_WRAP_MODE_CLAMP_TO_EDGE;
-   c.minimum_lod=0;c.maximum_lod=(sampler->flags&A5MaliResourceImmutableSampler)?sm->lodMaxClamp:0;
+   c.wrap_mode_s=sm->sAddressMode==A5RuntimeSamplerRepeat?MALI_WRAP_MODE_REPEAT:
+    sm->sAddressMode==A5RuntimeSamplerClampBorder?MALI_WRAP_MODE_CLAMP_TO_BORDER:MALI_WRAP_MODE_CLAMP_TO_EDGE;
+   c.wrap_mode_t=sm->tAddressMode==A5RuntimeSamplerRepeat?MALI_WRAP_MODE_REPEAT:
+    sm->tAddressMode==A5RuntimeSamplerClampBorder?MALI_WRAP_MODE_CLAMP_TO_BORDER:MALI_WRAP_MODE_CLAMP_TO_EDGE;
+   c.wrap_mode_r=sm->rAddressMode==A5RuntimeSamplerRepeat?MALI_WRAP_MODE_REPEAT:
+    sm->rAddressMode==A5RuntimeSamplerClampBorder?MALI_WRAP_MODE_CLAMP_TO_BORDER:MALI_WRAP_MODE_CLAMP_TO_EDGE;
+   c.minimum_lod=sm->lodMinClamp;
+   c.maximum_lod=(sampler->flags&A5MaliResourceImmutableSampler)?sm->lodMaxClamp:0;
+   c.border_color_r=0;c.border_color_g=0;c.border_color_b=0;c.border_color_a=0;
   }
+  unsigned q=FS_SYS+352+32*r->nativeIndex;
+  u32(d,q,1);u32(d,q+4,im->width);u32(d,q+8,im->height);
+  f32(d,q+16,sm->lodMinClamp);
+  f32(d,q+20,(sampler->flags&A5MaliResourceImmutableSampler)?sm->lodMaxClamp:0);
+  f32(d,q+24,0); /* immutable/runtime accepted states have zero LOD bias */
  }
  return A5RuntimeOK;
 }
@@ -368,7 +391,7 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
 static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(p->profileID!=A5MaliDynamicProfileID||
     !(p->flags&A5MaliProfileDynamicStages)||
-    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV|A5MaliProfileFragmentColorOnly|A5MaliProfileFragmentNoTextures|A5MaliProfileScreenBlend|A5MaliProfileRenderState|A5MaliProfileShaderBlend))||
+    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV|A5MaliProfileFragmentColorOnly|A5MaliProfileFragmentNoTextures|A5MaliProfileScreenBlend|A5MaliProfileRenderState|A5MaliProfileShaderBlend|A5MaliProfileVertexNoColor))||
     !(p->flags&A5MaliProfileSourceOverBlend)||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
@@ -382,6 +405,7 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  const A5MaliCompiledVertexLayout*l=p->layouts;
  if(l->index!=1||l->stride<8||l->stride>2048||(l->stride&3)||l->stepFunction!=1||l->stepRate!=1)return 0;
  unsigned attributeMask=0,requiredAttributes=(p->flags&A5MaliProfileVertexColorOnly)?0x9u:
+  (p->flags&A5MaliProfileVertexNoColor)?0x7u:
   (p->flags&A5MaliProfileVertexTwoUV)?0xfu:0xbu;
  for(unsigned i=0;i<p->attributeCount;++i){const A5MaliCompiledVertexAttribute*a=p->attributes+i;
   unsigned index=a->index;
@@ -428,6 +452,8 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(!!(p->flags&A5MaliProfileFramebufferFetch)!=(fetches==1))return 0;
  if((p->flags&A5MaliProfileVertexColorOnly)&&(!(p->flags&(A5MaliProfileFragmentNoInputs|A5MaliProfileFragmentColorOnly))||(p->flags&A5MaliProfileVertexTwoUV)))return 0;
  if((p->flags&A5MaliProfileFragmentTwoUV)&&(!(p->flags&A5MaliProfileVertexTwoUV)||(p->flags&A5MaliProfileFragmentNoInputs)))return 0;
+ if((p->flags&A5MaliProfileVertexNoColor)&&(!(p->flags&A5MaliProfileVertexTwoUV)||
+    (p->flags&(A5MaliProfileVertexColorOnly|A5MaliProfileDynamicColorVarying))))return 0;
  if((p->flags&A5MaliProfileFragmentNoTextures)&&(p->flags&(A5MaliProfileFragmentNoInputs|A5MaliProfileFragmentColorOnly)))return 0;
  if(p->flags&A5MaliProfileFragmentNoInputs){
   /* Constant and ordered-fetch shaders both have genuine empty interpolant
@@ -448,10 +474,12 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(p->immutableSamplerCount>4||(p->immutableSamplerCount&&!p->immutableSamplers))return 0;
  for(unsigned i=0;i<p->immutableSamplerCount;i++){
   const A5MaliCompiledSampler*s=p->immutableSamplers+i;
-  if(s->nativeIndex>=4||(immutableMask&(1u<<s->nativeIndex))||s->minFilter||s->magFilter||s->mipFilter||
-     s->sAddressMode!=A5RuntimeSamplerRepeat||s->tAddressMode!=A5RuntimeSamplerRepeat||
-     s->rAddressMode!=A5RuntimeSamplerRepeat||s->normalizedCoordinates!=1||
-     s->lodMinClamp!=0||s->lodMaxClamp!=0.25f)return 0;
+  if(s->nativeIndex>=4||(immutableMask&(1u<<s->nativeIndex))||s->minFilter>1||s->magFilter>1||s->mipFilter||
+     (s->sAddressMode!=A5RuntimeSamplerRepeat&&s->sAddressMode!=A5RuntimeSamplerClampEdge&&s->sAddressMode!=A5RuntimeSamplerClampBorder)||
+     (s->tAddressMode!=A5RuntimeSamplerRepeat&&s->tAddressMode!=A5RuntimeSamplerClampEdge&&s->tAddressMode!=A5RuntimeSamplerClampBorder)||
+     (s->rAddressMode!=A5RuntimeSamplerRepeat&&s->rAddressMode!=A5RuntimeSamplerClampEdge&&s->rAddressMode!=A5RuntimeSamplerClampBorder)||
+     s->normalizedCoordinates!=1||!isfinite(s->lodMinClamp)||!isfinite(s->lodMaxClamp)||
+     s->lodMinClamp<0||s->lodMaxClamp<s->lodMinClamp||s->lodMaxClamp>15)return 0;
   immutableMask|=1u<<s->nativeIndex;
  }
  if(immutableMask!=constantMask)return 0;
@@ -491,8 +519,12 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
 int A5MaliDynamicRuntimeProfileSupported(const A5MaliCompiledProfile*p){
  return p&&dynamic_textured_contract(p);
 }
+uint32_t A5MaliRuntimeMiscVertexLimit(const A5MaliCompiledProfile*p){
+ return p&&((p->profileID>=600&&p->profileID<=606)||p->profileID==A5MaliDynamicProfileID)?
+  A5RuntimeMiscMaxVertices:A5RuntimeMaxVertices;
+}
 uint32_t A5MaliRuntimeVertexSpan(const A5MaliCompiledProfile*p,uint32_t count){
- if(!p||!count||count>A5RuntimeMaxVertices)return 0;
+ if(!p||!count||count>A5MaliRuntimeMiscVertexLimit(p))return 0;
  if(p->profileID!=A5MaliDynamicProfileID)return count*48;
  if(!dynamic_textured_contract(p))return 0;
  unsigned extent=0;
@@ -532,6 +564,7 @@ static int bind_buffer(const A5RuntimeMiscDraw*m,uint8_t*d,unsigned*arena,
 }
 static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int generic_color,int generic_textured,unsigned*outArena){
  const A5RuntimeDraw*r=&m->draw;const A5MaliCompiledProfile*p=r->profile;uint64_t VA=r->descriptorGPUVA;
+ unsigned vary=varying_offset(r),varyStep=varying_step(r);
  unsigned arena=ARENA,pushes[2][31]={{0}},seen[2][31]={{0}};
  for(unsigned i=0;i<8;++i){ubo(d,VS_UBOS,i,VA+VS_SYS,576);ubo(d,FS_UBOS,i,VA+FS_SYS,576);}
  for(unsigned i=0;i<p->resourceCount;++i){const A5MaliCompiledResource*c=p->resources+i;
@@ -580,7 +613,10 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
        p->attributes[0].format==29?RG_SWIZZLE:0x688,low+vertex_offset(p,0));
   if(generic_color||(p->flags&A5MaliProfileVertexColorOnly))attr(d,ATTRS+8,0,MALI_RGBA16F,0x688,low+vertex_offset(p,3));
   else{attr(d,ATTRS+8,0,MALI_RG32F,RG_SWIZZLE,low+vertex_offset(p,1));
-   if(p->flags&A5MaliProfileVertexTwoUV){attr(d,ATTRS+16,0,MALI_RG32F,RG_SWIZZLE,low+vertex_offset(p,2));attr(d,ATTRS+24,0,MALI_RGBA16F,0x688,low+vertex_offset(p,3));}
+   if(p->flags&A5MaliProfileVertexTwoUV){
+    attr(d,ATTRS+16,0,MALI_RG32F,RG_SWIZZLE,low+vertex_offset(p,2));
+    if(!(p->flags&A5MaliProfileVertexNoColor))attr(d,ATTRS+24,0,MALI_RGBA16F,0x688,low+vertex_offset(p,3));
+   }
    else attr(d,ATTRS+16,0,MALI_RGBA16F,0x688,low+vertex_offset(p,3));
   }
   buf(d,ATTR_BUFS,vertex,stride,vertexBytes+low);
@@ -603,33 +639,35 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
   pan_pack((struct mali_attribute_instance_id_packed*)(d+ATTR_BUFS+32),ATTRIBUTE_INSTANCE_ID,c){c.divisor_p=0x7fffffff;c.divisor_r=31;c.divisor_e=1;}
   attr(d,ATTRS+16*8,0,MALI_R32UI,R_SWIZZLE,0);attr(d,ATTRS+17*8,2,MALI_R32UI,R_SWIZZLE,0);
  }
- attr(d,VS_VARY,0,MALI_SNAP_4,0x688,0);buf(d,VS_VARY_BUFS,VA+POS,16,r->vertexCount*16);
- attr(d,VS_VARY+8,1,MALI_R16F,R_SWIZZLE,0);buf(d,VS_VARY_BUFS+16,VA+PSIZ,2,r->vertexCount*2);
+ attr(d,VS_VARY,0,MALI_SNAP_4,0x688,0);buf(d,VS_VARY_BUFS,VA+position_offset(r),16,r->vertexCount*16);
+ attr(d,VS_VARY+8,1,MALI_R16F,R_SWIZZLE,0);buf(d,VS_VARY_BUFS+16,VA+point_size_offset(r),2,r->vertexCount*2);
  if((home||generic_textured)&&!(p->flags&A5MaliProfileVertexColorOnly)){
-  attr(d,VS_VARY+16,2,MALI_RGBA32UI,0x688,0);buf(d,VS_VARY_BUFS+32,VA+VARY_DATA,16,r->vertexCount*16);
-  attr(d,VS_VARY+24,3,MALI_RG32UI,RG_SWIZZLE,0);buf(d,VS_VARY_BUFS+48,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
+  attr(d,VS_VARY+16,2,MALI_RGBA32UI,0x688,0);buf(d,VS_VARY_BUFS+32,VA+vary,16,r->vertexCount*16);
+  attr(d,VS_VARY+24,3,MALI_RG32UI,RG_SWIZZLE,0);buf(d,VS_VARY_BUFS+48,VA+vary+varyStep,8,r->vertexCount*8);
   if(generic_textured){
    /* Textured VS: hardware VAR0 is UV, VAR1 is colour; FS reads VAR0. */
    attr(d,VS_VARY+16,2,MALI_RG32UI,RG_SWIZZLE,0);
-   buf(d,VS_VARY_BUFS+32,VA+VARY_DATA,8,r->vertexCount*8);
-   unsigned colorData=VARY_DATA+((p->flags&A5MaliProfileVertexTwoUV)?0x2000:0x1000);
+   buf(d,VS_VARY_BUFS+32,VA+vary,8,r->vertexCount*8);
+   unsigned colorData=vary+((p->flags&A5MaliProfileVertexTwoUV)?2*varyStep:varyStep);
    if(p->flags&A5MaliProfileVertexTwoUV){
     attr(d,VS_VARY+24,3,MALI_RG32UI,RG_SWIZZLE,0);
-    buf(d,VS_VARY_BUFS+48,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
-    attr(d,VS_VARY+32,4,MALI_RGBA32UI,0x688,0);
-    buf(d,VS_VARY_BUFS+64,VA+colorData,16,r->vertexCount*16);
+    buf(d,VS_VARY_BUFS+48,VA+vary+varyStep,8,r->vertexCount*8);
+    if(!(p->flags&A5MaliProfileVertexNoColor)){
+     attr(d,VS_VARY+32,4,MALI_RGBA32UI,0x688,0);
+     buf(d,VS_VARY_BUFS+64,VA+colorData,16,r->vertexCount*16);
+    }
    }else{
     attr(d,VS_VARY+24,3,MALI_RGBA32UI,0x688,0);
     buf(d,VS_VARY_BUFS+48,VA+colorData,16,r->vertexCount*16);
    }
    if(!(p->flags&(A5MaliProfileFragmentNoInputs|A5MaliProfileFragmentColorOnly))){
     attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);
-    buf(d,FS_VARY_BUFS,VA+VARY_DATA,8,r->vertexCount*8);
+    buf(d,FS_VARY_BUFS,VA+vary,8,r->vertexCount*8);
    }
    unsigned colorSlot=(p->flags&A5MaliProfileFragmentColorOnly)?0:(p->flags&A5MaliProfileFragmentTwoUV)?2:1;
    if(p->flags&A5MaliProfileFragmentTwoUV){
     attr(d,FS_VARY+8,1,MALI_RG32F,RG_SWIZZLE,0);
-    buf(d,FS_VARY_BUFS+16,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
+    buf(d,FS_VARY_BUFS+16,VA+vary+varyStep,8,r->vertexCount*8);
    }
    if(p->profileID==604||(p->flags&A5MaliProfileDynamicColorVarying)){
     attr(d,FS_VARY+colorSlot*8,colorSlot,MALI_RGBA32F,0x688,0);
@@ -644,14 +682,14 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
    }
   }else{
    attr(d,FS_VARY,0,MALI_RG32F,RG_SWIZZLE,0);
-   buf(d,FS_VARY_BUFS,VA+VARY_DATA+0x1000,8,r->vertexCount*8);
+   buf(d,FS_VARY_BUFS,VA+vary+varyStep,8,r->vertexCount*8);
   }
  }else if(generic_color||(p->flags&A5MaliProfileVertexColorOnly)){
   attr(d,VS_VARY+16,2,MALI_RGBA32UI,0x688,0);
-  buf(d,VS_VARY_BUFS+32,VA+VARY_DATA,16,r->vertexCount*16);
+  buf(d,VS_VARY_BUFS+32,VA+vary,16,r->vertexCount*16);
   if(!(p->flags&A5MaliProfileFragmentNoInputs)){
    attr(d,FS_VARY,0,MALI_RGBA32F,0x688,0);
-   buf(d,FS_VARY_BUFS,VA+VARY_DATA,16,r->vertexCount*16);
+   buf(d,FS_VARY_BUFS,VA+vary,16,r->vertexCount*16);
   }
  }else if(!clear){
   for(unsigned i=0;i<5;++i){unsigned off=VARY_DATA+i*0x1000,stride=i?4:8;
@@ -670,7 +708,7 @@ static int resources(uint8_t*d,const A5RuntimeMiscDraw*m,int home,int clear,int 
 static int index_data(uint8_t*d,const A5RuntimeDraw*r,unsigned arena,uint64_t*gpuVA){
  *gpuVA=0;
  if(!r->indexCount)return r->indexSize?A5RuntimeUnsupported:A5RuntimeOK;
- if((r->indexSize!=2&&r->indexSize!=4)||r->indexCount<3||
+ if((r->indexSize!=2&&r->indexSize!=4)||r->indexCount<2||
     r->indexCount>A5RuntimeMaxIndices)return A5RuntimeUnsupported;
  const A5RuntimeBuffer*b=&r->indexBuffer;
  unsigned need=r->indexCount*r->indexSize;
@@ -699,12 +737,16 @@ static void jobs(uint8_t*d,uint64_t VA,const A5RuntimeDraw*r,uint64_t indexVA){
  pan_pack((struct mali_job_header_packed*)(d+0x100),JOB_HEADER,c){c.type=MALI_JOB_TYPE_TILER;c.index=2;c.dependency_1=1;c.enable_texture_mapper=true;}
  pan_pack((struct mali_invocation_packed*)(d+0x120),INVOCATION,c){c.invocations=r->vertexCount-1;c.workgroups_z_shift=32;c.thread_group_split=2;}
  pan_pack((struct mali_primitive_packed*)(d+0x128),PRIMITIVE,c){
-  c.draw_mode=r->primitive==A5RuntimeTriangle?MALI_DRAW_MODE_TRIANGLES:MALI_DRAW_MODE_TRIANGLE_STRIP;
+  c.draw_mode=r->primitive==A5RuntimeLine?MALI_DRAW_MODE_LINES:
+   r->primitive==A5RuntimeLineStrip?MALI_DRAW_MODE_LINE_STRIP:
+   r->primitive==A5RuntimeTriangle?MALI_DRAW_MODE_TRIANGLES:MALI_DRAW_MODE_TRIANGLE_STRIP;
   c.index_count=r->indexCount?r->indexCount:r->vertexCount;
   c.index_type=r->indexCount?(r->indexSize==2?MALI_INDEX_TYPE_UINT16:MALI_INDEX_TYPE_UINT32):MALI_INDEX_TYPE_NONE;
   c.indices=indexVA;c.job_task_split=6;
  }
- pan_pack((struct mali_draw_packed*)(d+0x140),DRAW,c){c.position=VA+POS;c.viewport=VA+VIEWPORT;c.varyings=VA+FS_VARY;c.varying_buffers=VA+FS_VARY_BUFS;c.uniform_buffers=VA+FS_UBOS;c.textures=VA+TEX_TABLE;c.samplers=VA+SAMPLERS;c.state=VA+FS_RSD;c.fbd=VA+FB;}
+ /* Released Panfrost selects the line provoking vertex in DRAW rather than
+  * PRIMITIVE; triangles keep their existing zero/default selection. */
+ pan_pack((struct mali_draw_packed*)(d+0x140),DRAW,c){c.position=VA+position_offset(r);c.flat_shading_vertex=r->primitive==A5RuntimeLine||r->primitive==A5RuntimeLineStrip;c.viewport=VA+VIEWPORT;c.varyings=VA+FS_VARY;c.varying_buffers=VA+FS_VARY_BUFS;c.uniform_buffers=VA+FS_UBOS;c.textures=VA+TEX_TABLE;c.samplers=VA+SAMPLERS;c.state=VA+FS_RSD;c.fbd=VA+FB;}
  pan_pack((struct mali_primitive_size_packed*)(d+0x1b8),PRIMITIVE_SIZE,c){c.fixed_sized=1;}
  pan_pack((struct mali_viewport_packed*)(d+VIEWPORT),VIEWPORT,c){c.scissor_minimum_x=r->scissorX;c.scissor_minimum_y=r->scissorY;c.scissor_maximum_x=r->scissorX+r->scissorWidth-1;c.scissor_maximum_y=r->scissorY+r->scissorHeight-1;}
  pan_pack((struct mali_job_header_packed*)(d+0x200),JOB_HEADER,c){c.type=MALI_JOB_TYPE_FRAGMENT;c.index=3;c.enable_texture_mapper=true;}
@@ -731,11 +773,13 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  }
  const A5RuntimeImage*out=&m->colorAttachments[pass->logicalTarget];
  unsigned drawCount=r->indexCount?r->indexCount:r->vertexCount;
- if(r->vertexStart||!r->vertexCount||(!r->indexCount&&r->vertexCount<3)||
-   r->vertexCount>A5RuntimeMaxVertices||(r->indexCount&&r->indexCount<3)||
+ unsigned minimum=(r->primitive==A5RuntimeLine||r->primitive==A5RuntimeLineStrip)?2:3;
+ if(r->vertexStart||!r->vertexCount||drawCount<minimum||
+   r->vertexCount>A5MaliRuntimeMiscVertexLimit(p)||
    (r->indexCount&&p->profileID!=602&&!generic_textured)||
    (!r->indexCount&&r->indexSize)||r->indexCount>A5RuntimeMaxIndices||
-   (r->primitive!=A5RuntimeTriangle&&r->primitive!=A5RuntimeTriangleStrip)||
+   (r->primitive!=A5RuntimeLine&&r->primitive!=A5RuntimeLineStrip&&r->primitive!=A5RuntimeTriangle&&r->primitive!=A5RuntimeTriangleStrip)||
+   (r->primitive==A5RuntimeLine&&drawCount%2)||
    (r->primitive==A5RuntimeTriangle&&drawCount%3)||r->blend>A5RuntimeBlendState||
    ((r->blend==A5RuntimeBlendState)!=!!(p->flags&A5MaliProfileRenderState))||
    (r->blend&&r->blend!=A5RuntimeBlendState&&((r->blend==A5RuntimeBlendScreen)!=!!(p->flags&A5MaliProfileScreenBlend)))||
@@ -787,6 +831,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   rs.shader.shader=r->descriptorGPUVA+VS_CODE+vs->firstTag;
   if(p->flags&A5MaliProfileVertexColorOnly){rs.shader.attribute_count=2;rs.shader.varying_count=3;}
   if(p->flags&A5MaliProfileVertexTwoUV){rs.shader.attribute_count=4;rs.shader.varying_count=5;}
+  if(p->flags&A5MaliProfileVertexNoColor){rs.shader.attribute_count=3;rs.shader.varying_count=4;}
   rs.properties.uniform_buffer_count=dynamic_ubo_count(p,A5MaliStageVertex);
   MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+VS_RSD),&rs);
   MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FS_RSD),&rs);

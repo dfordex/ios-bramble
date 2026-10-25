@@ -26,7 +26,7 @@ typedef struct {
     BOOL failPrivateRead,privateAllocated[4];
     unsigned privateCreates,privateReads,privateWrites,privateReleases;
     uint8_t privateBytes[4][8192];
-    Vertex vertices[A5RuntimeMaxVertices];
+    Vertex vertices[A5RuntimeMiscMaxVertices];
     float matrix[16];
     uint8_t indices[A5RuntimeMaxIndices*4];
     const A5MaliCompiledProfile *profile;
@@ -96,13 +96,19 @@ static kern_return_t transport(void *context,uint32_t selector,const void *input
      * 24-byte descriptor is at0x128: index_type bits8..10, zero baseVertex
      * word1, count-minus-one word3, actual indices GPUVA words4/5. */
     uint32_t primitive=u32(jobs+0x128);
-    assert(((primitive>>8)&7)==(s->indexSize==2?2u:3u));
+    assert(((primitive>>8)&7)==(!s->indexCount?0u:s->indexSize==2?2u:3u));
+    unsigned mode=s->primitive==MTLPrimitiveTypeLine?2:s->primitive==MTLPrimitiveTypeLineStrip?4:
+        s->primitive==MTLPrimitiveTypeTriangle?8:10;
+    assert((primitive&0xff)==mode);
+    assert(((u32(jobs+0x140)>>8)&1)==(s->primitive==MTLPrimitiveTypeLine||s->primitive==MTLPrimitiveTypeLineStrip));
     assert(u32(jobs+0x12c)==0&&u32(jobs+0x130)==0);
-    assert((uint64_t)u32(jobs+0x134)+1==s->indexCount);
+    assert((uint64_t)u32(jobs+0x134)+1==(s->indexCount?s->indexCount:s->vertexCount));
     uint64_t address=u64(jobs+0x138);
-    assert(address>=A5NativeJobVA+0x20000&&address<A5NativeJobVA+0x30000&&!(address&63));
-    size_t at=(size_t)(address-A5NativeJobVA),bytes=s->indexCount*s->indexSize;
-    assert(bytes<=0x30000-at&&!memcmp(jobs+at,s->indices,bytes));
+    if(s->indexCount){
+        assert(address>=A5NativeJobVA+0x20000&&address<A5NativeJobVA+0x30000&&!(address&63));
+        size_t at=(size_t)(address-A5NativeJobVA),bytes=s->indexCount*s->indexSize;
+        assert(bytes<=0x30000-at&&!memcmp(jobs+at,s->indices,bytes));
+    }else assert(!address);
     assert(u32(jobs+0x20)==s->vertexCount-1&&u32(jobs+0x120)==s->vertexCount-1);
     assert(contains(jobs+0x20000,0x10000,s->vertices,s->vertexCount*sizeof(Vertex)));
     assert(contains(jobs+0x20000,0x10000,s->matrix,sizeof(s->matrix)));
@@ -193,7 +199,7 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice *device,A5MaliRestricted
     memcpy(vb.contents,s->vertices,vb.length);
     if(privateIndex)assert([indices uploadBytes:s->indices offset:indexOffset length:indexBytes]==KERN_SUCCESS);
     else if(fault!=TooManyIndices)memcpy((uint8_t *)indices.contents+indexOffset,s->indices,indexBytes);
-    if(fault==TooLargeIndex||fault==VertexOutOfRange){uint32_t bad=fault==TooLargeIndex?256:s->vertexCount;
+    if(fault==TooLargeIndex||fault==VertexOutOfRange){uint32_t bad=fault==TooLargeIndex?A5RuntimeMiscMaxVertices:s->vertexCount;
         memcpy((uint8_t *)indices.contents+indexOffset,&bad,s->indexSize);}
     indices=nil;
     if(fault==Good||privateIndex)assert(heldIndex); /* deferred snapshot owns the actual index object */
@@ -205,11 +211,27 @@ static void setIndices(State *s,const uint32_t *indices,unsigned count,unsigned 
     s->indexCount=count;s->indexSize=size;memset(s->indices,0,sizeof(s->indices));
     for(unsigned i=0;i<count;++i)memcpy(s->indices+i*size,indices+i,size);
 }
+static A5MaliMetalBuffer *nonindexed(A5MaliRestrictedDevice *device,A5MaliReadSurfCandidate *pipeline,
+    A5MaliMetalTexture *target,State *s)
+{
+    A5MaliMetalBuffer *cb=[[device newCommandQueue]commandBuffer];
+    MTLRenderPassDescriptor *pass=[MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture=(id)target;pass.colorAttachments[0].loadAction=MTLLoadActionLoad;
+    pass.colorAttachments[0].storeAction=MTLStoreActionStore;
+    A5MaliMetalRenderEncoder *encoder=[cb renderCommandEncoderWithDescriptor:pass];assert(encoder);
+    [encoder setRenderPipelineState:pipeline];
+    A5MaliPrivateBuffer *vertices=[device newBufferWithBytes:s->vertices
+        length:s->vertexCount*sizeof(Vertex) options:MTLResourceStorageModeShared];assert(vertices);
+    [encoder setVertexBuffer:vertices offset:0 atIndex:1];
+    [encoder setVertexBytes:s->matrix length:sizeof(s->matrix) atIndex:2];
+    [encoder drawPrimitives:s->primitive vertexStart:0 vertexCount:s->vertexCount];
+    [encoder endEncoding];return cb;
+}
 int main(void)
 {
     @autoreleasepool {
         State s={0};s.profile=A5MaliCompiledProfileForID(602);assert(s.profile);
-        for(unsigned i=0;i<A5RuntimeMaxVertices;++i){Vertex *v=&s.vertices[i];
+        for(unsigned i=0;i<A5RuntimeMiscMaxVertices;++i){Vertex *v=&s.vertices[i];
             v->position[0]=(float)(i%32)+.125f;v->position[1]=(float)(i/32)+.375f;v->position[3]=1;
             v->color[0]=0x3400;v->color[1]=0x3800;v->color[2]=(uint16_t)(0x3800+i);v->color[3]=0x3c00;
             memset(v->padding,(int)(i+17),sizeof(v->padding));
@@ -240,8 +262,24 @@ int main(void)
         s.vertexCount=6;setIndices(&s,many,A5RuntimeMaxIndices,4);
         b=encode(device,other,p,target,&s,MTLIndexTypeUInt32,12,1,Good);[b commit];[b waitUntilCompleted];
         assert(b.status==MTLCommandBufferStatusCompleted);
+        const unsigned lineCounts[]={2,164,176,186,196,256,312,330,1024};
+        for(unsigned i=0;i<sizeof(lineCounts)/sizeof(lineCounts[0]);i++){
+            s.vertexCount=lineCounts[i];s.primitive=MTLPrimitiveTypeLine;s.indexCount=s.indexSize=0;
+            unsigned previous=s.submits;b=nonindexed(device,p,target,&s);[b commit];[b waitUntilCompleted];
+            assert(b.status==MTLCommandBufferStatusCompleted&&s.submits==previous+1);
+            uint32_t line[]={s.vertexCount-1,0};setIndices(&s,line,2,i%2?4:2);
+            previous=s.submits;b=encode(device,other,p,target,&s,i%2?MTLIndexTypeUInt32:MTLIndexTypeUInt16,
+                i%2?12:6,0,Good);[b commit];[b waitUntilCompleted];
+            assert(b.status==MTLCommandBufferStatusCompleted&&s.submits==previous+1);
+        }
+        s.vertexCount=331;s.primitive=MTLPrimitiveTypeLineStrip;s.indexCount=s.indexSize=0;
+        b=nonindexed(device,p,target,&s);[b commit];[b waitUntilCompleted];
+        assert(b.status==MTLCommandBufferStatusCompleted);
+        s.vertexCount=165;s.primitive=MTLPrimitiveTypeLine;
+        unsigned beforeInvalid=s.submits;b=nonindexed(device,p,target,&s);[b commit];[b waitUntilCompleted];
+        assert(b.status==MTLCommandBufferStatusError&&s.submits==beforeInvalid);
         for(Fault f=WrongType;f<=BaseInstance;++f){
-            s.vertexCount=f==TooLargeIndex?256:6;s.primitive=MTLPrimitiveTypeTriangle;setIndices(&s,triangles,6,2);
+            s.vertexCount=f==TooLargeIndex?A5RuntimeMiscMaxVertices:6;s.primitive=MTLPrimitiveTypeTriangle;setIndices(&s,triangles,6,2);
             unsigned before=s.submits,overload=(f==BaseVertex||f==BaseInstance)?2:f==ExtraInstances?1:0;
             b=encode(device,other,p,target,&s,MTLIndexTypeUInt16,6,overload,f);[b commit];[b waitUntilCompleted];
             assert(b.status==MTLCommandBufferStatusError&&b.error&&s.submits==before);
@@ -281,7 +319,7 @@ int main(void)
         assert(b.status==MTLCommandBufferStatusError&&b.error.code==kIOReturnTimeout&&s.submits==before+1);
         assert(!b.privateBuffer.completedFence.fragmentFence);
         s.failSubmit=NO;
-        puts("indexed602 Metal wrappers: u16/u32 ordered native indices, late commit snapshots/rebind retention, all overloads, bounds/device rejection and terminal fences PASS (mock transport; no GPU pixels)");
+        puts("indexed602 Metal wrappers: u16/u32 ordered native indices, actual line/line-strip topology, 2..1024 vertices, late commit snapshots/rebind retention, bounds/device rejection and terminal fences PASS (mock transport; no GPU pixels)");
     }
     return 0;
 }

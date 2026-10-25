@@ -231,3 +231,33 @@ as above. It builds a detached private worktree, applies only the stored
 CLI-deadline patch, and records the patch digest. The original upstream source
 and default20-second CLI policy remain intact; only the on-device service's
 explicit flag selects no deadline.
+
+## Variable-blur stage compilation
+
+The dynamic worker links `variable_blur_vert_lph` with
+`variable_blur_downsample_frag_lph` when compiling either requested stage.
+Both stock functions have no required specialization constants. Their
+position/two-UV linkage differs from the fixed shader scaffold, so the worker
+must not substitute the fixed vertex or fragment companion. It still publishes
+only the requested native stage; the pipeline factory validates the linked
+resources and vertex layout separately.
+
+Immutable samplers use the same validated Vulkan-to-native decoder as the
+publication cache. The real downsample fragment requests linear filtering and
+transparent-black clamp-to-border, with normalized coordinates and LOD0–15.
+Anisotropy, comparison, unknown address modes, and malformed states remain
+rejected.
+
+Only these two exact stock variable-blur functions use support generation3.
+Their authenticated old failed status/receipt can be archived once and retried,
+including the original status-only failure left by the earlier worker. Old
+failure evidence is preserved under an exclusive generation archive; successful
+publications and generation3 failures remain terminal. Other stages retain
+generation2 and the existing framebuffer-fetch retry rule.
+
+`test_variable_blur_worker.py --tools PRIVATE_TOOLS --stock PRIVATE_METALLIB
+--request CAPTURED_VARIABLE_BLUR_REQUEST --output FRESH_PRIVATE_DIRECTORY`
+compiles both real AIR stages through SPIR-V validation and the native backend,
+then checks their publications, resource reflection, sampler state, and retry
+boundaries. This host test establishes compilation/publication, not on-device
+GPU execution or correct compositor pixels.

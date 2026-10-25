@@ -4,6 +4,7 @@
  */
 #import "A5MaliDynamicShaderCache.h"
 #import "A5MaliBlendRequest.h"
+#import "A5MaliImmutableSampler.h"
 #import <CommonCrypto/CommonDigest.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -479,14 +480,10 @@ static BOOL payload(id p) {
                 id immutable=b[@"immutable_sampler"],token=s[@"sampler"][@"Constexpr"];
                 BOOL constant=immutable&&immutable!=NSNull.null;
                 if(constant){
-                    NSDictionary *want=@{@"mag_filter":@0,@"min_filter":@0,@"mipmap_mode":@0,
-                        @"address_mode_u":@0,@"address_mode_v":@0,@"address_mode_w":@0,
-                        @"mip_lod_bias":@0.0,@"max_anisotropy":NSNull.null,@"compare":NSNull.null,
-                        @"min_lod":@0.0,@"max_lod":@0.25,@"border_color":@0,@"reduction":@0,
-                        @"border_components":NSNull.null};
-                    if(![immutable isEqual:want]||![token isKindOfClass:NSArray.class]||[token count]!=2||
-                       !number(token[0],UINT64_MAX)||!number(token[1],UINT64_MAX)||_immutableSamplerCount==4)return NO;
-                    _immutableSamplers[_immutableSamplerCount++]=(A5MaliCompiledSampler){native,0,0,0,1,1,1,1,0,0.25f};
+                    if(![token isKindOfClass:NSArray.class]||[token count]!=2||
+                       !number(token[0],UINT64_MAX)||!number(token[1],UINT64_MAX)||_immutableSamplerCount==4||
+                       !A5MaliDecodeImmutableSampler(immutable,native,_immutableSamplers+_immutableSamplerCount))return NO;
+                    _immutableSamplerCount++;
                 }
                 if (!exact(b[@"ty"], 1) || ![t[@"stage"] isEqual:stageName] ||
                     ![t[@"class"] isEqual:@"Texture"] || !number(t[@"index"], 30) ||
