@@ -49,6 +49,8 @@ def argument_parser():
                     help='enable bounded 32-sector eMMC read/write batches')
     ap.add_argument('--touch-input', action='store_true',
                     help='enable touch controller/polling independently of quiet contact logging')
+    ap.add_argument('--present-damage', action='store_true',
+                    help='skip identical scanout and copy only changed tile-aligned row bands')
     return ap
 
 
@@ -229,6 +231,10 @@ def main():
         if b'A5XELTE eMMC: bounded CMD23/CMD18/CMD25 blocks=' not in args.kernel.read_bytes():
             ap.error('kernel lacks bounded eMMC multi-block transfers')
         required['a5emmc_blocks'] = '32'
+    if args.present_damage:
+        if b'A5XELTE G3D present: compared=' not in args.kernel.read_bytes():
+            ap.error('kernel lacks exact band comparison and clipped presentation')
+        required['a5fb_damage'] = '1'
     if args.touch_input:
         if b'A5XELTE TOUCH: enabled=%d contact_log=%d' not in args.kernel.read_bytes():
             ap.error('kernel lacks touch enable independent of contact logging')

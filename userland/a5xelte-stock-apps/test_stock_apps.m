@@ -73,8 +73,11 @@ static void parserGuards(void){
 }
 int main(int argc,char**argv){@autoreleasepool{
  assert(argc==2);mode=@(argv[1]);records=[NSMutableDictionary new];calls=[NSMutableDictionary new];parserGuards();
+ if([mode isEqual:@"existing"])
+  for(unsigned i=0;i<3;i++)records[@(selected[i].identifier)]=@{@"Path":[@"/Applications" stringByAppendingPathComponent:@(selected[i].bundle)]};
  int result=A5RegisterSelectedStockApps();
  if([mode isEqual:@"happy"]||[mode isEqual:@"retry"]){assert(result==0&&records.count==3&&calls.count==3&&containerCalls>=15);for(NSString*k in calls)assert([calls[k]unsignedIntValue]<=2);}
+ else if([mode isEqual:@"existing"]){assert(result==0&&records.count==3&&!calls.count&&!containerCalls);}
  else if([mode isEqual:@"api-unavailable"]){assert(result==2&&!calls.count&&!records.count);}
  else{assert(result==3);if([mode isEqual:@"container-failure"])assert(!calls.count);if([mode isEqual:@"register-failure"])assert(!records.count);}
  printf("stock app registration %s PASS (real Apple inputs, fake SPI; no host database writes)\n",argv[1]);

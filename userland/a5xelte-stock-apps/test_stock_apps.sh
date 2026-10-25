@@ -7,7 +7,7 @@ mkdir -p "$out"
 clang -fobjc-arc -fblocks -Wall -Wextra -Werror -fsanitize=address,undefined \
  -DA5_STOCK_APPS_TEST_ROOT="\"$root\"" "$src/test_stock_apps.m" \
  -framework Foundation -o "$out/test"
-for mode in happy retry api-unavailable container-failure register-failure invalid-state wrong-path; do
+for mode in happy existing retry api-unavailable container-failure register-failure invalid-state wrong-path; do
  "$out/test" "$mode"
 done
 xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 -mcpu=cortex-a53 -march=armv8-a+crypto \

@@ -174,6 +174,7 @@ int A5RegisterSelectedStockApps(void){@autoreleasepool{
      NSData*code=regularFile([path stringByAppendingPathComponent:@(selected[i].executable)],8*1024*1024);
      NSDictionary*rights=originalBytes(code,selected[i].codeSHA)?entitlements(code,identifier):nil;
      if(!rights){fprintf(stderr,"A5XELTE Apps: signed entitlements unavailable id=%s\n",selected[i].identifier);continue;}
+     if(before){done[i]=YES;complete++;fprintf(stderr,"A5XELTE Apps: VERIFIED existing id=%s\n",selected[i].identifier);continue;}
      NSDictionary*record=registration(path,info,rights,app,shared,system);if(!record)continue;
      BOOL accepted=[workspace registerApplicationDictionary:record];called[i]=accepted;
      BOOL after=validProxy(proxy,identifier,path);
