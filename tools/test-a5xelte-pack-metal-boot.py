@@ -53,7 +53,8 @@ class OptionalTestArguments(unittest.TestCase):
 
     def test_conflicts_reject_before_reading_inputs(self):
         for enable, skip in (('--test-shader-suite', '--skip-shader-suite'),
-                             ('--test-downsample', '--skip-downsample')):
+                             ('--test-downsample', '--skip-downsample'),
+                             ('--present-damage', '--full-frame-present')):
             result = subprocess.run([sys.executable, str(HERE / 'a5xelte-pack-metal-boot.py'),
                     'nonexistent-reference.img', 'nonexistent-kernel', 'nonexistent-output.img',
                     enable, skip], capture_output=True, text=True)
@@ -61,6 +62,16 @@ class OptionalTestArguments(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertIn(f'argument {skip}: not allowed with argument {enable}', result.stderr)
                 self.assertNotIn('FileNotFoundError', result.stderr)
+
+    def test_presentation_override_removes_inherited_duplicates(self):
+        native = ['a5fb_gpu=1', 'a5native=1', 'a5fb_hz=30', 'cpus=4']
+        original = native + ['a5fb_damage=1', 'a5fb_damage=1']
+        for flag, expected in (('--full-frame-present', '0'), ('--present-damage', '1')):
+            args = packer.argument_parser().parse_args(['r', 'k', 'o', flag])
+            actual = packer.rewrite_boot_arguments(original, packer.presentation_boot_arguments(args))
+            self.assertEqual(actual, native + ['a5fb_damage=' + expected])
+        args = packer.argument_parser().parse_args(['r', 'k', 'o'])
+        self.assertEqual(packer.presentation_boot_arguments(args), {})
 
 
 if __name__ == '__main__':

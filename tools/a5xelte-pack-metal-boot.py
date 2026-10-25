@@ -49,8 +49,11 @@ def argument_parser():
                     help='enable bounded 32-sector eMMC read/write batches')
     ap.add_argument('--touch-input', action='store_true',
                     help='enable touch controller/polling independently of quiet contact logging')
-    ap.add_argument('--present-damage', action='store_true',
+    presentation = ap.add_mutually_exclusive_group()
+    presentation.add_argument('--present-damage', action='store_true',
                     help='skip identical scanout and copy only changed tile-aligned row bands')
+    presentation.add_argument('--full-frame-present', action='store_true',
+                    help='disable CPU damage comparison and always transfer the complete GPU frame')
     return ap
 
 
@@ -70,6 +73,14 @@ def rewrite_boot_arguments(words, required):
     # older =1 before the explicit =0. Unrelated/native settings are retained.
     return ([word for word in words if word.split('=', 1)[0] not in required] +
             [f'{key}={value}' for key, value in required.items()])
+
+
+def presentation_boot_arguments(args):
+    if args.present_damage:
+        return {'a5fb_damage': '1'}
+    if args.full_frame_present:
+        return {'a5fb_damage': '0'}
+    return {}
 
 
 def prepare_ram(adt_blob, reference_loader, payload_base, payload_size,
@@ -234,7 +245,7 @@ def main():
     if args.present_damage:
         if b'A5XELTE G3D present: compared=' not in args.kernel.read_bytes():
             ap.error('kernel lacks exact band comparison and clipped presentation')
-        required['a5fb_damage'] = '1'
+    required.update(presentation_boot_arguments(args))
     if args.touch_input:
         if b'A5XELTE TOUCH: enabled=%d contact_log=%d' not in args.kernel.read_bytes():
             ap.error('kernel lacks touch enable independent of contact logging')
