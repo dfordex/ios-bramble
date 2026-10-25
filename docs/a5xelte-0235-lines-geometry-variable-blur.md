@@ -82,4 +82,18 @@ publications and 270 stock application files. Its actual kernel installer passes
 ASan/UBSan preflight. The corrected worker will compile the blur stages on the
 phone; no Apple input, captured request or generated native program is committed.
 
-Full XNU/BOOT binding and physical run results are recorded below when complete.
+Full XNU make exits zero. BOOT is 25,800,720 bytes; kernel is 25,134,488
+bytes. Final checks compare all linked kernel segments and all 374 embedded
+file CRCs against the actual image, retain the exact 0230 loader/ADT/DTBH and
+boot arguments, four CPUs, 736 MiB managed RAM, 32-sector storage I/O, functional
+quiet touch and native rendering. Optional diagnostic pixel suites remain off.
+
+The guarded TWRP/model/partition/capacity installation writes BOOT p10, receives
+all 25,800,720 bytes, completes sync and requests reboot. No BOOT backup,
+post-write readback/hash or whole USERDATA transfer is performed, per the user's
+instructions. Recovery, EFS, radio and partition tables are not write targets.
+The Mac artifact, installer receipt and test proofs are saved privately under
+`experiments/ios-a5xelte/research/builds/0235` in the project workspace.
+
+**Physical line rendering, blur execution and UI responsiveness are pending the
+next run's screen report and recovered runtime log.**
