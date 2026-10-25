@@ -80,6 +80,17 @@ int main(void)
         assert(!A5MaliShaderCompileFunctionPayload(@"good",MTLFunctionTypeKernel,nil,&error));
         NSDictionary *vertex=A5MaliShaderCompileFunctionPayload(@"fixed_vert_lph_spc",MTLFunctionTypeVertex,nil,&error);
         assert(vertex&&!error&&[vertex[@"named_constants"] count]==0);
+        NSDictionary *blend=@{@"format":@80,@"write_mask":@15,@"rgb_operation":@3,@"alpha_operation":@4,
+            @"source_rgb":@1,@"destination_rgb":@1,@"source_alpha":@1,@"destination_alpha":@1};
+        NSMutableDictionary *variant=[fragment mutableCopy];variant[@"blend_state"]=blend;
+        NSString *blendKey=A5MaliShaderCompileRequestID(variant,&error);assert(blendKey&&!error);
+        assert(![blendKey isEqual:A5MaliShaderCompileRequestID(fragment,&error)]&&!error);
+        for(id badValue in @[@15,@(-1),@1.5,@YES,NSNull.null]){
+            NSMutableDictionary *badBlend=[blend mutableCopy];badBlend[@"source_rgb"]=badValue;
+            variant[@"blend_state"]=badBlend;assert(!A5MaliShaderCompileRequestID(variant,&error)&&error);
+        }
+        variant=[vertex mutableCopy];variant[@"blend_state"]=blend;
+        assert(!A5MaliShaderCompileRequestID(variant,&error)&&error);
         MTLRenderPipelineDescriptor *d=descriptor();
         NSDictionary *pipeline=A5MaliShaderCompilePipelinePayload(d,vertex,fragment,&error);
         assert(pipeline&&!error);

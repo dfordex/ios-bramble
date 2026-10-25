@@ -3,6 +3,7 @@
  * caller paths, shader substitutes or GPU addresses cross this interface.
  */
 #import "A5MaliShaderCompileRequest.h"
+#import "A5MaliBlendRequest.h"
 #import <CommonCrypto/CommonDigest.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -157,7 +158,10 @@ static BOOL validConstantArray(id values,BOOL indexed)
 }
 static BOOL functionPayload(NSDictionary *value,NSString *stage)
 {
-    return keysAre(value,@[@"schema",@"kind",@"source_library",@"metallib_sha256",@"gpu_id",@"compiler_abi",
+    NSMutableDictionary *plain=[value isKindOfClass:NSDictionary.class]?[value mutableCopy]:nil;
+    id blend=plain[@"blend_state"];[plain removeObjectForKey:@"blend_state"];
+    if(blend&&(![stage isEqual:@"fragment"]||!A5MaliValidBlendRequest(blend)))return NO;
+    return keysAre(plain,@[@"schema",@"kind",@"source_library",@"metallib_sha256",@"gpu_id",@"compiler_abi",
         @"stage",@"function",@"named_constants",@"indexed_constants"])&&[value[@"kind"] isEqual:@"function"]&&
         [value[@"schema"] isEqual:@1]&&[value[@"compiler_abi"] isEqual:@1]&&
         [value[@"source_library"] isEqual:@"quartzcore"]&&[value[@"metallib_sha256"] isEqual:sourceSHA]&&

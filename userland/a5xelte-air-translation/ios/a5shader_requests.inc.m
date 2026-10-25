@@ -475,9 +475,13 @@ static BOOL a5DynamicConstants(id array,BOOL indexed)
     }
     return YES;
 }
+#import "../../a5mali-metal/A5MaliBlendRequest.h"
 static BOOL a5DynamicRequest(NSDictionary *request,NSString *librarySHA)
 {
-    return a5ExactKeys(request,@[@"schema",@"kind",@"source_library",@"metallib_sha256",
+    NSMutableDictionary *plain=[request mutableCopy];id blend=plain[@"blend_state"];
+    [plain removeObjectForKey:@"blend_state"];
+    if(blend&&(![request[@"stage"] isEqual:@"fragment"]||!A5MaliValidBlendRequest(blend)))return NO;
+    return a5ExactKeys(plain,@[@"schema",@"kind",@"source_library",@"metallib_sha256",
         @"gpu_id",@"compiler_abi",@"stage",@"function",@"named_constants",
         @"indexed_constants",@"owner_uid",@"request_id"])&&
         a5Unsigned(request[@"schema"],1)&&[request[@"schema"] isEqual:@1]&&
@@ -527,13 +531,15 @@ static NSArray *a5DynamicConstantArguments(NSArray *named,NSArray *indexed)
 }
 static NSDictionary *a5DynamicIdentity(NSDictionary *request,BOOL success)
 {
-    return @{@"schema":@2,@"kind":@"dynamic-stage",@"request_id":request[@"request_id"],
+    NSMutableDictionary *identity=[@{@"schema":@2,@"kind":@"dynamic-stage",@"request_id":request[@"request_id"],
         @"source_library":@"quartzcore",@"metallib_sha256":request[@"metallib_sha256"],
         @"gpu_id":@"07201000",@"compiler_abi":@1,@"stage":request[@"stage"],
         @"function":request[@"function"],@"stage_compiled":@(success),@"pipeline_compatible":@NO,
         @"named_constants_sha256":digest(a5Canonical(request[@"named_constants"])),
         @"indexed_constants_sha256":digest(a5Canonical(request[@"indexed_constants"])),
-        @"support_generation":@2};
+        @"support_generation":@2} mutableCopy];
+    if(request[@"blend_state"])identity[@"blend_state"]=request[@"blend_state"];
+    return identity;
 }
 static void a5PublishDynamic(NSDictionary *request,NSDictionary *receipt,NSDictionary *files)
 {
@@ -857,6 +863,13 @@ static void a5CompileDynamic(NSString *self,NSDictionary *request,NSDictionary *
     if(![text containsString:@"spirv-val vulkan1.2: PASS"])fail(@"dynamic SPIR-V validation did not run");
     NSDictionary *reflection=readJSON(meta);
     NSString *manifest=a5DynamicABI(reflection,stage),*abiPath=[work stringByAppendingPathComponent:@"ABI.txt"];
+    if(request[@"blend_state"]){NSDictionary *b=request[@"blend_state"];
+        manifest=[manifest stringByAppendingFormat:@"blend %u %u %u %u %u %u %u %u\n",
+            [b[@"format"] unsignedIntValue],[b[@"write_mask"] unsignedIntValue],
+            [b[@"rgb_operation"] unsignedIntValue],[b[@"alpha_operation"] unsignedIntValue],
+            [b[@"source_rgb"] unsignedIntValue],[b[@"destination_rgb"] unsignedIntValue],
+            [b[@"source_alpha"] unsignedIntValue],[b[@"destination_alpha"] unsignedIntValue]];
+    }
     writeData([manifest dataUsingEncoding:NSUTF8StringEncoding],abiPath);
     NSString *shortStage=vertex?@"vert":@"frag";
     NSString *nativePath=[work stringByAppendingPathComponent:@"stage.midgard"];

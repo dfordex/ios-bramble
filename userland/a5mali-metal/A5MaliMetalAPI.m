@@ -376,6 +376,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 - (void)rejectUnsupportedOperationForSelector:(SEL)selector;
 @end
 
+typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
 @interface A5MaliMetalRenderEncoder () {
     A5MaliMetalBuffer *_buffer;
     A5MaliMetalTexture *_destination;
@@ -386,6 +387,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     BOOL _ended, _hasDraw, _hasViewport;
     MTLViewport _viewport;
     MTLScissorRect _scissor;
+    A5MaliDrawBlendColor _blendColor;
     NSMutableDictionary<NSNumber *, A5MaliBufferBinding *> *_vertexBindings, *_fragmentBindings;
     NSMutableDictionary<NSNumber *, A5MaliMetalTexture *> *_textures;
     NSMutableDictionary<NSNumber *, A5MaliSamplerState *> *_samplers;
@@ -1218,7 +1220,12 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
 - (void)setStencilFrontReferenceValue:(uint32_t)front backReferenceValue:(uint32_t)back
 { if([self validateActiveForSelector:_cmd] && (front||back))[_buffer markEncodingError:kIOReturnUnsupported selector:_cmd]; }
 - (void)setBlendColorRed:(float)red green:(float)green blue:(float)blue alpha:(float)alpha
-{ if([self validateActiveForSelector:_cmd] && (red!=0||green!=0||blue!=0||alpha!=0))[_buffer markEncodingError:kIOReturnUnsupported selector:_cmd]; }
+{
+ if(![self validateActiveForSelector:_cmd])return;
+ if(!isfinite(red)||!isfinite(green)||!isfinite(blue)||!isfinite(alpha)){
+  [_buffer markEncodingError:kIOReturnBadArgument selector:_cmd];return;}
+ _blendColor=(A5MaliDrawBlendColor){red,green,blue,alpha};
+}
 - (void)setVisibilityResultMode:(MTLVisibilityResultMode)mode offset:(NSUInteger)offset
 { if([self validateActiveForSelector:_cmd] && (mode!=MTLVisibilityResultModeDisabled || offset))[_buffer markEncodingError:kIOReturnUnsupported selector:_cmd]; }
 - (void)setVertexBuffers:(A5MaliPrivateBuffer * const *)buffers offsets:(const NSUInteger *)offsets withRange:(NSRange)range
@@ -1704,6 +1711,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     }
     MTLViewport viewport=_hasViewport?_viewport:(MTLViewport){0,0,_destination.width,_destination.height,0,1};
     MTLScissorRect scissor=_scissor;BOOL sourceOver=pipeline.sourceOver;
+    A5MaliDrawBlendColor blendColor=_blendColor;
     /* Preserve failed-release ownership until the connection closes. Kernel
      * references remain pinned when DMA completion is ambiguous; never claim
      * an allocation was freed merely because the command returned an error. */
@@ -1746,6 +1754,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 .scissorWidth=(uint32_t)scissor.width,.scissorHeight=(uint32_t)scissor.height,
                 .viewportX=viewport.originX,.viewportY=viewport.originY,.viewportWidth=viewport.width,
                 .viewportHeight=viewport.height,.viewportNear=viewport.znear,.viewportFar=viewport.zfar}};
+            memcpy(command.blendColor,&blendColor,sizeof(command.blendColor));
             if(textured)memcpy(command.fragmentSamplers,samplerSnapshots.values,sizeof(samplerSnapshots.values));
             if(indexed){
                 command.draw.indexBuffer=(A5RuntimeBuffer){0,(uint32_t)indices.length,0,indices.bytes};

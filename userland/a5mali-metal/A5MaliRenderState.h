@@ -65,7 +65,7 @@ static inline A5MaliBlendPlan A5MaliLowerRenderState(const A5MaliCompiledAttachm
  if(!s||s->writeMask>15||s->blendEnabled>1||s->rgbOperation>4||s->alphaOperation>4||
   s->sourceRGB>18||s->destinationRGB>18||s->sourceAlpha>18||s->destinationAlpha>18){p.reason="invalid Metal color attachment state";return p;}
  p.writeMask=((s->writeMask&8)>>3)|((s->writeMask&4)>>1)|((s->writeMask&2)<<1)|((s->writeMask&1)<<3);p.loadDestination=s->writeMask!=15;
- if(!s->blendEnabled){p.rgb=(A5MaliBlendEquation){2,2,1,0,0,0};p.alpha=p.rgb;p.route=A5MaliStateFixed;return p;}
+ if(!s->blendEnabled||!s->writeMask){p.rgb=(A5MaliBlendEquation){2,2,1,0,0,0};p.alpha=p.rgb;p.route=A5MaliStateFixed;return p;}
  unsigned r=A5MaliLowerBlendChannel(s->rgbOperation,s->sourceRGB,s->destinationRGB,0,&p.rgb);
  unsigned a=A5MaliLowerBlendChannel(s->alphaOperation,s->sourceAlpha,s->destinationAlpha,1,&p.alpha);
  p.route=r==A5MaliStateFixed&&a==A5MaliStateFixed?A5MaliStateFixed:A5MaliStateNeedsShader;

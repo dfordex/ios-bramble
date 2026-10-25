@@ -287,6 +287,9 @@ static bool lower_sysvals(nir_builder *b,nir_intrinsic_instr *intr,void *data)
       offset=548; count=1;
    } else if (intr->intrinsic==nir_intrinsic_load_base_instance) {
       offset=552; count=1;
+   } else if (intr->intrinsic==nir_intrinsic_load_blend_const_color_rgba) {
+      if(b->shader->info.stage!=MESA_SHADER_FRAGMENT){ctx->invalid=true;return false;}
+      offset=480;count=4;
    } else if (intr->intrinsic==nir_intrinsic_load_sampler_lod_parameters) {
       if (!nir_src_is_const(intr->src[0]) ||
           nir_src_as_uint(intr->src[0])>=ctx->profile->texture_count) {
@@ -392,6 +395,27 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage,
    NIR_PASS(_,nir,nir_opt_dce);
    if(resources.invalid||ctx.invalid){fprintf(stderr,"unsupported resource ABI\n");return 2;}
    nir_validate_shader(nir,"family real resource lowering");
+   if(dynamic && dynamic->blend.enabled){
+      static const enum pipe_blend_func operations[]={PIPE_BLEND_ADD,PIPE_BLEND_SUBTRACT,
+         PIPE_BLEND_REVERSE_SUBTRACT,PIPE_BLEND_MIN,PIPE_BLEND_MAX};
+      static const enum pipe_blendfactor factors[]={PIPE_BLENDFACTOR_ZERO,PIPE_BLENDFACTOR_ONE,
+         PIPE_BLENDFACTOR_SRC_COLOR,PIPE_BLENDFACTOR_INV_SRC_COLOR,PIPE_BLENDFACTOR_SRC_ALPHA,
+         PIPE_BLENDFACTOR_INV_SRC_ALPHA,PIPE_BLENDFACTOR_DST_COLOR,PIPE_BLENDFACTOR_INV_DST_COLOR,
+         PIPE_BLENDFACTOR_DST_ALPHA,PIPE_BLENDFACTOR_INV_DST_ALPHA,PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE,
+         PIPE_BLENDFACTOR_CONST_COLOR,PIPE_BLENDFACTOR_INV_CONST_COLOR,PIPE_BLENDFACTOR_CONST_ALPHA,
+         PIPE_BLENDFACTOR_INV_CONST_ALPHA};
+      nir_lower_blend_options blend={0};
+      blend.rt[0].format=dynamic->blend.format==80?PIPE_FORMAT_B8G8R8A8_UNORM:PIPE_FORMAT_B5G5R5A1_UNORM;
+      unsigned m=dynamic->blend.mask;
+      blend.rt[0].colormask=((m&8)>>3)|((m&4)>>1)|((m&2)<<1)|((m&1)<<3);
+      blend.rt[0].rgb=(nir_lower_blend_channel){operations[dynamic->blend.rgb],factors[dynamic->blend.src_rgb],factors[dynamic->blend.dst_rgb]};
+      blend.rt[0].alpha=(nir_lower_blend_channel){operations[dynamic->blend.alpha],factors[dynamic->blend.src_alpha],factors[dynamic->blend.dst_alpha]};
+      NIR_PASS(_,nir,nir_lower_blend,&blend);
+      nir_lower_single_sampled_options one_sample={0};
+      NIR_PASS(_,nir,nir_lower_single_sampled,&one_sample);
+      nir->info.fs.uses_sample_shading=false;
+      nir_validate_shader(nir,"pipeline-dependent Metal blend lowering");
+   }
    if(stage==MESA_SHADER_FRAGMENT && A5_INLINE_RGBA16_BLEND) {
       if(!A5_NATIVE_RGBA16 || A5_SELECTED_RT!=0){fprintf(stderr,"unreviewed inline blend target\n");return 2;}
       nir_lower_blend_options blend={0};

@@ -44,11 +44,19 @@ def main():
 #include <string.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <errno.h>
 int main(int argc,char **argv){
  struct rlimit limit;if(getrlimit(RLIMIT_FSIZE,&limit))return 90;
  printf("LIMIT soft=%llu hard=%llu pid=%d pgrp=%d request=%s\\n",
   (unsigned long long)limit.rlim_cur,(unsigned long long)limit.rlim_max,getpid(),getpgrp(),getenv("A5_SHADER_DIAG_REQUEST_KEY"));
  fflush(stdout);if(argc<2)return 91;
+ if(!strcmp(argv[1],"isolation")){
+  sigset_t mask;if(sigprocmask(SIG_SETMASK,NULL,&mask)||sigismember(&mask,SIGTERM))return 100;
+  struct sigaction action;if(sigaction(SIGUSR1,NULL,&action)||action.sa_handler!=SIG_DFL)return 101;
+  int fd=atoi(argv[2]);if(fcntl(fd,F_GETFD)!=-1||errno!=EBADF)return 102;
+  char byte;if(read(STDIN_FILENO,&byte,1)!=0)return 103;
+  puts("ISOLATION signal-mask=empty disposition=default unrelated-fd=closed stdin=eof");return 0;
+ }
  if(!strcmp(argv[1],"oversize")){
   static char bytes[1024*1024];int fd=open(argv[2],O_WRONLY|O_CREAT|O_EXCL,0600);if(fd<0)return 92;
   for(unsigned i=0;i<9;i++)if(write(fd,bytes,sizeof(bytes))!=(ssize_t)sizeof(bytes))return 93;
@@ -82,6 +90,7 @@ int main(int argc,char **argv){
     parent_file_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
     for name, tool, arguments, expected in (
             ('actual-os-exec', tools / 'sleep', ['10.25'], 0),
+            ('spawn-isolation', probe, ['isolation', '73'], 0),
             ('invalid-exec', invalid, [], 1),
             ('inherited-file-limit', probe, ['limits'], 0),
             ('oversize-output', probe, ['oversize', str(work / 'oversize-output')], 1),
@@ -90,8 +99,18 @@ int main(int argc,char **argv){
             ('live-descendant', probe, ['descendant'], 1)):
         child_log = work / (name + '-child.log')
         env = dict(os.environ, A5_SHADER_DIAG_REQUEST_KEY='must-be-overridden')
+        def polluted_parent():
+            # This only prepares this single-threaded regression child before
+            # its exec; production never runs Foundation after fork.
+            fd = os.open('/dev/null', os.O_RDONLY)
+            os.dup2(fd, 73, inheritable=True)
+            if fd != 73:
+                os.close(fd)
+            signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+            signal.signal(signal.SIGUSR1, signal.SIG_IGN)
         process = subprocess.Popen([str(runner), '--test-run', key, str(child_log), str(tool), *arguments],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            preexec_fn=polluted_parent if name == 'spawn-isolation' else None)
         stdout, stderr = process.communicate(timeout=25)
         (work / (name + '-parent.log')).write_text(stdout + stderr)
         child = child_log.read_text()
@@ -121,7 +140,9 @@ int main(int argc,char **argv){
             assert 'exec-failed' not in child
         else:
             assert f'LIMIT soft=8388608 hard=8388608 pid={child_pid} pgrp={child_pid} request={key}' in child, child
-            if name == 'oversize-output':
+            if name == 'spawn-isolation':
+                assert 'ISOLATION signal-mask=empty disposition=default unrelated-fd=closed stdin=eof' in child, child
+            elif name == 'oversize-output':
                 assert (work / 'oversize-output').stat().st_size == 8 * 1024 * 1024
                 assert f'signal={signal.SIGXFSZ}' in stderr, stderr
             elif name == 'oversize-group':

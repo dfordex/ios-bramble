@@ -16,6 +16,7 @@ struct a5_dynamic_profile {
    struct a5_texture_binding textures[A5_DYNAMIC_MAX_TEXTURES];
    /* Descriptor binding+1, zero when the stage does not fetch color0. */
    unsigned framebuffer_fetch_binding;
+   struct { unsigned enabled,format,mask,rgb,alpha,src_rgb,dst_rgb,src_alpha,dst_alpha; } blend;
 };
 struct a5_dynamic_io { unsigned location,base,component,components,bit_size; };
 struct a5_dynamic_info {
@@ -76,6 +77,15 @@ static int a5_dynamic_read(const char *path,mesa_shader_stage stage,
             a>=32 || b!=n)goto bad;
          for(unsigned i=0;i<n;i++)if(out->textures[i].binding==a)goto bad;
          out->textures[n]=(struct a5_texture_binding){a,b};out->profile.texture_count++;
+      }else if(!strcmp(key,"blend")){
+         unsigned format,mask,rgb,alpha,sr,dr,sa,da;
+         if(stage!=MESA_SHADER_FRAGMENT || out->blend.enabled ||
+            sscanf(line,"blend %u %u %u %u %u %u %u %u %c",
+             &format,&mask,&rgb,&alpha,&sr,&dr,&sa,&da,&tail)!=8 ||
+            (format!=80&&format!=43)||mask>15||rgb>4||alpha>4||sr>14||dr>14||sa>14||da>14)goto bad;
+         out->blend.enabled=1;out->blend.format=format;out->blend.mask=mask;
+         out->blend.rgb=rgb;out->blend.alpha=alpha;
+         out->blend.src_rgb=sr;out->blend.dst_rgb=dr;out->blend.src_alpha=sa;out->blend.dst_alpha=da;
       }else if(!strcmp(key,"framebuffer_fetch")){
          if(stage!=MESA_SHADER_FRAGMENT || out->framebuffer_fetch_binding ||
             sscanf(line,"framebuffer_fetch %u %u %c",&a,&b,&tail)!=2 || a>=32 || b)
@@ -129,6 +139,7 @@ static int a5_dynamic_analyze(nir_shader *nir,const struct a5_dynamic_profile *p
          if(ubo>=8 || !bytes || offset>576 || bytes>576-offset)return 0;
          unsigned bound=576;
          if(!ubo && !(offset<=profile->profile.push_bytes && bytes<=profile->profile.push_bytes-offset) &&
+            !(nir->info.stage==MESA_SHADER_FRAGMENT && profile->blend.enabled && offset>=480 && offset+bytes<=496) &&
             !(nir->info.stage==MESA_SHADER_VERTEX &&
               ((offset>=512 && offset+bytes<=524)||(offset>=528 && offset+bytes<=540)))){
             fprintf(stderr,"dynamic unsupported system UBO read offset=%u bytes=%u\n",offset,bytes);return 0;
@@ -144,13 +155,13 @@ static int a5_dynamic_analyze(nir_shader *nir,const struct a5_dynamic_profile *p
          if(offset>bound || bytes>bound-offset){fprintf(stderr,"dynamic UBO bound index=%u offset=%u bytes=%u bound=%u\n",ubo,offset,bytes,bound);return 0;}
          info->ubo_bytes[ubo]=MAX2(info->ubo_bytes[ubo],offset+bytes);
       }else if(in->intrinsic==nir_intrinsic_load_output){
-         if(nir->info.stage!=MESA_SHADER_FRAGMENT || !profile->framebuffer_fetch_binding ||
+         if(nir->info.stage!=MESA_SHADER_FRAGMENT || (!profile->framebuffer_fetch_binding&&!profile->blend.enabled) ||
             !nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0]) ||
             nir_intrinsic_io_semantics(in).location!=FRAG_RESULT_DATA0 ||
             nir_intrinsic_base(in) || nir_intrinsic_component(in) ||
             in->def.num_components!=4 || in->def.bit_size!=32 ||
             nir_intrinsic_dest_type(in)!=nir_type_float32)return 0;
-         info->framebuffer_fetch=1;
+         info->framebuffer_fetch=!!profile->framebuffer_fetch_binding;
       }else if(in->intrinsic==nir_intrinsic_load_input ||
                in->intrinsic==nir_intrinsic_load_interpolated_input){
          if(!a5_dynamic_io_add(info->inputs,&info->input_count,in,false))return 0;
@@ -202,6 +213,7 @@ static int a5_dynamic_write(const char *path,mesa_shader_stage stage,
    for(unsigned i=0;i<4;i++)if(info->textures&(1u<<i))fprintf(f,"%s%u",count++?",":"",i);
    fputs("],\"inputs\":",f);a5_dynamic_io_json(f,info->inputs,info->input_count);
    fputs(",\"outputs\":",f);a5_dynamic_io_json(f,info->outputs,info->output_count);
+   if(profile->blend.enabled)fputs(",\"blend_lowered\":true",f);
    fprintf(f,",\"sysval_ubo0_read_extent\":%u,\"framebuffer_fetch\":%s}\n",
        info->ubo_bytes[0],info->framebuffer_fetch?"true":"false");
    int error=ferror(f);return fclose(f)==0&&!error;

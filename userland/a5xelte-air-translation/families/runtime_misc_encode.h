@@ -30,6 +30,7 @@ typedef struct {
 typedef struct {
     A5RuntimeDraw draw;
     uint32_t passIndex;
+    float blendColor[4];
     A5RuntimeImage colorAttachments[8];
     A5RuntimeImage fragmentTextures[31];
     A5RuntimeSampler fragmentSamplers[31];

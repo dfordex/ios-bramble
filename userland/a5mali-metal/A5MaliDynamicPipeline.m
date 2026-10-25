@@ -10,6 +10,8 @@
 #include "A5MaliRenderState.h"
 #include <errno.h>
 #include <stdio.h>
+#include <time.h>
+#import "A5MaliBlendRequest.h"
 #include "../a5xelte-air-translation/families/runtime_misc_encode.h"
 
 @implementation A5MaliDynamicPipelineEntry {
@@ -355,6 +357,34 @@ A5MaliDynamicPipelineEntry *A5MaliAdaptCompiledPipeline(MTLRenderPipelineDescrip
     }
     return nil;
 }
+static A5MaliDynamicShaderCacheEntry *blendVariant(A5MaliMetalFunction *function,
+ MTLRenderPipelineColorAttachmentDescriptor *a,NSError **error){
+ NSDictionary *state=@{@"format":@(a.pixelFormat),@"write_mask":@(a.writeMask),
+  @"rgb_operation":@(a.rgbBlendOperation),@"alpha_operation":@(a.alphaBlendOperation),
+  @"source_rgb":@(a.sourceRGBBlendFactor),@"destination_rgb":@(a.destinationRGBBlendFactor),
+  @"source_alpha":@(a.sourceAlphaBlendFactor),@"destination_alpha":@(a.destinationAlphaBlendFactor)};
+ if(!A5MaliValidBlendRequest(state)){
+  if(error)*error=unsupported(@"shader blend requires single-source color0 BGRA8/BGR5A1 state");return nil;}
+ NSMutableDictionary *payload=[function.compileRequestPayload mutableCopy];
+ if(!payload){if(error)*error=unsupported(@"shader blend requires an authenticated AIR function");return nil;}
+ payload[@"blend_state"]=state;
+ NSString *key=A5MaliShaderCompileRequestID(payload,error);if(!key)return nil;
+ BOOL queued=NO;unsigned ticks=0;
+ for(;;){NSError *failure=nil;
+  A5MaliDynamicShaderCacheEntry *entry=A5MaliLoadDynamicShaderStage(key,payload,&failure);
+  if(entry)return entry;
+  if(failure.code!=ENOENT){if(error)*error=failure;return nil;}
+  if(!queued){NSString *forwardedKey=nil;
+   A5MaliShaderForwardResult r=A5MaliForwardShaderCompileRequest(payload,&forwardedKey,&failure);
+   if(r==A5MaliShaderForwardFailed||![forwardedKey isEqual:key]){
+    if(error)*error=failure?:unsupported(@"blend compiler request identity changed");return nil;}
+   queued=r==A5MaliShaderForwardQueued||r==A5MaliShaderForwardAlreadyQueued;
+  }
+  if(!(ticks++%100))fprintf(stderr,"A5XELTE Metal blend: phase=%s request=%s\n",
+   queued?"waiting":"enqueue-busy",key.UTF8String);
+  struct timespec pause={0,100000000};while(nanosleep(&pause,&pause)&&errno==EINTR){}
+ }
+}
 A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescriptor *d,NSError **error) {
     if(error)*error=nil;
     id v=d.vertexFunction,f=d.fragmentFunction;
@@ -363,6 +393,15 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
        [f functionType]!=MTLFunctionTypeFragment){return rejectPipeline(nil,nil,@"functions.authentication",unsupported(@"dynamic stages require authenticated same-library functions"),error);}
     A5MaliMetalFunction *vf=v,*ff=f;
     A5MaliDynamicShaderCacheEntry *vs=vf.dynamicShader,*fs=ff.dynamicShader;
+    A5MaliCompiledAttachmentState requested=attachmentState(d.colorAttachments[0]);
+    BOOL shaderBlend=A5MaliLowerRenderState(&requested).route==A5MaliStateNeedsShader;
+    if(shaderBlend){
+        NSError *snapshotError=nil;
+        if(!A5MaliShaderCompilePipelinePayload(d,vf.compileRequestPayload,ff.compileRequestPayload,&snapshotError))
+            return rejectPipeline(vf,ff,@"pipeline.source-snapshot",snapshotError,error);
+        fs=blendVariant(ff,d.colorAttachments[0],error);
+        if(!fs)return nil;
+    }
     if(!vs&&!fs){
         if(d.colorAttachments[0].pixelFormat!=MTLPixelFormatBGR5A1Unorm)return nil;
         /* Storage adaptation of an authenticated complete static contract.
@@ -451,7 +490,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
         e->_attachments[c].attachments[i]=(A5MaliCompiledAttachmentState){15,0,0,0,1,0,1,0};
     e->_attachments[1].attachments[0]=attachmentState(d.colorAttachments[0]);
     A5MaliBlendPlan state=A5MaliLowerRenderState(&e->_attachments[1].attachments[0]);
-    if(state.route!=A5MaliStateFixed)return rejectPipeline(vf,ff,@"render-state.lowering",
+    if(state.route!=A5MaliStateFixed&&!shaderBlend)return rejectPipeline(vf,ff,@"render-state.lowering",
         unsupported([NSString stringWithUTF8String:state.reason]),error);
     unsigned immutableCount=fs?fs.immutableSamplerCount:0;
     if(immutableCount>4)return rejectPipeline(vf,ff,@"immutable-samplers.count",unsupported(@"too many immutable samplers"),error);
@@ -459,7 +498,7 @@ A5MaliDynamicPipelineEntry *A5MaliComposeDynamicPipeline(MTLRenderPipelineDescri
     e->_profile=(A5MaliCompiledProfile){.profileID=A5MaliDynamicProfileID,.name="dynamic-reflected-QC",
         .vertexName=e->_vertexName.UTF8String,.fragmentName=e->_fragmentName.UTF8String,
         .colorFormats={(uint32_t)target},.flags=A5MaliProfileDynamicStages|A5MaliProfileSourceOverBlend|
-            A5MaliProfileRenderState|
+            A5MaliProfileRenderState|(shaderBlend?A5MaliProfileShaderBlend:0)|
             (color?A5MaliProfileDynamicColorVarying:0)|(fetch?A5MaliProfileFramebufferFetch:0)|(position?A5MaliProfileFragmentPosition:0)|(noInputs?A5MaliProfileFragmentNoInputs:0)|(vertexColorOnly?A5MaliProfileVertexColorOnly:0)|(vertexTwoUV?A5MaliProfileVertexTwoUV:0)|(fragmentTwoUV?A5MaliProfileFragmentTwoUV:0)|(fragmentColorOnly?A5MaliProfileFragmentColorOnly:0)|
             (fs&&!noInputs&&!fragmentColorOnly&&![fs.nativeABI[@"native_info"][@"textures"] unsignedIntValue]?A5MaliProfileFragmentNoTextures:0),.passes=&e->_pass,.passCount=1,
         .resources=e->_resources,.resourceCount=resourceCount,.pushFields=e->_pushes,.pushFieldCount=pushCount,

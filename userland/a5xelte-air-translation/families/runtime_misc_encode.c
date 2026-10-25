@@ -368,7 +368,7 @@ static int generic_textured_contract(const A5MaliCompiledProfile*p){
 static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
  if(p->profileID!=A5MaliDynamicProfileID||
     !(p->flags&A5MaliProfileDynamicStages)||
-    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV|A5MaliProfileFragmentColorOnly|A5MaliProfileFragmentNoTextures|A5MaliProfileScreenBlend|A5MaliProfileRenderState))||
+    (p->flags&~(A5MaliProfileDynamicStages|A5MaliProfileDynamicColorVarying|A5MaliProfileSourceOverBlend|A5MaliProfileFramebufferFetch|A5MaliProfileFragmentPosition|A5MaliProfileFragmentNoInputs|A5MaliProfileVertexColorOnly|A5MaliProfileVertexTwoUV|A5MaliProfileFragmentTwoUV|A5MaliProfileFragmentColorOnly|A5MaliProfileFragmentNoTextures|A5MaliProfileScreenBlend|A5MaliProfileRenderState|A5MaliProfileShaderBlend))||
     !(p->flags&A5MaliProfileSourceOverBlend)||p->passCount!=1||!p->passes||
     p->passes[0].passID!=p->profileID||p->passes[0].logicalTarget||
     !p->vertexName||!p->vertexName[0]||!p->fragmentName||!p->fragmentName[0]||
@@ -441,6 +441,7 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
   if(textures||samplers)return 0;
  }else if(!textures||textures!=samplers)return 0;
  for(unsigned i=0;i<4;i++)if((textures&(1u<<i))&&textureBindings[i]!=samplerBindings[i])return 0;
+ if((p->flags&A5MaliProfileShaderBlend)&&!(p->flags&A5MaliProfileRenderState))return 0;
  unsigned immutableMask=0,constantMask=0;
  for(unsigned i=0;i<p->resourceCount;i++)if(p->resources[i].kind==A5MaliResourceSampler&&
    (p->resources[i].flags&A5MaliResourceImmutableSampler))constantMask|=1u<<p->resources[i].nativeIndex;
@@ -474,7 +475,11 @@ static int dynamic_textured_contract(const A5MaliCompiledProfile*p){
   const A5MaliCompiledAttachmentState*a=&p->attachmentContracts[c].attachments[i];
   unsigned over=c==1&&i==0;
   if((p->flags&A5MaliProfileRenderState)&&c==1&&i==0){
-   if(A5MaliLowerRenderState(a).route!=A5MaliStateFixed)return 0;
+   unsigned route=A5MaliLowerRenderState(a).route;
+   if(p->flags&A5MaliProfileShaderBlend){
+    if(!(p->flags&A5MaliProfileDynamicStages)||route!=A5MaliStateNeedsShader||
+       a->sourceRGB>14||a->destinationRGB>14||a->sourceAlpha>14||a->destinationAlpha>14)return 0;
+   }else if(route!=A5MaliStateFixed)return 0;
    continue;
   }
   if(a->writeMask!=15||a->blendEnabled!=over||a->rgbOperation||a->alphaOperation||
@@ -755,7 +760,13 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   p->flags&A5MaliProfileInlineSourceOver?0:r->blend);
  if(r->blend==A5RuntimeBlendState){
   A5MaliBlendPlan plan=A5MaliLowerRenderState(&p->attachmentContracts[1].attachments[0]);
-  if(plan.route!=A5MaliStateFixed)return A5RuntimeUnsupported;
+  if(p->flags&A5MaliProfileShaderBlend){
+   if(plan.route!=A5MaliStateNeedsShader)return A5RuntimeUnsupported;
+   /* NIR already applied the complete equation and mask. Hardware only stores
+    * the result; applying the API equation here would blend twice. */
+   A5MaliCompiledAttachmentState copy={15,0,0,0,1,0,1,0};
+   plan=A5MaliLowerRenderState(&copy);plan.loadDestination=1;
+  }else if(plan.route!=A5MaliStateFixed)return A5RuntimeUnsupported;
   struct MALI_RENDERER_STATE state;
   MALI_RENDERER_STATE_unpack((const struct mali_renderer_state_packed*)(d+FS_RSD),&state);
   /* RSD overlay: blend_shader aliases the packed equation. Clear the
@@ -792,7 +803,7 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
   if(p->flags&A5MaliProfileFragmentColorOnly)rs.shader.varying_count=1;
   MALI_RENDERER_STATE_pack((struct mali_renderer_state_packed*)(d+FS_RSD),&rs);
  }
- if(p->flags&(A5MaliProfileInlineSourceOver|A5MaliProfileFramebufferFetch)){
+ if(p->flags&(A5MaliProfileInlineSourceOver|A5MaliProfileFramebufferFetch|A5MaliProfileShaderBlend)){
   /* Inline blend shader reads the preloaded tilebuffer. Fixed-function RSD
    * remains copy, never applies the equation a second time. For general
    * framebuffer fetch preserve the actual pipeline blend equation and turn
@@ -802,6 +813,10 @@ static int encode(const A5RuntimeMiscDraw*m,uint8_t*d){
  }
  unsigned arena=0;
  int rc=resources(d,m,home,clear,generic_color,generic_textured,&arena);if(rc)return rc;
+ if(p->flags&A5MaliProfileShaderBlend)for(unsigned i=0;i<4;i++){
+  if(!isfinite(m->blendColor[i]))return A5RuntimeBounds;
+  f32(d,FS_SYS+480+4*i,m->blendColor[i]);
+ }
  uint64_t indexVA=0;rc=index_data(d,r,arena,&indexVA);if(rc)return rc;
  jobs(d,r->descriptorGPUVA,r,indexVA);
  if(dynamic&&!dynamic_legacy_texture(m)){

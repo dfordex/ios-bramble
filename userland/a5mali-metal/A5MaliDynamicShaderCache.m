@@ -3,6 +3,7 @@
  * promise that the current render encoder supports every translated feature.
  */
 #import "A5MaliDynamicShaderCache.h"
+#import "A5MaliBlendRequest.h"
 #import <CommonCrypto/CommonDigest.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -148,7 +149,10 @@ static BOOL constants(id a, BOOL indexed) {
     return YES;
 }
 static BOOL payload(id p) {
-    return keys(p,
+    NSMutableDictionary *plain=[p isKindOfClass:NSDictionary.class]?[p mutableCopy]:nil;
+    id blend=plain[@"blend_state"];[plain removeObjectForKey:@"blend_state"];
+    if(blend&&(![p[@"stage"] isEqual:@"fragment"]||!A5MaliValidBlendRequest(blend)))return NO;
+    return keys(plain,
                 @[
                     @"schema", @"kind", @"source_library", @"metallib_sha256", @"gpu_id", @"compiler_abi",
                     @"stage", @"function", @"named_constants", @"indexed_constants"
@@ -372,6 +376,9 @@ static BOOL payload(id p) {
     NSMutableSet *usedUBOs = [NSMutableSet setWithObject:@0], *usedTextures = [NSMutableSet new],
                  *seenBindings = [NSMutableSet new];
     unsigned textureIndex = 0, fetches = 0;
+    BOOL lowered=_functionPayload[@"blend_state"]!=nil;
+    if(lowered!=boolean(a[@"blend_lowered"],YES) ||
+       (a[@"blend_lowered"]&&!boolean(a[@"blend_lowered"],YES)))return NO;
     id fetchABI=a[@"framebuffer_fetch"];
     if(fetchABI&&!boolean(fetchABI,YES)&&!boolean(fetchABI,NO))return NO;
     BOOL fetch=boolean(fetchABI,YES);
@@ -444,7 +451,8 @@ static BOOL payload(id p) {
                    ![synthetic[@"stage"] isEqual:stageName]||
                    ![synthetic[@"binding"] isEqual:@"ConstantBlob"]||
                    !exact(b[@"ty"],7)||live[@([b[@"binding"] unsignedIntValue]+1)]||
-                   [a[@"sysval_ubo0_read_extent"] unsignedIntValue]>80)return NO;
+                   ([a[@"sysval_ubo0_read_extent"] unsignedIntValue]>80&&
+                    !(lowered&&[a[@"sysval_ubo0_read_extent"] unsignedIntValue]<=496)))return NO;
                 NSString *blob=nil;unsigned matching=0;
                 for(id stage in _reflection[@"stages"])if([stage[@"stage"] isEqual:@"frag"]){blob=stage[@"constant_blob"];matching++;}
                 if(matching!=1||![blob isKindOfClass:NSString.class]||!blob.length||
@@ -612,7 +620,8 @@ A5MaliDynamicShaderCacheEntry *A5MaliLoadDynamicShaderStage(NSString *requestID,
             ![r[@"function"] isEqual:functionPayload[@"function"]] ||
             ![r[@"named_constants_sha256"] isEqual:digest(json(functionPayload[@"named_constants"]))] ||
             ![r[@"indexed_constants_sha256"] isEqual:digest(json(functionPayload[@"indexed_constants"]))] ||
-            !boolean(r[@"pipeline_compatible"], NO)) {
+            !boolean(r[@"pipeline_compatible"], NO) ||
+            ![(r[@"blend_state"]?:NSNull.null) isEqual:(functionPayload[@"blend_state"]?:NSNull.null)]) {
             close(dir);
             return fail(error, EINVAL, @"dynamic receipt identity/source/ABI rejected");
         }

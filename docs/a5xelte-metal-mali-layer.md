@@ -34,7 +34,7 @@ The decoded renderer state's `blend_shader` union arm must be cleared before rep
 | --- | --- | --- |
 | AIR compilation | Exact typed vertex/fragment request, real AIR/SPIR-V/NIR/Midgard compilation, authenticated persistent publication | Determine near-idle child wait; isolate scheduling/admission so one blocked compilation cannot prevent current function persistence; keep memory bounds and user-requested no time limit |
 | Pipeline linking | Reflected QC position/UV/color variants, original Metal offsets/stride; new independent render-state IR | General reflected varying/location/component linking and vertex input/format plans, beyond implemented QC shapes |
-| Draw-state lowering | Shared v4 fixed-function algebra and channel masks | NIR shader fallback with state-specific cache identity; broader target formats, depth/stencil, samples, topology and renderpass behavior |
+| Draw-state lowering | Shared v4 algebra plus0233 NIR single-source color0 fallback and state-specific cache identity | Dual-source output ABI; broader target formats, depth/stencil, samples, topology and renderpass behavior |
 | Resource planning | Real IOSurface/buffer handles, snapshots, generations, mapping epochs and fence ownership; shared bounded upload planner now packs logical CPU uploads into physical BO slices | Persistent buffer residency beyond four slots, window planning/batching beyond existing limits; exact phone NoResources origin still unproven |
 | Submission/presentation | Real Query17/Submit18, terminal fences, source-to-panel checks | Integrate general resource/state plans with batch lifetime and validate device UI scenarios |
 
@@ -67,3 +67,20 @@ The root scanner reads function demand before the legacy lane, retains old flat-
 - Signed iOS provider and compiler-service builds pass4KiB signature-page verification. Current device remains on0230; no BOOT package/write is performed for this source transition.
 
 Remaining: shader-backed blend lowering and pipeline-specific cache identity; broader reflected vertex/varying/resource linking; persistent buffer/window residency generalization; and the near-idle translator child wait. These are implementation gaps, not inferred successes from the tests above.
+
+
+## 0233: genuine shader-backed blend fallback
+
+The previously explicit shader routes now compile pipeline-dependent fragments
+from their original AIR function. Request/publication identity includes the
+attachment format, mask and independent RGB/alpha equations. The native emitter
+uses copy RSD plus preload for the already blended fragment, and draw snapshots
+carry blend constants independently of the cache identity. Four genuine
+compiler/cache/factory/emitter cases pass; physical blend pixels are pending.
+Dual-source factors and broader IO/target/residency interfaces remain open.
+
+Compiler spawn now closes inherited daemon locks/descriptors, normalizes signals
+and stdin, and removes nice10 demotion. Real OS isolation/resource tests pass.
+This does not identify or prove repair of the near-idle phone child. The one
+compiler group, memory/file limits and no elapsed timeout policy remain.
+See [0233 details](a5xelte-0233-shader-blend.md). No BOOT package/write.

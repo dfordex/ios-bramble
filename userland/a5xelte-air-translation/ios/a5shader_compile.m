@@ -222,12 +222,22 @@ static void run(NSString *self, NSArray<NSString *> *command, NSString *log)
     posix_spawn_file_actions_t actions;
     posix_spawnattr_t attr;
     int error = posix_spawn_file_actions_init(&actions);
+    if (!error) error = posix_spawn_file_actions_addopen(&actions,STDIN_FILENO,"/dev/null",O_RDONLY,0);
     if (!error) error = posix_spawn_file_actions_adddup2(&actions, fd, STDOUT_FILENO);
     if (!error) error = posix_spawn_file_actions_adddup2(&actions, fd, STDERR_FILENO);
     if (!error) error = posix_spawn_file_actions_addclose(&actions, fd);
     if (!error) error = posix_spawnattr_init(&attr);
     if (error) fail(@"spawn actions initialization failed");
-    error = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+    /* Tools must not inherit the daemon's flock/directory descriptors, signal
+     * mask or ignored SIGCHLD. Inherited blocked signals and open locks are
+     * observable process stalls, independent of shader arithmetic. There is
+     * still one compiler group, the same memory bound, and no elapsed timeout. */
+    sigset_t empty,defaults;sigemptyset(&empty);sigfillset(&defaults);
+    sigdelset(&defaults,SIGKILL);sigdelset(&defaults,SIGSTOP);
+    error = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP|
+        POSIX_SPAWN_SETSIGMASK|POSIX_SPAWN_SETSIGDEF|POSIX_SPAWN_CLOEXEC_DEFAULT);
+    if (!error) error = posix_spawnattr_setsigmask(&attr,&empty);
+    if (!error) error = posix_spawnattr_setsigdefault(&attr,&defaults);
     if (!error) error = posix_spawnattr_setpgroup(&attr, 0);
     pid_t pid = 0;
     fprintf(stderr,"A5XELTE shader compiler: SPAWN phase=begin parent_pid=%d child_pid=0 request=%s stage=%s direct=1 file_limit_bytes=8388608\n",getpid(),request,stage);
@@ -506,14 +516,16 @@ int main(int argc, char **argv)
         if (lstat(cacheRoot.fileSystemRepresentation,&st) || !S_ISDIR(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 0077))
             fail(@"cache root is not a private root-owned directory");
         NSString *lock = [cacheRoot stringByAppendingPathComponent:@".lock"];
-        int lockfd = open(lock.fileSystemRepresentation,O_RDWR|O_CREAT|O_NOFOLLOW,0600);
+        int lockfd = open(lock.fileSystemRepresentation,O_RDWR|O_CREAT|O_NOFOLLOW|O_CLOEXEC,0600);
         if (lockfd < 0 || flock(lockfd,LOCK_EX|LOCK_NB)) fail(@"compiler cache is busy");
         fprintf(stderr,"A5XELTE shader compiler: native iOS ARM64 service start no_time_limit=1\n");
         if (argc == 2 && !strcmp(argv[1],"--serve")) {
             serviceCheckpoint("main-roots-begin",nil,nil);
             a5PrepareRequestRoots();
             serviceCheckpoint("main-roots-end",nil,nil);
-            if (setpriority(PRIO_PROCESS,0,10))
+            /* A synchronous Metal caller waits for these tools. Do not demote
+             * the whole compiler tree to nice10 behind compositor work. */
+            if (setpriority(PRIO_PROCESS,0,0))
                 fprintf(stderr,"A5XELTE shader compiler: priority adjustment unavailable errno=%d\n",errno);
         }
         if (argc == 2 && !strcmp(argv[1],"--serve")) {

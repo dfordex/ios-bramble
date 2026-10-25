@@ -28,6 +28,7 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--work-dir', type=Path)
     parser.add_argument('--function-lane', action='store_true')
+    parser.add_argument('--blend-state', type=json.loads, help='exercise a genuine pipeline-dependent fragment')
     args = parser.parse_args()
     work = args.work_dir.resolve() if args.work_dir else Path(tempfile.mkdtemp(prefix='a5-scan-priority-'))
     work.mkdir(parents=True, exist_ok=True)
@@ -45,6 +46,10 @@ def main():
     statuses.mkdir(mode=0o700)
     actual = json.loads(args.request.read_bytes())
     assert actual['kind'] == 'function' and actual['owner_uid'] == uid
+    if args.blend_state:
+        actual.pop('request_id')
+        actual['blend_state'] = args.blend_state
+        actual = identify(actual)
     key = actual['request_id']
     body = dict(actual)
     body.pop('request_id')
@@ -130,9 +135,17 @@ int main(int argc,char **argv){
         assert unsafe.exists() and unsafe.read_bytes() == unsafe_bytes and unsafe.stat().st_mode & 0o777 == 0o644
         if scan == 1:
             native = published / key / 'stage.midgard'
-            assert native.read_bytes() == (args.reference_publication / 'stage.midgard').read_bytes()
+            if args.blend_state:
+                assert native.read_bytes() != (args.reference_publication / 'stage.midgard').read_bytes()
+            else:
+                assert native.read_bytes() == (args.reference_publication / 'stage.midgard').read_bytes()
             receipt = json.loads((published / key / 'receipt.json').read_bytes())
             assert receipt['request_id'] == key and receipt['stage_compiled'] is True
+            if args.blend_state:
+                assert receipt['blend_state'] == args.blend_state
+                assert receipt['native_abi']['blend_lowered'] is True
+                if any(args.blend_state[k] >= 11 for k in ('source_rgb', 'destination_rgb', 'source_alpha', 'destination_alpha')):
+                    assert receipt['native_abi']['sysval_ubo0_read_extent'] == 496
             complete = log.index('STAGE PUBLISHED stage=')
             retirement = log.index(': RETIRED request=')
             assert complete < retirement, log
@@ -143,7 +156,7 @@ int main(int argc,char **argv){
     assert len(list(queue.rglob('*.request.json'))) == old_count
     assert len(list((cache / 'completed-requests').glob('slot-*.json'))) == 2
     proof = {'queued_candidates': old_count + 2, 'dedicated_function_lane': args.function_lane, 'pending_function_compiled_before_old_terminal_io': True,
-             'genuine_native_matches_reference': key, 'retirement_limit_per_scan': 1,
+             'genuine_native_request': key, 'blend_variant': args.blend_state, 'retirement_limit_per_scan': 1,
              'unsafe_leaf_preserved': True, 'second_scan_avoids_recompile': True,
              'device_runtime_verified': False}
     (work / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')
