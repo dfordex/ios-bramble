@@ -165,18 +165,26 @@ int main(void)
         assert(queued==1&&already==15&&failed==0);
         for(unsigned i=1;i<64;++i){NSString *p=[uidPath() stringByAppendingPathComponent:[NSString stringWithFormat:@"pending-%u",i]];
             assert([NSData.data writeToFile:p atomically:NO]);}
-        NSString *waitingID=nil;error=nil;
-        assert(A5MaliForwardShaderCompileRequest(fragment,&waitingID,&error)==A5MaliShaderForwardBusy&&!error);
-        assert([waitingID isEqual:A5MaliShaderCompileRequestID(fragment,NULL)]);
-        assert(![NSFileManager.defaultManager fileExistsAtPath:requestPath(waitingID)]);
-        assert([NSFileManager.defaultManager contentsOfDirectoryAtPath:uidPath() error:NULL].count==65); /* 64 + lock */
-        /* Retiring one old pipeline permits the exact blocked function; no
-         * queued file is discarded or replaced on behalf of another request. */
-        assert(!unlink([[uidPath() stringByAppendingPathComponent:@"pending-1"]fileSystemRepresentation]));
-        NSString *retryID=nil;
-        assert(A5MaliForwardShaderCompileRequest(fragment,&retryID,&error)==A5MaliShaderForwardQueued&&!error);
-        assert([retryID isEqual:waitingID]);
+        /* A full receipt lane cannot prevent durable function demand. */
+        NSString *functionDir=[uidPath()stringByAppendingPathComponent:@"functions"];
+        NSString *functionID=nil;error=nil;
+        assert(A5MaliForwardShaderCompileRequest(fragment,&functionID,&error)==A5MaliShaderForwardQueued&&!error);
+        NSString *functionPath=[functionDir stringByAppendingPathComponent:[functionID stringByAppendingString:@".request.json"]];
+        assert([NSFileManager.defaultManager fileExistsAtPath:functionPath]);
         assert(A5MaliForwardShaderCompileRequest(fragment,NULL,&error)==A5MaliShaderForwardAlreadyQueued&&!error);
+        for(unsigned i=1;i<64;i++)assert(([NSData.data writeToFile:
+            [functionDir stringByAppendingPathComponent:[NSString stringWithFormat:@"pending-%u",i]]atomically:NO]));
+        NSString *waitingID=nil;
+        assert(A5MaliForwardShaderCompileRequest(vertex,&waitingID,&error)==A5MaliShaderForwardBusy&&!error);
+        assert([waitingID isEqual:A5MaliShaderCompileRequestID(vertex,NULL)]);
+        assert([NSFileManager.defaultManager contentsOfDirectoryAtPath:functionDir error:NULL].count==65);
+        assert(!unlink([[functionDir stringByAppendingPathComponent:@"pending-1"]fileSystemRepresentation]));
+        assert(A5MaliForwardShaderCompileRequest(vertex,NULL,&error)==A5MaliShaderForwardQueued&&!error);
+        /* No nested symlink may redirect a function request outside its UID. */
+        resetSpool();
+        assert([NSFileManager.defaultManager createDirectoryAtPath:uidPath() withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions:@0700} error:NULL]);
+        assert(!symlink("/private/tmp",[[uidPath()stringByAppendingPathComponent:@"functions"]fileSystemRepresentation]));
+        assert(A5MaliForwardShaderCompileRequest(fragment,NULL,&error)==A5MaliShaderForwardFailed&&error);
         puts("shader request snapshots, exact typed bytes, canonical identity, dedup, quota, corrupt/symlink guards and concurrent atomic publication: PASS");
     }
     return 0;

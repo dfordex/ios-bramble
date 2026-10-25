@@ -4,6 +4,7 @@
  * No provider-supplied path, command, shader bytes or GPU address is executed.
  */
 #include <dirent.h>
+#include "../../a5mali-metal/A5MaliShaderSpool.h"
 
 #ifndef A5_SHADER_HOST_TEST
 static NSString *const requestRoot = @"/private/var/tmp/a5mali-shader-requests";
@@ -998,10 +999,9 @@ static unsigned a5DispatchArrivingFunctions(NSString *self,NSArray *profiles,int
             [NSCharacterSet.decimalDigitCharacterSet invertedSet]].location!=NSNotFound)continue;
         unsigned long long number=strtoull(user->d_name,NULL,10);if(number>UINT32_MAX)continue;
         uid_t uid=(uid_t)number;
-        int dir=openat(rootfd,user->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-        struct stat st;
-        if(dir<0||fstat(dir,&st)||!S_ISDIR(st.st_mode)||st.st_uid!=uid||(st.st_mode&0777)!=0700){
-            if(dir>=0)close(dir);continue;}
+        for(int lane=1;lane>=0;lane--){
+        int dir=A5MaliOpenShaderLane(rootfd,uid,(unsigned)lane,0);
+        if(dir<0)continue;
         DIR *files=fdopendir(dup(dir));if(!files){close(dir);continue;}
         unsigned count=0;struct dirent *entry;
         while(*remaining&&count<64&&(entry=readdir(files))){
@@ -1028,6 +1028,7 @@ static unsigned a5DispatchArrivingFunctions(NSString *self,NSArray *profiles,int
             a5HandleRequest(self,request,profiles,key);dispatched++;
         }
         closedir(files);close(dir);
+        }
     }
     closedir(users);return dispatched;
 }
@@ -1067,19 +1068,19 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
             [NSCharacterSet.decimalDigitCharacterSet invertedSet]].location!=NSNotFound)continue;
         unsigned long long number=strtoull(user->d_name,NULL,10);if(number>UINT32_MAX)continue;
         usersSeen++;uid_t uid=(uid_t)number;
-        int dir=openat(rootfd,user->d_name,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-        struct stat st;
-        if(dir<0||fstat(dir,&st)||!S_ISDIR(st.st_mode)||st.st_uid!=uid||(st.st_mode&0777)!=0700){
-            if(dir>=0)close(dir);usersRejected++;continue;}
+        for(int lane=1;lane>=0;lane--){
+        int dir=A5MaliOpenShaderLane(rootfd,uid,(unsigned)lane,0);
+        if(dir<0){if(!lane)usersRejected++;continue;}
         DIR *files=fdopendir(dup(dir));if(!files){usersRejected++;close(dir);continue;}
         unsigned count=0;struct dirent *entry;
         while(count<64&&(entry=readdir(files))){
             NSString *name=[NSString stringWithUTF8String:entry->d_name];
             if(![name hasSuffix:@".request.json"]||name.length!=77)continue;
             NSString *key=[name substringToIndex:64];if(!a5HexDigest(key))continue;
-            count++;candidates++;[seen addObject:key];
-            NSDictionary *meta=@{@"user":component,@"uid":@(uid),@"name":name,@"key":key,
-                @"token":[component stringByAppendingFormat:@"/%@",key]};
+            count++;candidates++;if([seen containsObject:key])continue;[seen addObject:key];
+            NSString *laneKey=[component stringByAppendingFormat:@"/%d",lane];
+            NSDictionary *meta=@{@"user":component,@"uid":@(uid),@"lane":@(lane),@"laneKey":laneKey,@"name":name,@"key":key,
+                @"token":[laneKey stringByAppendingFormat:@"/%@",key]};
             NSString *publication=[publishedRoot stringByAppendingPathComponent:key];
             NSString *status=[[cacheRoot stringByAppendingPathComponent:@"request-status"]
                 stringByAppendingPathComponent:[key stringByAppendingString:@".json"]];
@@ -1088,7 +1089,8 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
             else [urgentNames addObject:meta];
         }
         if(count==64)capped++;
-        uidCandidates[component]=@(count);closedir(files);close(dir);
+        uidCandidates[[component stringByAppendingFormat:@"/%d",lane]]=@(count);closedir(files);close(dir);
+        }
     }
     closedir(users);
 #ifdef A5_SHADER_SCAN_HOST_TEST
@@ -1096,7 +1098,7 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
 #endif
     NSDictionary *(^readSnapshot)(NSDictionary *)=^NSDictionary *(NSDictionary *meta){
         uid_t uid=[meta[@"uid"]unsignedIntValue];NSString *key=meta[@"key"];
-        int dir=openat(rootfd,[meta[@"user"]fileSystemRepresentation],O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+        int dir=A5MaliOpenShaderLane(rootfd,uid,[meta[@"lane"]unsignedIntValue],0);
         struct stat st;NSData *bytes=nil;
         if(dir>=0&&!fstat(dir,&st)&&S_ISDIR(st.st_mode)&&st.st_uid==uid&&(st.st_mode&0777)==0700)
             bytes=a5ReadRequest(dir,[meta[@"name"]fileSystemRepresentation],uid);
@@ -1152,10 +1154,10 @@ static void a5ScanRequests(NSString *self, NSArray<NSDictionary *> *knownProfile
      * Mere publication/status presence above can never authorize deletion. */
     for(NSDictionary *snapshot in completed){
         if(arrivals||!arrivalBudget)break;
-        if([uidCandidates[snapshot[@"user"]]unsignedIntValue]<63)continue;
+        if([uidCandidates[snapshot[@"laneKey"]]unsignedIntValue]<63)continue;
         NSDictionary *request=snapshot[@"request"];
         if(!a5RetireTerminal(request,knownProfiles))continue;
-        int dir=openat(rootfd,[snapshot[@"user"]fileSystemRepresentation],O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+        int dir=A5MaliOpenShaderLane(rootfd,[snapshot[@"uid"]unsignedIntValue],[snapshot[@"lane"]unsignedIntValue],0);
         if(dir>=0){a5RetireCompletedRequest(dir,[snapshot[@"name"]fileSystemRepresentation],
             [snapshot[@"uid"]unsignedIntValue],snapshot[@"bytes"],request,knownProfiles);close(dir);}
         break;

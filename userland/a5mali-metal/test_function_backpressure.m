@@ -40,7 +40,10 @@ int main(int argc,char**argv){@autoreleasepool{
  NSString*owner=[root stringByAppendingPathComponent:[NSString stringWithFormat:@"%u",geteuid()]];
  assert([fm createDirectoryAtPath:owner withIntermediateDirectories:YES attributes:nil error:&error]&&!error);assert(!chmod(owner.fileSystemRepresentation,0700));
  assert([fm createDirectoryAtPath:cache withIntermediateDirectories:YES attributes:nil error:&error]&&!error);
- for(unsigned i=0;i<64;i++)assert(([NSData.data writeToFile:[owner stringByAppendingPathComponent:[NSString stringWithFormat:@"old-%u.request.json",i]] atomically:NO]));
+ NSString *lane=[owner stringByAppendingPathComponent:@"functions"];
+ assert([fm createDirectoryAtPath:lane withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions:@0700} error:&error]&&!error);
+
+ for(unsigned i=0;i<64;i++)assert(([NSData.data writeToFile:[lane stringByAppendingPathComponent:[NSString stringWithFormat:@"old-%u.request.json",i]] atomically:NO]));
  unsigned context=0;A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:wire context:&context commandCapabilities:63 operationCapabilities:0x7ffff];
  A5MaliMetalLibrary*l=[d newLibraryWithURL:[NSURL fileURLWithPath:@(argv[3])] error:&error];assert(l&&!error);
  dispatch_semaphore_t done=dispatch_semaphore_create(0);atomic_bool returned=false;atomic_bool*returnedPtr=&returned;
@@ -50,9 +53,9 @@ int main(int argc,char**argv){@autoreleasepool{
   atomic_store(returnedPtr,true);dispatch_semaphore_signal(done);
  }});
  usleep(300000);assert(!atomic_load(&returned)); /* quota cannot become nil specialization */
- assert([fm contentsOfDirectoryAtPath:owner error:NULL].count==65); /* lock +64 */
- assert([fm removeItemAtPath:[owner stringByAppendingPathComponent:@"old-0.request.json"] error:&error]&&!error);
- NSString*request=[owner stringByAppendingPathComponent:[key stringByAppendingString:@".request.json"]];
+ assert([fm contentsOfDirectoryAtPath:lane error:NULL].count==65); /* lock +64 */
+ assert([fm removeItemAtPath:[lane stringByAppendingPathComponent:@"old-0.request.json"] error:&error]&&!error);
+ NSString*request=[lane stringByAppendingPathComponent:[key stringByAppendingString:@".request.json"]];
  unsigned poll=0;while(![fm fileExistsAtPath:request]&&poll++<500)usleep(10000);
  assert([fm fileExistsAtPath:request]&&!atomic_load(&returned));
  /* Publish unchanged, authenticated native program; this cannot be replaced
@@ -61,7 +64,7 @@ int main(int argc,char**argv){@autoreleasepool{
  assert(!dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC)));
  assert(f&&!failure&&f.dynamicShader&&[f.dynamicShader.requestID isEqual:key]);
  /* An executable pipeline has a pure identity, but no compile-spool side effect. */
- for(NSString*n in [fm contentsOfDirectoryAtPath:owner error:NULL])if(![n hasPrefix:@"."])assert([fm removeItemAtPath:[owner stringByAppendingPathComponent:n] error:&error]&&!error);
+ for(NSString*n in [fm contentsOfDirectoryAtPath:lane error:NULL])if(![n hasPrefix:@"."])assert([fm removeItemAtPath:[lane stringByAppendingPathComponent:n] error:&error]&&!error);
  const A5MaliCompiledProfile*profile=A5MaliCompiledProfileForID(603);assert(profile);
  size_t count=0;const A5MaliCompiledFunctionConstant*vc=A5MaliCompiledVertexConstantsForProfile(603,&count);
  MTLFunctionConstantValues*v=[MTLFunctionConstantValues new];for(size_t i=0;i<count;i++)[v setConstantValue:vc[i].raw type:vc[i].dataType withName:@(vc[i].name)];
@@ -71,6 +74,6 @@ int main(int argc,char**argv){@autoreleasepool{
  for(unsigned i=0;i<profile->attributeCount;i++){const A5MaliCompiledVertexAttribute*a=profile->attributes+i;desc.vertexDescriptor.attributes[a->index].format=a->format;desc.vertexDescriptor.attributes[a->index].offset=a->offset;desc.vertexDescriptor.attributes[a->index].bufferIndex=a->bufferIndex;}
  desc.vertexDescriptor.layouts[1].stride=48;desc.vertexDescriptor.layouts[1].stepFunction=MTLVertexStepFunctionPerVertex;desc.vertexDescriptor.layouts[1].stepRate=1;
  assert([d newRenderPipelineStateWithDescriptor:desc error:&error]&&!error);
- assert([fm contentsOfDirectoryAtPath:owner error:NULL].count==1); /* only lock */
+ assert([fm contentsOfDirectoryAtPath:lane error:NULL].count==1); /* only lock */
  puts("PASS real Metal function: saturated64 waits, exact retry publishes, genuine stage consumed; executable pipeline adds no request (host only)");
 }return 0;}

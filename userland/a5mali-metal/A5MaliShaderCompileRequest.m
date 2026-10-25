@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "A5MaliShaderSpool.h"
 
 #ifndef A5_SHADER_REQUEST_HOST_TEST
 static const char *const spoolRoot="/private/var/tmp/a5mali-shader-requests";
@@ -326,7 +327,6 @@ A5MaliShaderForwardResult A5MaliForwardShaderCompileRequest(NSDictionary *payloa
     if(!data)return A5MaliShaderForwardFailed;
     uid_t uid=geteuid();
     int root=-1,dir=-1,lock=-1,file=-1;BOOL created=NO;NSString *temp=nil;
-    NSString *owner=[NSString stringWithFormat:@"%u",uid];
     NSString *name=[key stringByAppendingString:@".request.json"];
     A5MaliShaderForwardResult result=A5MaliShaderForwardFailed;NSString *reason=@"spool unavailable";
     root=open(spoolRoot,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);struct stat st;
@@ -336,9 +336,8 @@ A5MaliShaderForwardResult A5MaliForwardShaderCompileRequest(NSDictionary *payloa
 #else
     if(st.st_uid!=uid)goto done;
 #endif
-    if(mkdirat(root,owner.fileSystemRepresentation,0700)&&errno!=EEXIST)goto done;
-    dir=openat(root,owner.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
-    if(dir<0||fstat(dir,&st)||!S_ISDIR(st.st_mode)||st.st_uid!=uid||(st.st_mode&0777)!=0700)goto done;
+    dir=A5MaliOpenShaderLane(root,uid,[payload[@"kind"] isEqual:@"function"],1);
+    if(dir<0)goto done;
     lock=openat(dir,".lock",O_RDWR|O_CREAT|O_NOFOLLOW,0600);
     if(!safeFile(lock,uid))goto done;
     if(flock(lock,LOCK_EX|LOCK_NB)){
@@ -354,7 +353,7 @@ A5MaliShaderForwardResult A5MaliForwardShaderCompileRequest(NSDictionary *payloa
     int scanfd=dup(dir);if(scanfd<0)goto done;
     DIR *entries=fdopendir(scanfd);if(!entries){close(scanfd);goto done;}
     unsigned count=0;struct dirent *entry;
-    while((entry=readdir(entries)))if(entry->d_name[0]!='.'&&++count>=kMaxPending)break;
+    while((entry=readdir(entries)))if(entry->d_name[0]!='.'&&strcmp(entry->d_name,"functions")&&++count>=kMaxPending)break;
     closedir(entries);
     if(count>=kMaxPending){result=A5MaliShaderForwardBusy;goto done;}
     static atomic_uint serial;unsigned next=atomic_fetch_add_explicit(&serial,1,memory_order_relaxed);

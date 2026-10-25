@@ -35,7 +35,35 @@ The decoded renderer state's `blend_shader` union arm must be cleared before rep
 | AIR compilation | Exact typed vertex/fragment request, real AIR/SPIR-V/NIR/Midgard compilation, authenticated persistent publication | Determine near-idle child wait; isolate scheduling/admission so one blocked compilation cannot prevent current function persistence; keep memory bounds and user-requested no time limit |
 | Pipeline linking | Reflected QC position/UV/color variants, original Metal offsets/stride; new independent render-state IR | General reflected varying/location/component linking and vertex input/format plans, beyond implemented QC shapes |
 | Draw-state lowering | Shared v4 fixed-function algebra and channel masks | NIR shader fallback with state-specific cache identity; broader target formats, depth/stencil, samples, topology and renderpass behavior |
-| Resource planning | Real IOSurface/buffer handles, snapshots, generations, mapping epochs and fence ownership | Plan/pack bindings against physical windows and staging buffers; obtain exact NoResources origin; distinguish reclaimable pressure from active/ambiguous ownership without false success |
+| Resource planning | Real IOSurface/buffer handles, snapshots, generations, mapping epochs and fence ownership; shared bounded upload planner now packs logical CPU uploads into physical BO slices | Persistent buffer residency beyond four slots, window planning/batching beyond existing limits; exact phone NoResources origin still unproven |
 | Submission/presentation | Real Query17/Submit18, terminal fences, source-to-panel checks | Integrate general resource/state plans with batch lifetime and validate device UI scenarios |
 
 A completed shared state pass is one component. Universal compositor support is not achieved by renaming profiles or returning success for unsupported requests. Next installation must follow integration of the still-needed paths and device verification; this refactor alone does not establish that the0230 UI stall is repaired.
+
+
+## 0232: shared uploads and independent function admission
+
+### Resource plan
+
+`A5MaliResourcePlan.h` assigns up to66 immutable logical uploads to up to four8MiB physical BOs using stable first-fit decreasing placement and explicit alignment. The planner contains no function names, shader IDs, handles, host pointers or GPU addresses. It returns a complete plan, invalid input or bounded pressure; failure leaves no partial output. Private buffer bindings already owning kernel handles reduce the available physical BO count.
+
+The production misc submission path captures buffer-backed texture parents and storage bindings at commit, plans the complete set, uploads packed BOs once, then rebases each image/buffer GPU address to its own validated slice. Small ordinary uniforms retain their established descriptor-arena path. Original texture offset/row stride and binding-relative offsets remain intact. Read masks, actual Query17 mapping epochs, terminal fences and failed-release quarantine are preserved. CPU snapshot bytes are budgeted before allocation to at most32MiB for upload data; packed CPU copies and real kernel backing are additional memory. The four-slot/eightMiB-per-buffer kernel ABI is unchanged.
+
+Planning/upload failures receive their own phase/error receipt. A plan cannot create capacity while all physical slots are retained by persistent BOs. This implementation does not claim to repair the two0230 phone NoResources errors; their precise origin remains uncaptured.
+
+### Request admission
+
+Actual function demand now lives in a separate per-UID `functions/` directory with its own lock and64-entry quota. Pipeline receipts keep the legacy per-UID directory/64-entry quota. A saturated receipt lane cannot prevent a new function from being durably published. A shared component-by-component directory opener verifies UID ownership, exact0700 mode and O_NOFOLLOW at both levels; no caller path is passed to the root worker.
+
+The root scanner reads function demand before the legacy lane, retains old flat-function compatibility, authenticates every request as before, deduplicates identities and performs quota retirement in the actual owning lane. Total per-UID capacity is bounded128 requests (at most16MiB of128KiB envelopes); no queued request is arbitrarily deleted to make space. The worker still performs compilation synchronously. An already blocked translator child is **not** repaired by lane separation, and no time limit or guessed success was introduced.
+
+### Verification
+
+- Resource planner ASan/UBSan:66 logical bindings/one physical heap, alignment/nonoverlap/overflow/pressure/failure-output checks and10,000 mixed plans.
+- All18 native integration executables pass. The real production profile200/204 submits192B vertex and131,073B fragment storage through one packed BO; original byte content, shifted vertex address, fragment base address, Query/Submit masks, failure fences and release counts are checked. Existing buffer-backed603..606 snapshots, offsets, full bulk uploads and error cleanup pass.
+- Provider atomic request tests prove a full receipt lane still admits functions, an independently full function lane returns Busy/deduplicates/retries, and a nested lane symlink rejects. iOS16/A53 Werror compilation passes.
+- Genuine AIR/Midgard scanner tests pass for legacy64 entries,64 receipt records plus two separate function records, and functions arriving after the snapshot. The new3632B native result must exactly match the existing genuine reference; no mock compiler output is used. One terminal retirement per scan, malformed-leaf preservation and no recompile on second scan remain checked.
+- Actual synchronous Metal specialization under64 function-lane entries waits, retries after one retirement, consumes the real1072B publication and creates a dynamic pipeline without queuing an already executable pipeline.
+- Signed iOS provider and compiler-service builds pass4KiB signature-page verification. Current device remains on0230; no BOOT package/write is performed for this source transition.
+
+Remaining: shader-backed blend lowering and pipeline-specific cache identity; broader reflected vertex/varying/resource linking; persistent buffer/window residency generalization; and the near-idle translator child wait. These are implementation gaps, not inferred successes from the tests above.

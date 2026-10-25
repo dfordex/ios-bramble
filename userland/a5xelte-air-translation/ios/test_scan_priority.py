@@ -27,6 +27,7 @@ def main():
     for name in ('tools', 'library', 'request', 'reference-publication'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--work-dir', type=Path)
+    parser.add_argument('--function-lane', action='store_true')
     args = parser.parse_args()
     work = args.work_dir.resolve() if args.work_dir else Path(tempfile.mkdtemp(prefix='a5-scan-priority-'))
     work.mkdir(parents=True, exist_ok=True)
@@ -49,8 +50,13 @@ def main():
     body.pop('request_id')
     assert identify(body) == actual
 
+    lane = queue / 'functions'
+    if args.function_lane:
+        lane.mkdir(mode=0o700)
+
     def enqueue(row):
-        path = queue / (row['request_id'] + '.request.json')
+        destination = lane if args.function_lane and row.get('kind') == 'function' else queue
+        path = destination / (row['request_id'] + '.request.json')
         path.write_bytes(canonical(row))
         path.chmod(0o600)
         return path
@@ -65,7 +71,8 @@ def main():
     # a lexicographically ordered directory reader, as on the captured HFS.
     old = []
     sequence = 0
-    while len(old) < 62:
+    old_count = 64 if args.function_lane else 62
+    while len(old) < old_count:
         row = identify({'owner_uid': uid, 'kind': 'pipeline', 'test_sequence': sequence})
         sequence += 1
         if row['request_id'] < key:
@@ -84,7 +91,7 @@ def main():
     enqueue(failed)
     status(failed, 'failed')
     enqueue(actual)
-    assert len(list(queue.glob('*.request.json'))) == 64
+    assert len(list(queue.rglob('*.request.json'))) == old_count + 2
     source = Path(__file__).with_name('a5shader_compile.m').resolve()
     harness = work / 'scan.m'
     harness.write_text('''#define main a5OriginalMain
@@ -129,13 +136,13 @@ int main(int argc,char **argv){
             complete = log.index('STAGE PUBLISHED stage=')
             retirement = log.index(': RETIRED request=')
             assert complete < retirement, log
-            assert 'candidates=64 ' in log and 'maintenance=1 ' in log, log
+            assert f'candidates={old_count + 2} ' in log and 'maintenance=1 ' in log, log
         else:
             assert 'SPAWN phase=' not in log, log
-            assert 'candidates=63 ' in log and 'maintenance=1 ' in log, log
-    assert len(list(queue.glob('*.request.json'))) == 62
+            assert f'candidates={old_count + 1} ' in log and 'maintenance=1 ' in log, log
+    assert len(list(queue.rglob('*.request.json'))) == old_count
     assert len(list((cache / 'completed-requests').glob('slot-*.json'))) == 2
-    proof = {'queued_candidates': 64, 'pending_function_compiled_before_old_terminal_io': True,
+    proof = {'queued_candidates': old_count + 2, 'dedicated_function_lane': args.function_lane, 'pending_function_compiled_before_old_terminal_io': True,
              'genuine_native_matches_reference': key, 'retirement_limit_per_scan': 1,
              'unsafe_leaf_preserved': True, 'second_scan_avoids_recompile': True,
              'device_runtime_verified': False}

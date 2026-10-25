@@ -23,6 +23,7 @@
 #import <objc/runtime.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include "A5MaliResourcePlan.h"
 /* A build without authenticated compiled profiles exposes only the legacy
  * typed read_surf path and has no dependency on a native descriptor backend. */
 #if __has_include("A5MaliCompiledRegistryData.inc") || defined(A5_MALI_REQUIRE_COMPILED_REGISTRY)
@@ -1756,7 +1757,12 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
             NSMutableArray<NSMutableDictionary<NSNumber *,NSNumber *> *> *handles=
                 [NSMutableArray arrayWithObjects:[NSMutableDictionary new],[NSMutableDictionary new],nil];
             unsigned bufferCount=0;
+            NSUInteger uploadBytes=0;
+            NSMutableArray<NSDictionary *> *uploads=[NSMutableArray new];
             NSMutableDictionary<NSNumber *,NSNumber *> *imageBuffers=[NSMutableDictionary new];
+            NSMutableDictionary<NSNumber *,NSNumber *> *imageOffsets=[NSMutableDictionary new];
+            NSMutableArray<NSMutableDictionary *> *bufferOffsets=[NSMutableArray arrayWithObjects:
+                [NSMutableDictionary new],[NSMutableDictionary new],nil];
             uint32_t surfaceReads=readImages;
             /* Buffer textures are true CPU aliases. Snapshot their current
              * parent bytes only now, under the commit lock, into a real GPU
@@ -1766,8 +1772,10 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                 A5MaliMetalTexture *image=mappedImages[i];
                 A5MaliPrivateBuffer *backing=image.buffer;
                 if(!backing)continue;
-                if(!(readImages&(1u<<i)) || bufferCount==A5NativeSlots ||
+                if(!(readImages&(1u<<i)) ||
                     !backing.readyForRead || backing.length>A5NativeBufferMax)return kIOReturnBadArgument;
+                if(backing.length>4u*A5NativeBufferMax-uploadBytes)return kIOReturnNoResources;
+                uploadBytes+=backing.length;
                 NSMutableData *bytes=[NSMutableData dataWithLength:backing.length];
                 kern_return_t kr=[backing readBytesForSubmission:bytes.mutableBytes offset:0
                     length:bytes.length client:client];
@@ -1792,12 +1800,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                             (unsigned long long)nonblack,(unsigned long long)alpha);
                     }
                 }
-                uint64_t handle=0;
-                kr=A5MaliCreateNativeBuffer(client,(uint32_t)bytes.length,bytes.bytes,
-                    (uint32_t)bytes.length,&handle);
-                if(handle)[temporaryHandles addObject:@(handle)];
-                if(kr)return kr;
-                query.buffers[bufferCount]=handle;imageBuffers[@(i)]=@(bufferCount++);
+                [uploads addObject:@{@"data":bytes,@"image":@(i)}];
                 surfaceReads&=~(1u<<i);
                 [snapshots addObject:bytes];
             }
@@ -1811,6 +1814,10 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                     if(!handle){
                         NSUInteger required=(indexed && !stage && slot.unsignedIntegerValue==1)?
                             A5MaliRuntimeVertexSpan(profile,(uint32_t)submittedVertexCount):windows[stage][slot].unsignedIntegerValue;
+                        if([storageSlots[stage] containsObject:slot]){
+                            if(required>A5NativeBufferMax||required>4u*A5NativeBufferMax-uploadBytes)return kIOReturnNoResources;
+                            uploadBytes+=required;
+                        }
                         NSData *data=nil;
                         if(pad&&binding.privateKernelHandle){
                             NSMutableData *copy=[NSMutableData dataWithLength:required];
@@ -1841,9 +1848,7 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                         }
                         [snapshots addObject:data];
                         if([storageSlots[stage] containsObject:slot]){
-                            kern_return_t kr=A5MaliCreateNativeBuffer(client,(uint32_t)data.length,data.bytes,(uint32_t)data.length,&handle);
-                            if(handle)[temporaryHandles addObject:@(handle)];
-                            if(kr)return kr;
+                            [uploads addObject:@{@"data":data,@"stage":@(stage),@"slot":slot}];
                             native.bytes=(uint32_t)data.length; /* actual snapshot, no truncated SSBO */
                         }else native=(A5RuntimeBuffer){0,(uint32_t)data.length,0,data.bytes};
                     }else{
@@ -1857,6 +1862,43 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                     if(stage)command.draw.fragmentBuffers[slot.unsignedIntegerValue]=native;
                     else command.draw.vertexBuffers[slot.unsignedIntegerValue]=native;
                 }
+            /* Physical staging BOs are assigned after every logical upload is
+             * known. All snapshots retain their original binding identity. */
+            if(uploads.count){
+                if(uploads.count>A5MaliUploadLimit)return kIOReturnNoResources;
+                A5MaliUploadInput inputs[A5MaliUploadLimit]={0};
+                for(NSUInteger i=0;i<uploads.count;i++){
+                    NSData *bytes=uploads[i][@"data"];
+                    if(bytes.length>UINT32_MAX)return kIOReturnBadArgument;
+                    inputs[i]=(A5MaliUploadInput){(uint32_t)bytes.length,64};
+                }
+                A5MaliUploadPlan plan;
+                unsigned status=A5MaliPlanUploads(inputs,(unsigned)uploads.count,A5NativeSlots-bufferCount,&plan);
+                if(status){
+                    kern_return_t failure=status==A5MaliUploadPressure?kIOReturnNoResources:kIOReturnBadArgument;
+                    logNativePhase(diagnosticID,"resource-plan",profile->profileID,failure);return failure;
+                }
+                unsigned heapIndices[A5MaliUploadHeapLimit]={0};
+                for(unsigned h=0;h<plan.heapCount;h++){
+                    NSMutableData *packed=[NSMutableData dataWithLength:plan.heapBytes[h]];
+                    for(NSUInteger i=0;i<uploads.count;i++)if(plan.slices[i].heap==h){
+                        NSData *bytes=uploads[i][@"data"];
+                        memcpy((uint8_t*)packed.mutableBytes+plan.slices[i].offset,bytes.bytes,bytes.length);
+                    }
+                    uint64_t handle=0;kern_return_t kr=A5MaliCreateNativeBuffer(client,
+                        (uint32_t)packed.length,packed.bytes,(uint32_t)packed.length,&handle);
+                    if(handle)[temporaryHandles addObject:@(handle)];
+                    logNativePhase(diagnosticID,"resource-upload",profile->profileID,kr);if(kr)return kr;
+                    heapIndices[h]=bufferCount;query.buffers[bufferCount++]=handle;
+                }
+                for(NSUInteger i=0;i<uploads.count;i++){
+                    NSDictionary *upload=uploads[i];A5MaliUploadSlice slice=plan.slices[i];
+                    unsigned index=heapIndices[slice.heap];
+                    if(upload[@"image"]){imageBuffers[upload[@"image"]]=@(index);imageOffsets[upload[@"image"]]=@(slice.offset);}
+                    else {unsigned stage=[upload[@"stage"]unsignedIntValue];NSNumber *slot=upload[@"slot"];
+                        handles[stage][slot]=@(index);bufferOffsets[stage][slot]=@(slice.offset);}
+                }
+            }
             __attribute__((objc_precise_lifetime)) NSArray *retainSnapshots=snapshots;(void)retainSnapshots;
             if(textured && profile->profileID!=A5MaliDynamicProfileID && diagnosticTake(&inputUVDiagnosticCount,8)){
                 const A5RuntimeBuffer *v=&command.draw.vertexBuffers[1],*t=&command.draw.vertexBuffers[3];
@@ -1890,6 +1932,9 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                     NSNumber *bufferIndex=imageBuffers[@(i)];
                     if(bufferIndex){
                         s=mapped.buffers[bufferIndex.unsignedIntegerValue];
+                        uint32_t offset=imageOffsets[@(i)].unsignedIntValue;
+                        if(offset>s.bytes||s.gpuVA>UINT64_MAX-offset)return kIOReturnBadArgument;
+                        s.gpuVA+=offset;s.bytes-=offset;
                         A5MaliTextureLevelLayout l={0};
                         if(![t getLevelLayout:&l level:0] || !l.width || !l.height || !l.byteLength ||
                             !(s.usage&A5MaliRead) || !s.gpuVA ||
@@ -1912,8 +1957,10 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
                         unsigned i=handles[stage][slot].unsignedIntValue;
                         A5RuntimeBuffer *b=stage?&command.draw.fragmentBuffers[slot.unsignedIntegerValue]:
                             &command.draw.vertexBuffers[slot.unsignedIntegerValue];
-                        if(b->bytes>mapped.buffers[i].bytes)return kIOReturnBadArgument;
-                        b->gpuVA=mapped.buffers[i].gpuVA;
+                        uint32_t offset=[bufferOffsets[stage][slot] unsignedIntValue];
+                        if(offset>mapped.buffers[i].bytes||b->bytes>mapped.buffers[i].bytes-offset||
+                            mapped.buffers[i].gpuVA>UINT64_MAX-offset)return kIOReturnBadArgument;
+                        b->gpuVA=mapped.buffers[i].gpuVA+offset;
                     }
                 NSMutableData *jobs=[NSMutableData dataWithLength:A5RuntimeJobBytes];
                 int encoded;

@@ -47,7 +47,7 @@ typedef struct{
  unsigned creates,queries,submits,releases,bulkCalls;
  uint32_t allocation[2],uploaded[2];
  uint8_t *expected[2],*actual[2];
- uint32_t lengths[2];
+ uint32_t lengths[2],packedLength;
  BOOL failSubmit;
  const A5MaliCompiledProfile *profile;
 }State;
@@ -55,14 +55,14 @@ static kern_return_t wire(void *context,uint32_t selector,const void *input,size
 {
  State*s=context;
  if(selector==A5MaliUnmap||selector==A5MaliRelease)return KERN_SUCCESS;
- if(selector==8){const Create*q=input;assert(bytes==sizeof(*q)&&s->creates<2&&q->usage==3);
+ if(selector==8){const Create*q=input;assert(bytes==sizeof(*q)&&!s->creates&&q->usage==3&&q->bytes==((s->packedLength+4095)&~4095u));
   unsigned i=s->creates++;s->allocation[i]=q->bytes;
   Created r={{1,sizeof(r),0,0},UINT64_C(0x100000101)+i,q->bytes,q->usage};
   assert(*outBytes==sizeof(r));memcpy(output,&r,sizeof(r));*outBytes=sizeof(r);return KERN_SUCCESS;}
  if(selector==A5NativeBulkWriteSelector){const A5NativeBulkWriteRequest*q=input;
   unsigned i=(unsigned)(q->handle-UINT64_C(0x100000101));assert(i<2);
   assert(bytes==sizeof(*q)+q->length&&q->offset==s->uploaded[i]);
-  assert(q->offset<=s->lengths[i]&&q->length<=s->lengths[i]-q->offset);
+  assert(q->offset<=s->packedLength&&q->length<=s->packedLength-q->offset);
   memcpy(s->actual[i]+q->offset,(const uint8_t*)input+sizeof(*q),q->length);
   s->uploaded[i]+=q->length;++s->bulkCalls;assert(!output);return KERN_SUCCESS;}
  if(selector==9){const BufferHandle*q=input;unsigned i=(unsigned)(q->handle-UINT64_C(0x100000101));
@@ -76,7 +76,7 @@ static kern_return_t wire(void *context,uint32_t selector,const void *input,size
   uint32_t row=s->profile->profileID==204?256:128;
   r.surfaces[0]=(A5NativeSpan){q->surfaces[0],0x10000000,row*32,32,32,row,
    s->profile->profileID==204?0x52476841u:0x42475241u,A5MaliRead|A5MaliWrite};
-  unsigned buffers=s->profile->profileID==207?1:2;
+  unsigned buffers=1;
   for(unsigned i=0;i<buffers;++i){
    assert(q->buffers[i]==UINT64_C(0x100000101)+i);
    r.buffers[i]=(A5NativeSpan){q->buffers[i],0x13000000+i*0x00800000,s->allocation[i],0,0,0,0,A5MaliRead|A5MaliWrite};
@@ -85,10 +85,13 @@ static kern_return_t wire(void *context,uint32_t selector,const void *input,size
  assert(selector==A5NativeSubmitSelector);
  const A5NativeSubmitRequest*q=input;unsigned pass=s->submits;
  assert(pass==0&&bytes==sizeof(*q)+A5NativeJobBytes);
- unsigned buffers=s->profile->profileID==207?1:2;
+ unsigned buffers=1;
  assert(q->profileID==s->profile->passes[0].passID&&q->mappingEpoch==11&&q->readBuffers==((1u<<buffers)-1));
  assert(q->readSurfaces==1&&q->writeSurfaces==1);
- for(unsigned i=0;i<buffers;++i)assert(s->uploaded[i]==s->lengths[i]&&!memcmp(s->actual[i],s->expected[i],s->lengths[i]));
+ assert(s->uploaded[0]==s->packedLength);
+ unsigned vertexOffset=s->profile->profileID==207?0:((s->lengths[1]+63)&~63u);
+ assert(!memcmp(s->actual[0]+vertexOffset,s->expected[0],s->lengths[0]));
+ if(s->profile->profileID!=207)assert(!memcmp(s->actual[0],s->expected[1],s->lengths[1]));
  const uint8_t*d=(const uint8_t*)input+sizeof(*q);
  float sy,oy;memcpy(&sy,d+0x1000+516,4);memcpy(&oy,d+0x1000+532,4);
  assert(sy+oy==0&&-sy+oy==32); /* all stock AIR misc profiles: Metal +Y is top */
@@ -96,8 +99,8 @@ static kern_return_t wire(void *context,uint32_t selector,const void *input,size
  assert(!memcmp(d+0x8000,s->profile->passes[pass].fragment.bytes,s->profile->passes[pass].fragment.byteCount));
  uint64_t vsStorage=0,fsStorage=0;
  memcpy(&vsStorage,d+0x1000+96,8);memcpy(&fsStorage,d+0x1400+144,8);
- assert(vsStorage==0x13000000);
- if(s->profile->profileID!=207)assert(fsStorage==0x13800000);
+ assert(vsStorage==0x13000000+vertexOffset);
+ if(s->profile->profileID!=207)assert(fsStorage==0x13000000);
  A5NativeSubmitResult r={.header={1,sizeof(r),0,0},.tilerFence=400+2*pass,.fragmentFence=401+2*pass};
  if(s->failSubmit)r.status=3;
  assert(*outBytes==sizeof(r));memcpy(output,&r,sizeof(r));*outBytes=sizeof(r);++s->submits;return KERN_SUCCESS;
@@ -144,7 +147,8 @@ static void run(unsigned profileID,BOOL failure)
   assert(s.profile->attachmentContracts[0].attachments[0].writeMask==MTLColorWriteMaskNone);
   assert(s.profile->attachmentContracts[0].attachments[1].writeMask==MTLColorWriteMaskAll);
  }
- for(unsigned i=0;i<2;++i){s.expected[i]=malloc(s.lengths[i]);s.actual[i]=calloc(1,s.lengths[i]);
+ s.packedLength=profileID==207?s.lengths[0]:((s.lengths[1]+63)&~63u)+s.lengths[0];
+ for(unsigned i=0;i<2;++i){s.expected[i]=malloc(s.lengths[i]);s.actual[i]=calloc(1,s.packedLength);
   assert(s.expected[i]&&s.actual[i]);for(unsigned j=0;j<s.lengths[i];++j)s.expected[i][j]=(uint8_t)(29+i*17+j*11);}
  @autoreleasepool{
   A5MaliRestrictedDevice*device=[[A5MaliRestrictedDevice alloc]initWithTransport:wire context:&s
@@ -184,7 +188,7 @@ static void run(unsigned profileID,BOOL failure)
   memcpy((uint8_t*)storage.contents+31,s.expected[1],s.lengths[1]);
   assert(!s.creates&&!s.submits);[b commit];[b waitUntilCompleted];
   assert(b.status==(failure?MTLCommandBufferStatusError:MTLCommandBufferStatusCompleted));
-  unsigned buffers=profileID==207?1:2;
+  unsigned buffers=1;
   assert(s.creates==buffers&&s.queries==1&&s.submits==1&&s.releases==buffers&&s.bulkCalls==buffers);
  }
  for(unsigned i=0;i<2;++i){free(s.expected[i]);free(s.actual[i]);}
