@@ -19,6 +19,15 @@ void A5MaliBeginNativeSubmissionTracking(void);
 kern_return_t A5MaliBeginNativeBatch(A5MaliClient *);
 kern_return_t A5MaliEndNativeBatch(A5MaliClient *,int commit,A5MaliFence *);
 int A5MaliNativeBatchAccepted(A5MaliClient *);
+typedef struct {
+    const void *bytes;
+    uint32_t length;
+} A5MaliNativeUploadPart;
+/* Internal immutable draw snapshots. Returns real retained kernel handles and
+ * disjoint byte offsets. Bulk writes precede GPU START at the next flush.
+ * Unsupported means no batch session: caller uses the legacy upload path. */
+kern_return_t A5MaliStageNativeUploads(A5MaliClient *,unsigned count,
+    const A5MaliNativeUploadPart *,uint64_t *handles,uint32_t *offsets);
 int A5MaliNativeSubmissionMayBeActive(void);
 #ifdef __cplusplus
 }

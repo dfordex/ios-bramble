@@ -16,6 +16,7 @@ stub=r'''
 #include <cstdint>
 #include <cassert>
 #include <cstring>
+template<class...T>static void IOLog(const char*,T...){ }
 using IOReturn=int;using IOByteCount=uint64_t;
 enum {kAS1Page=4096,kAS1Window=0x2000000,kIOMemoryMapperNone=0,kIOReturnSuccess=0,kIOReturnBadArgument=1,kIOReturnUnsupported=2,kIOReturnNoResources=3,kIOReturnNotOpen=4,kIOReturnNoMemory=5,kIOReturnNotFound=6,kIOReturnNotReady=7,kA5GPUClientMaxResources=128,kA5GPUClientRead=1,kA5GPUClientWrite=2};
 struct Memory {virtual ~Memory()=default;uint64_t length=2351104,physical=0x81000000;int badPage=-1;

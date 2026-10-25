@@ -11,6 +11,9 @@
 #ifndef A5_TEST_DYNAMIC_SHADER
 #define A5_TEST_DYNAMIC_SHADER 0
 #endif
+#ifndef A5_TEST_NATIVE_ARENA
+#define A5_TEST_NATIVE_ARENA 0
+#endif
 #ifndef A5_TEST_TEXTURED_PROFILE
 #define A5_TEST_TEXTURED_PROFILE 603
 #endif
@@ -52,7 +55,8 @@ typedef struct {
     Fault fault;
     BOOL blend;
     unsigned sourceFormat;
-    unsigned creates,bulkCalls,queries,submits,releases,deallocations;
+    unsigned creates,bulkCalls,queries,submits,releases,deallocations,batches;
+    size_t allocated;
     size_t length,uploaded;
     uint8_t *host,*expected,*actual;
     uint64_t handle;
@@ -75,7 +79,9 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
     State*s=context;
     if(selector==A5MaliUnmap||selector==A5MaliRelease)return KERN_SUCCESS;
     if(selector==8){
-        const Create*q=input;assert(bytes==sizeof(*q)&&!s->creates&&q->bytes==s->length&&q->usage==3);
+        const Create*q=input;assert(bytes==sizeof(*q)&&!s->creates&&q->bytes==(A5_TEST_NATIVE_ARENA?0x40000:s->length)&&q->usage==3);
+        s->allocated=q->bytes;
+        if(A5_TEST_NATIVE_ARENA){free(s->actual);s->actual=calloc(1,s->allocated);}
         Created r={{1,sizeof(r),0,0},UINT64_C(0x100000101),q->bytes,q->usage};
         assert(*outBytes==sizeof(r));memcpy(output,&r,sizeof(r));*outBytes=sizeof(r);
         s->handle=r.handle;++s->creates;return KERN_SUCCESS;
@@ -83,12 +89,12 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
     if(selector==A5NativeBulkWriteSelector){
         const A5NativeBulkWriteRequest*q=input;
         assert(s->creates==1&&q->handle==s->handle&&bytes==sizeof(*q)+q->length);
-        assert(q->offset==s->uploaded&&q->length<=A5NativeBulkWriteMax&&q->length<=s->length-s->uploaded);
+        assert(q->offset==s->uploaded&&q->length<=A5NativeBulkWriteMax&&q->length<=(A5_TEST_NATIVE_ARENA?s->allocated:s->length)-s->uploaded);
         if(s->fault==FailBulk&&s->bulkCalls==1){++s->bulkCalls;return kIOReturnIOError;}
         memcpy(s->actual+q->offset,(const uint8_t*)input+sizeof(*q),q->length);
         s->uploaded+=q->length;++s->bulkCalls;
         /* A later CPU write cannot affect chunks already captured at COMMIT. */
-        if(s->bulkCalls==1)s->host[s->length-1]^=0x5a;
+        if(!A5_TEST_NATIVE_ARENA&&s->bulkCalls==1)s->host[s->length-1]^=0x5a;
         assert(!output&&(!outBytes||!*outBytes));return KERN_SUCCESS;
     }
     if(selector==9){
@@ -101,20 +107,32 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
         assert(!q->surfaces[1]&&!q->surfaces[2]&&!q->surfaces[3]);
         assert(q->buffers[0]==s->handle);
         for(unsigned i=1;i<A5NativeSlots;++i)assert(!q->buffers[i]);
-        assert(s->uploaded==s->length&&!memcmp(s->actual,s->expected,s->length));
+        if(!A5_TEST_NATIVE_ARENA)assert(s->uploaded==s->length&&!memcmp(s->actual,s->expected,s->length));
         ++s->queries;if(s->fault==FailQuery)return kIOReturnBadArgument;
         A5NativeQueryResult r={.header={1,sizeof(r),0,0},.jobVA=A5NativeJobVA,
             .jobBytes=A5NativeJobBytes,.flags=107};
         r.surfaces[0]=(A5NativeSpan){q->surfaces[0],0x10000000,4096,32,32,128,0x42475241,3};
-        r.buffers[0]=(A5NativeSpan){q->buffers[0],0x13000000,(uint32_t)s->length,0,0,0,0,A5MaliRead|A5MaliWrite};
+        r.buffers[0]=(A5NativeSpan){q->buffers[0],0x13000000,(uint32_t)(A5_TEST_NATIVE_ARENA?s->allocated:s->length),0,0,0,0,A5MaliRead|A5MaliWrite};
         assert(*outBytes==sizeof(r));memcpy(output,&r,sizeof(r));*outBytes=sizeof(r);return KERN_SUCCESS;
+    }
+    if(selector==A5NativeBatchSelector){
+        const A5NativeBatchRequest*h=input;assert(A5_TEST_NATIVE_ARENA&&h->count==4);++s->batches;
+        A5NativeBatchResult result={.header={1,sizeof(result),0,0},.count=h->count};
+        for(unsigned i=0;i<h->count;i++){
+            const void*item=(const uint8_t*)input+sizeof(*h)+i*(sizeof(A5NativeSubmitRequest)+A5NativeJobBytes);
+            size_t size=sizeof(result.items[i]);
+            assert(!transport(context,A5NativeSubmitSelector,item,sizeof(A5NativeSubmitRequest)+A5NativeJobBytes,&result.items[i],&size));
+            ++result.completedCount;
+        }
+        memcpy(output,&result,sizeof(result));*outBytes=sizeof(result);return KERN_SUCCESS;
     }
     assert(selector==A5NativeSubmitSelector);
     const A5NativeSubmitRequest*q=input;
     assert(bytes==sizeof(*q)+A5NativeJobBytes&&q->profileID==(A5_TEST_DYNAMIC_SHADER?A5MaliDynamicProfileID:A5_TEST_TEXTURED_PROFILE)&&q->mappingEpoch==107);
     assert(q->readSurfaces==1&&q->writeSurfaces==1&&q->readBuffers==1);
     assert(q->surfaces[0]==UINT64_C(0x100000001)&&!q->surfaces[1]&&q->buffers[0]==s->handle);
-    assert(s->uploaded==s->length&&!memcmp(s->actual,s->expected,s->length));
+    size_t arenaOffset=A5_TEST_NATIVE_ARENA?s->submits*s->length:0;
+    assert(s->uploaded>=arenaOffset+s->length&&!memcmp(s->actual+arenaOffset,s->expected,s->length));
     const uint8_t*j=(const uint8_t*)input+sizeof(*q);
     const A5MaliCompiledPass*p=s->profile->passes;
     assert(!memcmp(j+0x6000,p->vertex.bytes,p->vertex.byteCount));
@@ -145,11 +163,12 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
     if(s->sourceFormat==70||s->sourceFormat==80)
         assert((u32(j+0x608)&0x3fffff)==((MALI_RGBA8_TEST_FORMAT<<12)|(s->sourceFormat==70?0x688u:0x60au)));
     assert(u32(j+0x600)==((16u-1)<<16|31u));
-    assert(u64(j+0x620)==UINT64_C(0x13000080)&&u32(j+0x628)==256&&u32(j+0x62c)==4096);
+    assert(u64(j+0x620)==UINT64_C(0x13000080)+arenaOffset&&u32(j+0x628)==256&&u32(j+0x62c)==4096);
     assert(u64(j+0x680)==A5NativeJobVA+0x600);
     assert(A5NativeCheckJobChain(j,A5NativeJobBytes,A5NativeJobVA,0,0x100,0x200,NO)==1);
     ++s->submits;if(s->fault==FailSubmit)return kIOReturnTimeout;
     A5NativeSubmitResult r={.header={1,sizeof(r),0,0},.tilerFence=1902,.fragmentFence=1903};
+    if(A5_TEST_NATIVE_ARENA){r.tilerFence=1900+2*s->submits;r.fragmentFence=r.tilerFence+1;}
     assert(*outBytes==sizeof(r));memcpy(output,&r,sizeof(r));*outBytes=sizeof(r);return KERN_SUCCESS;
 }
 static MTLFunctionConstantValues *constants(BOOL vertex)
@@ -265,7 +284,8 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,id pipelineState,
     sd.mipFilter=MTLSamplerMipFilterLinear;sd.lodMinClamp=.25f;sd.lodMaxClamp=4;
     A5MaliSamplerState*sampler=[d newSamplerStateWithDescriptor:sd];assert(sampler);
     [r setFragmentSamplerState:sampler atIndex:0];[r setFragmentTexture:source atIndex:3];
-    [r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+    for(unsigned i=0;i<(A5_TEST_NATIVE_ARENA?8u:1u);i++)
+        [r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     [r setFragmentTexture:nil atIndex:3];[r endEncoding];
     memcpy((uint8_t*)vb.contents+16,s->vertices,sizeof(s->vertices));
     memcpy((uint8_t*)matrix.contents+16,s->matrix,sizeof(s->matrix));
@@ -281,6 +301,7 @@ static A5MaliMetalBuffer *encode(A5MaliRestrictedDevice*d,id pipelineState,
 static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sourceFormat)
 {
     State s={.fault=fault,.blend=blend,.length=0x101000};
+    if(A5_TEST_NATIVE_ARENA)s.length=0x2000;
     s.sourceFormat=sourceFormat;
     s.profile=A5MaliCompiledProfileForID(A5_TEST_TEXTURED_PROFILE);assert(s.profile);
     s.expected=malloc(s.length);s.actual=calloc(1,s.length);
@@ -300,7 +321,7 @@ static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sour
 #endif
     @autoreleasepool{
         A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:transport
-            context:&s commandCapabilities:63 operationCapabilities:0x7ffff];
+            context:&s commandCapabilities:(A5_TEST_NATIVE_ARENA?127:63) operationCapabilities:0xfffff];
         id p=pipeline(d,&s);assert(p);
         A5MaliMetalTexture*target=[d hostTestTextureWithResource:
             (A5MaliResource){0x100000001,32,32,128,3}];
@@ -350,6 +371,11 @@ static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sour
         }else{
 #endif
         assert(s.creates==1&&s.releases==1);
+        if(A5_TEST_NATIVE_ARENA){
+            assert(fault==Good&&s.bulkCalls==2&&s.queries==1&&s.submits==8&&s.batches==2);
+            assert(b.status==MTLCommandBufferStatusCompleted&&!b.error);
+            assert(b.privateBuffer.completedFence.fragmentFence==1917);
+        }else{
         if(fault==FailBulk){assert(s.bulkCalls==2&&!s.queries&&!s.submits);}
         else if(fault==FailQuery){assert(s.bulkCalls==2&&s.queries==1&&!s.submits);}
         else {assert(s.bulkCalls==2&&s.queries==1&&s.submits==1);}
@@ -357,6 +383,7 @@ static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sour
             assert(b.privateBuffer.completedFence.tilerFence==1902&&b.privateBuffer.completedFence.fragmentFence==1903);}
         else {assert(b.status==MTLCommandBufferStatusError&&b.error);
             assert(!b.privateBuffer.completedFence.tilerFence&&!b.privateBuffer.completedFence.fragmentFence);}
+        }
         b=nil;
 #if A5_TEST_TEXTURED_PROFILE == 606
         }
@@ -390,7 +417,7 @@ int main(void)
 #if A5_TEST_TEXTURED_PROFILE == 606
     runCase(FailMissingClamp,NO,NO);runCase(FailShortClamp,NO,NO);
 #endif
-    runCase(FailBulk,NO,YES);runCase(FailQuery,NO,YES);runCase(FailSubmit,NO,YES);
+    if(!A5_TEST_NATIVE_ARENA){runCase(FailBulk,NO,YES);runCase(FailQuery,NO,YES);runCase(FailSubmit,NO,YES);}
     printf("buffer-backed native%d: copy/source-over pipelines, real no-copy Shared alias, commit snapshot, full bulk upload, bufferVA+offset, fences and cleanup PASS (mock transport; no GPU pixels)\n",A5_TEST_TEXTURED_PROFILE);
     return 0;
 }

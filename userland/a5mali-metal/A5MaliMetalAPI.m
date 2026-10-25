@@ -1901,24 +1901,41 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
                     logNativePhase(diagnosticID,"resource-plan",profile->profileID,failure);return failure;
                 }
                 unsigned heapIndices[A5MaliUploadHeapLimit]={0};
+                uint32_t heapOffsets[A5MaliUploadHeapLimit]={0};
+                uint64_t heapHandles[A5MaliUploadHeapLimit]={0};
+                A5MaliNativeUploadPart heapParts[A5MaliUploadHeapLimit]={0};
+                NSMutableArray<NSMutableData *> *packedHeaps=[NSMutableArray new];
                 for(unsigned h=0;h<plan.heapCount;h++){
                     NSMutableData *packed=[NSMutableData dataWithLength:plan.heapBytes[h]];
                     for(NSUInteger i=0;i<uploads.count;i++)if(plan.slices[i].heap==h){
                         NSData *bytes=uploads[i][@"data"];
                         memcpy((uint8_t*)packed.mutableBytes+plan.slices[i].offset,bytes.bytes,bytes.length);
                     }
-                    uint64_t handle=0;kern_return_t kr=A5MaliCreateNativeBuffer(client,
-                        (uint32_t)packed.length,packed.bytes,(uint32_t)packed.length,&handle);
-                    if(handle)[temporaryHandles addObject:@(handle)];
-                    logNativePhase(diagnosticID,"resource-upload",profile->profileID,kr);if(kr)return kr;
-                    heapIndices[h]=bufferCount;query.buffers[bufferCount++]=handle;
+                    [packedHeaps addObject:packed];
+                    heapParts[h]=(A5MaliNativeUploadPart){packed.bytes,(uint32_t)packed.length};
+                }
+                kern_return_t staged=A5MaliStageNativeUploads(client,plan.heapCount,
+                    heapParts,heapHandles,heapOffsets);
+                if(staged==kIOReturnUnsupported){
+                    for(unsigned h=0;h<plan.heapCount;h++){
+                        uint64_t handle=0;kern_return_t kr=A5MaliCreateNativeBuffer(client,
+                            heapParts[h].length,heapParts[h].bytes,heapParts[h].length,&handle);
+                        if(handle)[temporaryHandles addObject:@(handle)];
+                        if(kr){staged=kr;break;}heapHandles[h]=handle;
+                        staged=KERN_SUCCESS;
+                    }
+                }
+                logNativePhase(diagnosticID,"resource-upload",profile->profileID,staged);if(staged)return staged;
+                for(unsigned h=0;h<plan.heapCount;h++){
+                    heapIndices[h]=bufferCount;query.buffers[bufferCount++]=heapHandles[h];
                 }
                 for(NSUInteger i=0;i<uploads.count;i++){
                     NSDictionary *upload=uploads[i];A5MaliUploadSlice slice=plan.slices[i];
                     unsigned index=heapIndices[slice.heap];
-                    if(upload[@"image"]){imageBuffers[upload[@"image"]]=@(index);imageOffsets[upload[@"image"]]=@(slice.offset);}
+                    uint32_t offset=heapOffsets[slice.heap]+slice.offset;
+                    if(upload[@"image"]){imageBuffers[upload[@"image"]]=@(index);imageOffsets[upload[@"image"]]=@(offset);}
                     else {unsigned stage=[upload[@"stage"]unsignedIntValue];NSNumber *slot=upload[@"slot"];
-                        handles[stage][slot]=@(index);bufferOffsets[stage][slot]=@(slice.offset);}
+                        handles[stage][slot]=@(index);bufferOffsets[stage][slot]=@(offset);}
                 }
             }
             __attribute__((objc_precise_lifetime)) NSArray *retainSnapshots=snapshots;(void)retainSnapshots;

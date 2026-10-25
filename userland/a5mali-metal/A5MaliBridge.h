@@ -73,6 +73,9 @@ typedef struct {
     int ownsConnection;
     uint32_t gpuCommandsSupported;
     uint32_t supportedOperations;
+    /* Connection-owned allocations retained after uncertain DMA/failed unmap.
+     * Kernel ownership remains live; never recycle this connection's arena. */
+    uint64_t nativeUploadQuarantine[4];
 } A5MaliClient;
 
 /* Open the opt-in, entitlement-gated A5XELTEGPU service. */

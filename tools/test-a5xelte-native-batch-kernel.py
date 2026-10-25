@@ -34,7 +34,7 @@ enum A5G3DAS1SubmitStatus{kAS1SubmitCompleted,kAS1SubmitInvalid,kAS1SubmitBusy,k
 struct A5G3DAS1Completion{uint32_t headerStatus=1,mmuIRQ=0;uint64_t tilerFence=0,fragmentFence=0;};
 struct IOService{void release(){}};static IOService owner;
 static int PE_parse_boot_argn(const char*,int*p,size_t){*p=1;return 1;}
-static bool a5g3d_queue_acquire_runtime(IOService**o,uint64_t*t,IOBufferMemoryDescriptor**b,vm_offset_t*g){if(++acquires==acquireFailAt)return false;*o=&owner;*t=1;*b=gAS1Owner->jobs;*g=1;return true;}
+static bool a5g3d_queue_acquire_runtime_wait(IOService**o,uint64_t*t,IOBufferMemoryDescriptor**b,vm_offset_t*g){if(++acquires==acquireFailAt)return false;*o=&owner;*t=1;*b=gAS1Owner->jobs;*g=1;return true;}
 static bool a5g3d_queue_release(IOService*,uint64_t){return true;}
 static void a5g3d_queue_poison(IOService*,uint64_t){poisoned=true;}
 static uint32_t a5g3d_as1_read(vm_offset_t,unsigned r){return r==0x100?3:r==0x140?1:0;}
