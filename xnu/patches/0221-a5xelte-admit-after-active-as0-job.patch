@@ -1,0 +1,16 @@
+--- a/iokit/Kernel/arm/A5XELTEGPU.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPU.cpp
+@@ -289,7 +289,12 @@
+             acquired=true;break;
+         }
+         const uint32_t state=__sync_fetch_and_add(&gA5G3DQueueState,0u);
+-        if (state!=3u) {status=state==2u?"poisoned":"unavailable";break;}
++        /* AS0 owns the shared queue in state1 while its GPU job executes.
++         * Both an active GPU job and CPU staging are transient contention.
++         * This caller has not touched the aperture or started a job yet. */
++        if (state!=1u && state!=3u) {
++            status=state==2u?"poisoned":"unavailable";break;
++        }
+         if (mach_absolute_time()>=deadline) {status="deadline";break;}
+         /* No aperture access or START has occurred. The current reservation
+          * owner does not need the AS1/client lock held by these callers. */
