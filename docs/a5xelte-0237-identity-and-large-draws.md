@@ -89,3 +89,8 @@ file CRCs. The actual ADT differs from0236 in exactly four root identity fields;
 all hardware children remain exact. Loader, DTBH and boot arguments preserve
 the verified chain, including4CPUs,736MiB,32-sector storage, quiet functional
 touch and native GPU. These are build checks; runtime results remain pending.
+
+Guarded A5XELTE/recovery/TWRP/p10/capacity checks pass. The offset-zero BOOT
+write acknowledges all25,800,720bytes, sync exits0 and reboot is requested.
+No BOOT backup/readback or whole-USERDATA transfer is performed. Runtime
+identity, large-draw GPU completion and frame-rate improvement remain pending.
