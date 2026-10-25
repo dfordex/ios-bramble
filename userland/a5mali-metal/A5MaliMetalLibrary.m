@@ -400,6 +400,7 @@ static NSDictionary<NSString *,NSNumber *> *libraryFunctionStages(NSData *data)
 }
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
                           data:(NSData *)data;
+- (A5MaliMetalFunction *)newPlainFunctionWithName:(NSString *)name error:(NSError **)error;
 #if A5_MALI_DYNAMIC_SHADER_COMPILER
 - (A5MaliMetalFunction *)newDynamicFunctionWithName:(NSString *)name
     constantValues:(MTLFunctionConstantValues *)constants error:(NSError **)error;
@@ -524,6 +525,11 @@ static NSDictionary<NSString *,NSNumber *> *libraryFunctionStages(NSData *data)
 }
 - (A5MaliMetalFunction *)newFunctionWithName:(NSString *)name
 {
+    return [self newPlainFunctionWithName:name error:NULL];
+}
+- (A5MaliMetalFunction *)newPlainFunctionWithName:(NSString *)name error:(NSError **)error
+{
+    if(error)*error=nil;
     MTLFunctionType type;
     if ([name isEqualToString:@"read_surf_vert"])
         type = MTLFunctionTypeVertex;
@@ -549,12 +555,14 @@ static NSDictionary<NSString *,NSNumber *> *libraryFunctionStages(NSData *data)
         }
         if (!found) {
             if(requiresConstants){
-                logFunctionFailure(name,nil,libraryError(@"function requires explicit constant values"));return nil;
+                NSError *failure=libraryError(@"function requires explicit constant values");
+                logFunctionFailure(name,nil,failure);if(error)*error=failure;return nil;
             }
 #if A5_MALI_DYNAMIC_SHADER_COMPILER
-            return [self newDynamicFunctionWithName:name constantValues:nil error:NULL];
+            return [self newDynamicFunctionWithName:name constantValues:nil error:error];
 #else
-            logFunctionFailure(name,nil,libraryError(@"function is not compiled"));return nil;
+            NSError *failure=libraryError(@"function is not compiled");
+            logFunctionFailure(name,nil,failure);if(error)*error=failure;return nil;
 #endif
         }
     }
@@ -686,9 +694,7 @@ static NSDictionary<NSString *,NSNumber *> *libraryFunctionStages(NSData *data)
         logFunctionFailure(name,nil,unmatched);if(error)*error=unmatched;return nil;
 #endif
     }
-    A5MaliMetalFunction *function = [self newFunctionWithName:name];
-    if (error) *error = function ? nil : libraryError(@"function is not compiled");
-    return function;
+    return [self newPlainFunctionWithName:name error:error];
 }
 
 #if A5_MALI_DYNAMIC_SHADER_COMPILER

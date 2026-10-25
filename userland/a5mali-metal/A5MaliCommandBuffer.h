@@ -6,6 +6,10 @@
 #import <IOSurface/IOSurfaceRef.h>
 #import "A5MaliBridge.h"
 
+/* Software retention bound, independent of the per-ioctl kernel batch size.
+ * Real compositor frames exceed64 draws+clears before a single commit. */
+enum { A5MaliCommandOperationLimit=4096 };
+
 NS_ASSUME_NONNULL_BEGIN
 
 @class A5MaliSurface, A5MaliCommandBuffer, A5MaliCommandQueue;

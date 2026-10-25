@@ -800,6 +800,7 @@ static void a5CompileDynamic(NSString *self,NSDictionary *request,NSDictionary *
     NSString *final=[publishedRoot stringByAppendingPathComponent:key];
     if([NSFileManager.defaultManager fileExistsAtPath:final])return;
     activeRequestKey=key;
+    activeDynamicRequest=[request copy];
     serviceCheckpoint("dispatch",key,stage);
     NSString *work=[cacheRoot stringByAppendingPathComponent:
         [@".stage-work-" stringByAppendingString:NSUUID.UUID.UUIDString]];
@@ -906,6 +907,7 @@ static void a5CompileDynamic(NSString *self,NSDictionary *request,NSDictionary *
     receipt[@"reflection"]=@{@"file":@"reflection.json",@"bytes":@(reflectionData.length),@"sha256":digest(reflectionData)};
     receipt[@"native_abi"]=info;
     a5PublishDynamic(request,receipt,@{@"stage.midgard":native,@"reflection.json":reflectionData});
+    activeDynamicRequest=nil;
     [NSFileManager.defaultManager removeItemAtPath:work error:NULL];activeWork=nil;activeRequestKey=nil;
     fprintf(stderr,"A5XELTE shader compiler: STAGE PUBLISHED stage=%s function=%s bytes=%lu request=%s\n",
         stage.UTF8String,[request[@"function"] UTF8String],(unsigned long)native.length,key.UTF8String);

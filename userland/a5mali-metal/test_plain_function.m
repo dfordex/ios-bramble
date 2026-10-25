@@ -6,6 +6,8 @@
 #import "A5MaliShaderCompileRequest.h"
 #include <assert.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <errno.h>
 uid_t A5MaliDynamicShaderCacheTestUID(void){return geteuid();}
 static kern_return_t wire(void*c,uint32_t s,const void*i,size_t n,void*o,size_t*b)
 {(void)c;(void)s;(void)i;(void)n;(void)o;(void)b;assert(!"function creation must not submit GPU work");return kIOReturnError;}
@@ -21,6 +23,13 @@ int main(int argc,char**argv){@autoreleasepool{
  /* This entry must not come from the precompiled native registry. */
  size_t n=0;const A5MaliCompiledProfile*profiles=A5MaliCompiledProfiles(&n);
  for(size_t i=0;i<n;i++)assert(![name isEqual:@(profiles[i].fragmentName)]&&![name isEqual:@(profiles[i].vertexName)]);
+ if(getenv("A5_TEST_TERMINAL_FUNCTION")){
+  MTLFunctionDescriptor*desc=[MTLFunctionDescriptor new];desc.name=name;
+  assert(![l newFunctionWithDescriptor:desc error:&error]&&error.code==ENOTSUP);
+  assert([error.localizedDescription containsString:@"compiler/validator failed"]);
+  puts("PASS actual worker terminal publication reaches Metal descriptor API without waiting or native submission (host only)");
+  return 0;
+ }
  A5MaliMetalFunction*f=[l newFunctionWithName:name];
  assert(f&&f.functionType==MTLFunctionTypeFragment&&f.dynamicShader&&[f.dynamicShader.requestID isEqual:key]);
  assert(f.dynamicShader.shader->byteCount>0);

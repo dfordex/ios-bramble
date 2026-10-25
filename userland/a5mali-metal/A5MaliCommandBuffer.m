@@ -354,7 +354,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
                rect:(A5MaliRect)rect
                bgra:(uint32_t)bgra
 {
-    if (_committed || _operations.count >= 64 ||
+    if (_committed || _operations.count >= A5MaliCommandOperationLimit ||
         destination.device != _device) return NO;
     A5MaliOperation *operation = [A5MaliOperation new];
     operation.kind = A5MaliKindClear;
@@ -370,7 +370,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
                to:(A5MaliSurface *)destination
   destinationRect:(A5MaliRect)destinationRect
 {
-    if (_committed || _operations.count >= 64 || source.device != _device ||
+    if (_committed || _operations.count >= A5MaliCommandOperationLimit || source.device != _device ||
         destination.device != _device) return NO;
     A5MaliOperation *operation = [A5MaliOperation new];
     operation.kind = A5MaliKindCopy;
@@ -387,7 +387,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
                        to:(A5MaliSurface *)destination
           destinationRect:(A5MaliRect)destinationRect
 {
-    if (_committed || _operations.count >= 64 || source.device != _device ||
+    if (_committed || _operations.count >= A5MaliCommandOperationLimit || source.device != _device ||
         destination.device != _device) return NO;
     A5MaliOperation *operation = [A5MaliOperation new];
     operation.kind = A5MaliKindTexturedQuad;
@@ -402,7 +402,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
 - (BOOL)encodeReadSurf:(A5MaliSurface *)source
                    to:(A5MaliSurface *)destination
 {
-    if (_committed || _operations.count >= 64 || source.device != _device ||
+    if (_committed || _operations.count >= A5MaliCommandOperationLimit || source.device != _device ||
         destination.device != _device || ![_device supportsPrivateReadSurf])
         return NO;
     A5MaliOperation *operation = [A5MaliOperation new];
@@ -522,7 +522,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
 
 - (BOOL)encodeNativeWork:(A5MaliNativeWork)work
 {
-    if (_committed || !work || _operations.count >= 64 ||
+    if (_committed || !work || _operations.count >= A5MaliCommandOperationLimit ||
         ![_device supportsNativePrograms]) return NO;
     A5MaliOperation *operation = [A5MaliOperation new];
     operation.kind = A5MaliKindNative;

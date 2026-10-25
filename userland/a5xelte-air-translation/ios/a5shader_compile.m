@@ -34,6 +34,10 @@ static NSString *const sourceLibrary = @A5_TEST_LIBRARY;
 #endif
 static NSString *activeWork;
 static NSString *activeRequestKey;
+/* A validated function request must receive a public terminal receipt even
+ * when its compiler child fails and this service exits before another scan. */
+static NSDictionary *activeDynamicRequest;
+static void a5DynamicFailure(NSDictionary *request,NSString *reason);
 static void a5WriteStatus(NSString *key, NSString *status, NSString *reason);
 static void fail(NSString *reason);
 
@@ -69,12 +73,16 @@ static void fail(NSString *reason)
             }
         }
         [NSFileManager.defaultManager removeItemAtPath:activeWork error:NULL];
+        activeWork=nil;
     }
     if (activeRequestKey) {
         NSString *key = activeRequestKey;
         activeRequestKey = nil;
         a5WriteStatus(key,@"failed",reason);
     }
+    NSDictionary *request=activeDynamicRequest;
+    activeDynamicRequest=nil; /* Publication errors cannot recurse on the request. */
+    if(request)a5DynamicFailure(request,reason);
     exit(1);
 }
 
