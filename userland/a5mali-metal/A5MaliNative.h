@@ -14,6 +14,11 @@ kern_return_t A5MaliSubmitNative(A5MaliClient *,
  * After Submit18 begins, only a valid terminal-fence reply proves retirement.
  * Reset once before a command buffer starts on its actual worker thread. */
 void A5MaliBeginNativeSubmissionTracking(void);
+/* Internal command-buffer preparation: zero fence means queued, never complete.
+ * End flushes actual hardware and restores the original transport. */
+kern_return_t A5MaliBeginNativeBatch(A5MaliClient *);
+kern_return_t A5MaliEndNativeBatch(A5MaliClient *,int commit,A5MaliFence *);
+int A5MaliNativeBatchAccepted(A5MaliClient *);
 int A5MaliNativeSubmissionMayBeActive(void);
 #ifdef __cplusplus
 }

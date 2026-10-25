@@ -111,8 +111,12 @@ def compile_backend(mesa, config, binary, log, target=0, raw16=False, inline_ble
     source = Path(__file__).with_name('misc_backend.c').resolve()
     commands = subprocess.check_output(['ninja', '-t', 'commands',
         'src/panfrost/a5_t720_copy_shader'], cwd=mesa, text=True).splitlines()
-    line = next(c for c in commands if ' -c ../mesa-26.2.4/src/panfrost/a5_t720_copy_shader.c' in c)
-    cc = shlex.split(line)
+    candidates = [shlex.split(c) for c in commands]
+    candidates = [c for c in candidates if '-c' in c and
+                  c[c.index('-c') + 1].endswith('/src/panfrost/a5_t720_copy_shader.c')]
+    if len(candidates) != 1:
+        raise ValueError('expected one released Mesa copy-shader compiler command')
+    cc = candidates[0]
     cc += ['-Werror', f'-DA5_FAMILY_CONFIG="{config}"',
            f'-DA5_SELECTED_RT={target}', f'-DA5_NATIVE_RGBA16={int(raw16)}',
            f'-DA5_INLINE_RGBA16_BLEND={int(inline_blend)}']

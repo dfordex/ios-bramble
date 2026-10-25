@@ -309,8 +309,8 @@ def main() -> None:
         parser.error('incremental backend update requires midgard-generic602')
     if args.stock_apps and args.display_apps:
         parser.error('select one fixed app set per incremental payload')
-    if len(args.compiled_stage)!=len(args.compiled_request) or len(args.compiled_stage)>32:
-        parser.error('each compiled stage needs one exact request; maximum32')
+    if len(args.compiled_stage)!=len(args.compiled_request) or len(args.compiled_stage)>64:
+        parser.error('each compiled stage needs one exact request; maximum64')
     if args.compiled_stage and not args.installer_source:
         parser.error('compiled-stage installation requires actual --installer-source preflight')
     if bool(args.probe) != bool(args.launch_plist):

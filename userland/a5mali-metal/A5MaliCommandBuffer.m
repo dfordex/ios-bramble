@@ -425,8 +425,19 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
     _committed = YES;
     [[_device lock] lock];
     BOOL success=NO;
+    A5MaliClient *client=[_device client];
+    kern_return_t begin=A5MaliBeginNativeBatch(client);
+    if(begin!=KERN_SUCCESS && begin!=kIOReturnUnsupported){
+        [[_device lock]unlock];if(error)*error=a5error(begin);return NO;
+    }
     @try{success=[self executeOperationsLocked:error];}
-    @finally{[[_device lock] unlock];}
+    @finally{
+        A5MaliFence finalFence={0};
+        kern_return_t ended=A5MaliEndNativeBatch(client,success,&finalFence);
+        if(ended){success=NO;if(error)*error=a5error(ended);}
+        if(finalFence.fragmentFence)_completedFence=finalFence;
+        [[_device lock] unlock];
+    }
     if(success)[self retireTerminalWork];
     return success;
 }
@@ -486,6 +497,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
             kr = operation.nativeWork ? operation.nativeWork(client, &fence) :
                 kIOReturnBadArgument;
             if(kr)terminal=!A5MaliNativeSubmissionMayBeActive();
+            else if(A5MaliNativeBatchAccepted(client))terminal=YES; /* queued; CB end proves final fences */
             else if(!fence.fragmentFence||fence.fragmentFence<fence.tilerFence)kr=kIOReturnError;
             else terminal=YES;
         } else if (operation.kind == A5MaliKindClear) {
@@ -514,7 +526,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
             if (error) *error = a5error(kr);
             return NO;
         }
-        _completedFence = fence;
+        if(fence.fragmentFence)_completedFence = fence;
         }@finally{[_device endResourceOperation:terminal];}
     }
     return YES;

@@ -1,0 +1,144 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -713,7 +713,7 @@
+ 				a5g3d_resource_probe_swap(s->id);
+ 				uint64_t gpuCopied=0;
+ 				const A5G3DFramePresentStatus status =
+-				    a5g3d_frame_present(s,&gpuCopied);
++				    a5g3d_frame_present(s,&gpuCopied,sweet_surface_write_epoch(fSurface));
+ 				/* The panel mapping is write-combined (no cached CPU alias).
+ 				 * At terminal completion compare a bounded grid read-only. */
+ 				static uint32_t pixelReports = 0; /* framebuffer workloop */
+@@ -761,9 +761,6 @@
+ 	}
+ #endif
+ 
+-#if defined(ARM64_BOARD_CONFIG_A5XELTE)
+-	a5g3d_frame_present_invalidate();
+-#endif
+ 	for (uint32_t layer = 0; layer < SWEET_FB_LAYERS; layer++) {
+ 		uint32_t id = get32(rec, 0x54 + 4 * layer);
+ 		const uint8_t *a = rec + 0x64 + 16 * layer;
+@@ -836,6 +833,9 @@
+ 			src = 0;
+ 		}
+ 		if (src != 0 && bpe == 4) {
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++            if(!copied)a5g3d_frame_present_invalidate();
++#endif
+ 			copied += (uint64_t)w * (uint64_t)h * 4;
+ 			for (int32_t y = 0; y < h; y++) {
+ 				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -877,6 +877,7 @@
+ 		OSIncrementAtomic64(&sweet_surface_perf_unlocks);
+ 		if (!((uintptr_t)options & kIOSurfaceLockReadOnly)) {
+ 			OSIncrementAtomic64(&sweet_surface_perf_write_unlocks);
++            sweet_surface_did_write(s);
+ 		}
+ 	}
+ #endif
+@@ -918,3 +919,8 @@
+ 	return &sweet_surface_traps[index];
+ }
+ #endif /* SWEET */
++
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++uint64_t sweet_surface_write_epoch(SweetSurface *s){return s?(uint64_t)OSAddAtomic64(0,&s->writeEpoch):0;}
++void sweet_surface_did_write(SweetSurface *s){if(s)OSIncrementAtomic64(&s->writeEpoch);}
++#endif
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -29,6 +29,9 @@
+ 
+ public:
+ 	uint32_t id;
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++    volatile int64_t writeEpoch = 0;
++#endif
+ 	uint32_t width, height, bytesPerRow, offset, pixelFormat, allocSize;
+ 	uint16_t bytesPerElement;
+ 	uint8_t  elementWidth, elementHeight;
+@@ -72,5 +75,11 @@
+ void sweet_surface_perf_snapshot(struct sweet_surface_perf_counts *counts);
+ #endif
+ 
++
++#if defined(ARM64_BOARD_CONFIG_A5XELTE)
++uint64_t sweet_surface_write_epoch(SweetSurface *);
++void sweet_surface_did_write(SweetSurface *);
++#endif
++
+ #endif /* SWEET */
+ #endif /* _SWEET_SURFACE_H */
+--- a/iokit/Kernel/arm/A5XELTEGPUFramePresent.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUFramePresent.cpp
+@@ -23,6 +23,7 @@
+ static uint64_t gFallbackFrames;
+ static uint8_t *gPanelShadow;
+ static bool gPanelShadowValid;
++static uint64_t gPanelEpoch;
+ static uint64_t gBandFrames,gUnchangedFrames,gBandBytes,gComparedFrames;
+ void a5g3d_frame_present_invalidate(){gPanelShadowValid=false;}
+ 
+@@ -97,9 +98,10 @@
+ }
+ 
+ A5G3DFramePresentStatus
+-a5g3d_frame_present(SweetSurface *source,uint64_t *copiedBytes)
++a5g3d_frame_present(SweetSurface *source,uint64_t *copiedBytes,uint64_t panelEpoch)
+ {
+     if(copiedBytes)*copiedBytes=0;
++    if(gPanelShadowValid && gPanelEpoch!=panelEpoch)gPanelShadowValid=false;
+     /* The 0140 diagnostic must first sample 256 live IOSurface texels
+      * correctly. A green clear or a private red fixture is insufficient. */
+     IOService *probeOwner = nullptr;
+@@ -213,7 +215,7 @@
+             if(copiedBytes)*copiedBytes=transferred;
+             if(shadowReady){
+                 a5present_remember(pixels,source->bytesPerRow,gPanelShadow,1080,band);
+-                gPanelShadowValid=true;
++                gPanelEpoch=panelEpoch;gPanelShadowValid=true;
+                 if(band.first || band.end!=1920)++gBandFrames;
+                 gBandBytes+=transferred;
+                 if(++gComparedFrames<=8 || !(gComparedFrames&63))IOLog(
+--- a/iokit/Kernel/arm/A5XELTEGPUFramePresent.h
++++ b/iokit/Kernel/arm/A5XELTEGPUFramePresent.h
+@@ -15,7 +15,7 @@
+ };
+ 
+ /* Only accepts a complete, one-layer 1080x1920 BGRA producer surface. */
+-A5G3DFramePresentStatus a5g3d_frame_present(SweetSurface *source,uint64_t *copiedBytes);
++A5G3DFramePresentStatus a5g3d_frame_present(SweetSurface *source,uint64_t *copiedBytes,uint64_t panelEpoch);
+ /* Called on the framebuffer workloop after any CPU/blank/fade path. */
+ void a5g3d_frame_present_invalidate();
+ #endif
+--- a/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
++++ b/iokit/Kernel/arm/A5XELTEGPUAS1.cpp
+@@ -834,8 +834,10 @@
+             kIOMemoryIncoherentIOFlush, 0,
+             ctx->mappedBytes[request.destinationSlot]) != kIOReturnSuccess)
+         status = kAS1SubmitIOError;
+-    if (status == kAS1SubmitCompleted)
++    if (status == kAS1SubmitCompleted){
++        sweet_surface_did_write(ctx->surface[request.destinationSlot]);
+         ctx->completedFence = lastFragmentFence;
++    }
+     if (started || status == kAS1SubmitFault ||
+         status == kAS1SubmitTimeout) {
+         ctx->poisoned = true;
+--- a/iokit/Kernel/arm/A5XELTENativeQueue.inc
++++ b/iokit/Kernel/arm/A5XELTENativeQueue.inc
+@@ -120,7 +120,10 @@
+             ++pixelReports;
+         }
+     }
+-    if (status==kAS1SubmitCompleted) ctx->completedFence=out->fragmentFence;
++    if (status==kAS1SubmitCompleted){
++        for(unsigned i=0;i<4;i++)if(writes&(1u<<i))sweet_surface_did_write(ctx->surface[i]);
++        ctx->completedFence=out->fragmentFence;
++    }
+     if (started || status==kAS1SubmitFault || status==kAS1SubmitTimeout) {
+         ctx->poisoned=true;a5g3d_queue_poison(owner,token);
+         IOLog("A5XELTE G3D native: uncertain job; AS1 resources pinned until reboot\n");

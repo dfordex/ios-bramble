@@ -80,4 +80,4 @@ assert(a5metal_install_preflight(buffer)==0);
 free(buffer);puts("PASS actual15-file compiler payload: every compressed stream, exact new tool/recipe paths, duplicate/sibling/traversal/mode/corruption rejection; no filesystem writes");return 0;}
 '''
 source=out/'test.c';source.write_text(pre+structs+'\n#include "payload.inc"\n'+functions+test)
-exe=out/'test';subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(source),'-lz','-o',str(exe)],check=True);subprocess.run([str(exe)],check=True)
+exe=out/'test';subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',str(source),'-lz','-o',str(exe)],check=True);subprocess.run([str(exe)],check=True)

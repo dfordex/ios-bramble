@@ -85,12 +85,8 @@ def main() -> int:
     integration.mkdir(exist_ok=True)
     generic_source = integration / "midgard_generic.c"
     generic_source_text = (family_dir / "misc_backend.c").read_text()
-    anchor = "   pan_preprocess_nir(nir,inputs.gpu_id);"
-    if generic_source_text.count(anchor) != 1:
-        raise ValueError("Mesa generic backend initializer insertion point changed")
-    generic_source_text = generic_source_text.replace(anchor,
-        "   NIR_PASS(_,nir,nir_lower_variable_initializers,\n"
-        "            nir_var_function_temp|nir_var_shader_temp);\n" + anchor)
+    if generic_source_text.count("NIR_PASS(_,nir,nir_lower_variable_initializers,") != 1:
+        raise ValueError("shared backend must lower initializers exactly once")
     generic_source.write_text(generic_source_text)
     for name in ("misc_resource_lowering.h", "misc_native_rt.h", "misc_dynamic.h"):
         shutil.copyfile(family_dir / name, integration / name)

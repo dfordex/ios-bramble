@@ -8,8 +8,11 @@ _Static_assert(sizeof(A5NativeQueryRequest)==80,"native query ABI");
 _Static_assert(sizeof(A5NativeQueryResult)==352,"native spans ABI");
 _Static_assert(sizeof(A5NativeSubmitRequest)==120,"native submit ABI");
 _Static_assert(sizeof(A5NativeSubmitResult)==40,"native fences ABI");
+_Static_assert(sizeof(A5NativeBatchRequest)==24&&sizeof(A5NativeBatchResult)==192,"native batch ABI");
 static _Thread_local int submissionMayBeActive;
-void A5MaliBeginNativeSubmissionTracking(void){submissionMayBeActive=0;}
+#include "A5MaliNativeBatch.inc"
+
+void A5MaliBeginNativeSubmissionTracking(void){if(!nativeBatch||!nativeBatch->error)submissionMayBeActive=0;if(nativeBatch)nativeBatch->accepted=0;}
 int A5MaliNativeSubmissionMayBeActive(void){return submissionMayBeActive;}
 static int valid(A5NativeHeader h,size_t bytes,size_t actual)
 { return h.version==1 && h.size==bytes && actual==bytes && !h.reserved0 && !h.reserved1; }
@@ -73,6 +76,7 @@ kern_return_t A5MaliSubmitNative(A5MaliClient *c,const A5NativeSubmitRequest *q,
   return kIOReturnBadArgument;
  if(A5NativeCheckJobChain(jobs,q->jobBytes,A5NativeJobVA,q->vertexOffset,
     q->tilerOffset,q->fragmentOffset,q->profileID==0)<0)return kIOReturnBadArgument;
+ if(nativeBatch && nativeBatch->client==c)return a5NativeBatchAppend(q,jobs);
  size_t count=sizeof(*q)+q->jobBytes;
  uint8_t *input=malloc(count); if (!input) return kIOReturnNoMemory;
  memcpy(input,q,sizeof(*q)); memcpy(input+sizeof(*q),jobs,q->jobBytes);

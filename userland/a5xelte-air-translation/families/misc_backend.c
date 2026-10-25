@@ -374,6 +374,8 @@ static int compile(const char *input,const char *output,mesa_shader_stage stage,
       pan_build_varying_layout_compact(&varyings,nir,inputs.gpu_id);
       inputs.varying_layout=&varyings;
    }
+   NIR_PASS(_,nir,nir_lower_variable_initializers,
+            nir_var_function_temp|nir_var_shader_temp);
    pan_preprocess_nir(nir,inputs.gpu_id);
    struct lowering ctx={.profile=profile};
    NIR_PASS(_,nir,nir_shader_instructions_pass,lower_texture,nir_metadata_control_flow,&ctx);

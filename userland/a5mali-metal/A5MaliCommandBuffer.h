@@ -14,8 +14,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 @class A5MaliSurface, A5MaliCommandBuffer, A5MaliCommandQueue;
 /* Called exactly in encoded order under the device transport lock. Captured
- * resources stay retained until work has completed. Success requires real
- * nonzero GPU fences, not merely descriptor construction. */
+ * resources stay retained until work has completed. On batch-capable transport,
+ * native work may prepare a snapshot with a zero fence; commitAndWait flushes
+ * it and requires real nonzero terminal fences before reporting completion. */
 typedef kern_return_t (^A5MaliNativeWork)(A5MaliClient *client, A5MaliFence *fence);
 
 @interface A5MaliDevice : NSObject

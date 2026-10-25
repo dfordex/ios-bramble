@@ -1,0 +1,11 @@
+--- a/bsd/kern/a5xelte_metal_bundle_installer.inc
++++ b/bsd/kern/a5xelte_metal_bundle_installer.inc
+@@ -363,7 +363,7 @@
+ #if defined(A5METAL_COMPILED_DIRECTORIES_PRESENT)
+ 	unsigned int compiled_dirs = sizeof(a5metal_install_compiled_directories) /
+ 	    sizeof(a5metal_install_compiled_directories[0]);
+-	if (compiled_dirs < 2 || compiled_dirs > 33 ||
++	if (compiled_dirs < 2 || compiled_dirs > 65 ||
+ 	    !a5metal_install_compiled_directories[0].path ||
+ 	    strcmp(a5metal_install_compiled_directories[0].path, A5METAL_COMPILED_ROOT)) {
+ 		return EINVAL;
