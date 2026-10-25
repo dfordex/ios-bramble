@@ -44,3 +44,19 @@ ASan/UBSan. Build and physical registration results are recorded below when
 available. Successful host tests do not establish on-device registration or
 visible icons; those require the new runtime `A5XELTE Apps:` receipts and the
 user's screen report.
+
+## Packaged and installed
+
+Full XNU make exits zero. The final 25,800,720-byte BOOT matches every linked
+kernel segment and all 374 embedded file CRCs. The loader, ADT, DTBH and boot
+arguments retain the verified 0230 chain. Comparison with the 0235 payload
+confirms that only `/usr/libexec/a5mali-metal-probe` differs. Existing graphics,
+compiler and app contents/metadata remain exact. The final helper has verified
+4 KiB signature pages. Its parent waits after Metal discovery to retain the
+registration child's lifetime until its actual exit.
+
+Guarded model/recovery/BOOT p10/capacity checks pass; the write acknowledges all
+25,800,720 bytes, sync completes and reboot is requested. No BOOT backup or
+readback, whole-root transfer, recovery/EFS/radio/GPT write is performed. The
+artifact and private receipts are saved under workspace research/builds/0236.
+On-device registration receipts and visible application icons remain pending.
