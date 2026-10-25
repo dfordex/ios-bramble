@@ -307,7 +307,7 @@ static void logFunctionSpecialization(NSString *name,MTLFunctionConstantValues *
     static atomic_uint requests;
     unsigned request=atomic_fetch_add_explicit(&requests,1,memory_order_relaxed);
     if(request>=4)return;
-    fprintf(stderr,"A5XELTE Metal specialize: request=%u function=%s constants=%u result=unsupported\n",
+    fprintf(stderr,"A5XELTE Metal specialize: request=%u function=%s constants=%u phase=registry-miss\n",
         request,boundedFunctionIdentifier(name).UTF8String,values!=nil);
     if (!values)return;
     if (![values isKindOfClass:[MTLFunctionConstantValues class]] ||
@@ -350,11 +350,60 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
     return YES;
 }
 
+/* Read the public function directory only after the complete library hash
+ * passes. Names and stages come from TYPE records, never name heuristics.
+ * No source or native shader bytes are exposed by this directory. */
+static NSDictionary<NSString *,NSNumber *> *libraryFunctionStages(NSData *data)
+{
+    const uint8_t *bytes=data.bytes;uint64_t offset=0,length=0;
+    if(data.length<88)return nil;
+    memcpy(&offset,bytes+24,8);memcpy(&length,bytes+32,8);
+    if(offset>data.length || data.length-offset<4 || length>data.length-offset-4 || length<4)return nil;
+    NSUInteger end=(NSUInteger)(offset+length+4),cursor=(NSUInteger)offset;
+    uint32_t count=0;memcpy(&count,bytes+cursor,4);cursor+=4;
+    if(!count || count>4096)return nil;
+    NSMutableDictionary *stages=[NSMutableDictionary dictionary];
+    for(uint32_t i=0;i<count;i++){
+        if(cursor>end || end-cursor<4)return nil;
+        uint32_t size=0;memcpy(&size,bytes+cursor,4);
+        if(size<8 || size>end-cursor)return nil;
+        NSUInteger recordEnd=cursor+size;cursor+=4;
+        NSString *name=nil;NSNumber *stage=nil;BOOL ended=NO;
+        while(cursor<recordEnd){
+            if(recordEnd-cursor<4)return nil;
+            const uint8_t *tag=bytes+cursor;cursor+=4;
+            if(!memcmp(tag,"ENDT",4)){ended=YES;break;}
+            if(recordEnd-cursor<2)return nil;
+            uint16_t span=0;memcpy(&span,bytes+cursor,2);cursor+=2;
+            if(span>recordEnd-cursor)return nil;
+            if(!memcmp(tag,"NAME",4)){
+                if(name || !span || span>129 || bytes[cursor+span-1])return nil;
+                name=[[NSString alloc]initWithBytes:bytes+cursor length:span-1 encoding:NSUTF8StringEncoding];
+                if(!name || [boundedFunctionIdentifier(name) isEqual:@"<invalid>"])return nil;
+            }else if(!memcmp(tag,"TYPE",4)){
+                if(stage || span!=1 || bytes[cursor]>2)return nil;
+                stage=@(bytes[cursor]+1); /* MTLB0/1/2 -> Metal vertex/fragment/kernel. */
+            }
+            cursor+=span;
+        }
+        if(!ended || cursor!=recordEnd || !name || !stage || stages[name])return nil;
+        stages[name]=stage;
+    }
+    /* The directory length excludes its leading count word. */
+    if(cursor!=end)return nil;
+    return [stages copy];
+}
+
 @interface A5MaliMetalLibrary () {
     A5MaliRestrictedDevice *_device;
+    NSDictionary<NSString *,NSNumber *> *_functionStages;
 }
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device
                           data:(NSData *)data;
+#if A5_MALI_DYNAMIC_SHADER_COMPILER
+- (A5MaliMetalFunction *)newDynamicFunctionWithName:(NSString *)name
+    constantValues:(MTLFunctionConstantValues *)constants error:(NSError **)error;
+#endif
 @end
 
 @interface A5MaliMetalFunction () {
@@ -439,7 +488,8 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
     uint8_t digest[CC_SHA256_DIGEST_LENGTH];
     CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
     if (memcmp(digest, kQuartzCoreMetallibSHA256, sizeof(digest))) return nil;
-    if ((self = [super init])) _device = device;
+    NSDictionary *stages=libraryFunctionStages(data);if(!stages)return nil;
+    if ((self = [super init])) { _device = device;_functionStages=stages; }
     return self;
 }
 
@@ -470,17 +520,7 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
 - (id)newExternFunctionWithName:(NSString *)name { (void)name; return nil; }
 - (NSArray<NSString *> *)functionNames
 {
-    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithArray:
-        @[@"read_surf_vert", @"read_surf_frag"]];
-    size_t count = 0;
-    const A5MaliCompiledProfile *profiles = A5MaliCompiledProfiles(&count);
-    for (size_t i = 0; i < count; ++i)
-        for (unsigned stage = 0; stage < 2; ++stage) {
-            NSString *name = [NSString stringWithUTF8String:stage ?
-                profiles[i].fragmentName : profiles[i].vertexName];
-            if (![names containsObject:name]) [names addObject:name];
-        }
-    return names;
+    return [_functionStages.allKeys sortedArrayUsingSelector:@selector(compare:)];
 }
 - (A5MaliMetalFunction *)newFunctionWithName:(NSString *)name
 {
@@ -490,24 +530,33 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
     else if ([name isEqualToString:@"read_surf_frag"])
         type = MTLFunctionTypeFragment;
     else {
-        BOOL found = NO;
+        BOOL found = NO,requiresConstants=NO;
         size_t count = 0;
         const A5MaliCompiledProfile *profiles = A5MaliCompiledProfiles(&count);
         for (size_t i = 0; i < count; ++i) {
             if ([name isEqualToString:[NSString stringWithUTF8String:profiles[i].vertexName]]) {
                 size_t constants=0;
                 A5MaliCompiledVertexConstantsForProfile(profiles[i].profileID,&constants);
-                if(constants)continue;
+                if(constants){requiresConstants=YES;continue;}
                 type = MTLFunctionTypeVertex; found = YES; break;
             }
             if ([name isEqualToString:[NSString stringWithUTF8String:profiles[i].fragmentName]]) {
                 size_t constants=0;
                 A5MaliCompiledConstantsForProfile(profiles[i].profileID,&constants);
-                if(constants)continue; /* Required specialization cannot be omitted. */
+                if(constants){requiresConstants=YES;continue;} /* Specialization cannot be omitted. */
                 type = MTLFunctionTypeFragment; found = YES; break;
             }
         }
-        if (!found) { logFunctionSpecialization(name,nil);return nil; }
+        if (!found) {
+            if(requiresConstants){
+                logFunctionFailure(name,nil,libraryError(@"function requires explicit constant values"));return nil;
+            }
+#if A5_MALI_DYNAMIC_SHADER_COMPILER
+            return [self newDynamicFunctionWithName:name constantValues:nil error:NULL];
+#else
+            logFunctionFailure(name,nil,libraryError(@"function is not compiled"));return nil;
+#endif
+        }
     }
     return [[A5MaliMetalFunction alloc] initWithLibrary:self name:name type:type];
 }
@@ -631,9 +680,24 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
         }
         logFunctionSpecialization(name,constants);
 #if A5_MALI_DYNAMIC_SHADER_COMPILER
+        return [self newDynamicFunctionWithName:name constantValues:constants error:error];
+#else
+        NSError *unmatched=libraryError(@"no compiled AIR function-constant variant matches");
+        logFunctionFailure(name,nil,unmatched);if(error)*error=unmatched;return nil;
+#endif
+    }
+    A5MaliMetalFunction *function = [self newFunctionWithName:name];
+    if (error) *error = function ? nil : libraryError(@"function is not compiled");
+    return function;
+}
+
+#if A5_MALI_DYNAMIC_SHADER_COMPILER
+- (A5MaliMetalFunction *)newDynamicFunctionWithName:(NSString *)name
+    constantValues:(MTLFunctionConstantValues *)constants error:(NSError **)error
+{
         NSError *payloadError=nil;MTLFunctionType stage=0;
-        if([name hasPrefix:@"fixed_vert_"]||[name containsString:@"_vert"])stage=MTLFunctionTypeVertex;
-        else if([name hasPrefix:@"fixed_frag_"]||[name containsString:@"_frag"])stage=MTLFunctionTypeFragment;
+        if([name isKindOfClass:NSString.class] && name.length)stage=[_functionStages[name] unsignedIntegerValue];
+        if(stage!=MTLFunctionTypeVertex && stage!=MTLFunctionTypeFragment)stage=0;
         NSDictionary *payload=stage?A5MaliShaderCompileFunctionPayload(name,stage,constants,&payloadError):nil;
         NSString *requestID=payload?A5MaliShaderCompileRequestID(payload,&payloadError):nil;
         if(requestID){
@@ -669,19 +733,10 @@ static BOOL constantsMatchProfile(MTLFunctionConstantValues *values,uint32_t pro
                 while(nanosleep(&pause,&pause)&&errno==EINTR){}
             }
         }
-#endif
-        NSError *unmatched=nil;
-#if A5_MALI_DYNAMIC_SHADER_COMPILER
-        unmatched=payloadError;
-#endif
-        if(!unmatched)unmatched=libraryError(@"no compiled AIR function-constant variant matches");
-        logFunctionFailure(name,nil,unmatched);if(error)*error=unmatched;
-        return nil;
-    }
-    A5MaliMetalFunction *function = [self newFunctionWithName:name];
-    if (error) *error = function ? nil : libraryError(@"function is not compiled");
-    return function;
+    NSError *failure=payloadError?:libraryError(@"function is absent or is not a vertex/fragment entry in the authenticated library");
+    logFunctionFailure(name,nil,failure);if(error)*error=failure;return nil;
 }
+#endif
 
 @end
 

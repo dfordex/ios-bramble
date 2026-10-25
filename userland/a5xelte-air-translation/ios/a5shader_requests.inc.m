@@ -847,7 +847,12 @@ static void a5CompileDynamic(NSString *self,NSDictionary *request,NSDictionary *
      * companion supplies stage-link scaffolding; only the requested stage is
      * compiled/published and the companion is not an executable-pipeline claim. */
     NSMutableDictionary *constants=[NSMutableDictionary dictionary];
-    if(vertex)for(NSDictionary *item in scaffold[@"fragment_constants"])constants[item[@"name"]]=item;
+    /* Both translation companions need their real specialization values.
+     * Empty fragment constants must not leave the scaffold vertex's required
+     * fc_generic/fc_texcoord_count values undefined. Requested values override
+     * shared names; only the requested native stage is published. */
+    for(NSDictionary *item in scaffold[vertex?@"fragment_constants":@"vertex_constants"])
+        constants[item[@"name"]]=item;
     for(NSDictionary *item in request[@"named_constants"])constants[item[@"name"]]=item;
     NSArray *named=[[constants allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a,NSDictionary *b){return [a[@"name"] compare:b[@"name"]];}];
     NSMutableArray *air=[NSMutableArray arrayWithArray:@[

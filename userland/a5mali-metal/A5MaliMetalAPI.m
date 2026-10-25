@@ -90,9 +90,9 @@ static BOOL rejectMiscResource(unsigned cb,const A5MaliCompiledProfile *profile,
     A5MaliSamplerState *sampler,A5MaliBufferBinding *binding,NSUInteger required)
 {
     static atomic_uint diagnostics;
-    if(indexed && diagnosticTake(&diagnostics,48)){
-        fprintf(stderr,"A5XELTE Metal misc rejected: cb=%u profile=%u reason=%s stage=%d kind=%d slot=%d\n",
-            cb,profile?profile->profileID:0,reason,resource?(int)resource->stage:-1,
+    if(diagnosticTake(&diagnostics,48)){
+        fprintf(stderr,"A5XELTE Metal misc rejected: cb=%u profile=%u indexed=%u reason=%s stage=%d kind=%d slot=%d\n",
+            cb,profile?profile->profileID:0,indexed,reason,resource?(int)resource->stage:-1,
             resource?(int)resource->kind:-1,resource?(int)resource->metalIndex:-1);
         if(image)fprintf(stderr,"A5XELTE Metal misc image: format=%lu expected_target=%u size=%lux%lu type=%lu mips=%lu samples=%lu usage=%lu surface=%u buffer=%u\n",
             (unsigned long)image.pixelFormat,profile?profile->colorFormats[0]:0,
@@ -2017,8 +2017,15 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
 {
     [_buffer noteDrawCall];
     if ([_pipeline isKindOfClass:[A5MaliCompiledPipeline class]]) {
-        if (_ended || vertexStart || ![self encodeCompiledDraw:primitiveType vertexCount:vertexCount])
+        if (_ended || vertexStart || ![self encodeCompiledDraw:primitiveType vertexCount:vertexCount]) {
+            static atomic_uint rejected;
+            if(diagnosticTake(&rejected,48))fprintf(stderr,
+                "A5XELTE Metal draw rejected: cb=%u profile=%u indexed=0 reason=%s primitive=%lu start=%lu count=%lu\n",
+                _buffer.diagnosticID,((A5MaliCompiledPipeline *)_pipeline).profile->profileID,
+                _ended?"ended":vertexStart?"vertex-start":"pipeline-or-resource-contract",
+                (unsigned long)primitiveType,(unsigned long)vertexStart,(unsigned long)vertexCount);
             [_buffer markEncodingError:kIOReturnUnsupported selector:_cmd];
+        }
         else { _hasDraw=YES; [self recordDrawResources];[_buffer noteQueuedDraw]; }
         return;
     }
