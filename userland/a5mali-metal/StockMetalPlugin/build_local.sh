@@ -129,7 +129,8 @@ file "$bundle/A5MaliMetal"
 xcrun --sdk iphoneos clang -target arm64-apple-ios16.0 \
     -mcpu=cortex-a53 -march=armv8-a+crypto -isysroot "$sdk" \
     -fobjc-arc -fblocks -Wall -Wextra -Werror \
-    "$plugin_dir/acceptance_probe.m" -framework Foundation -framework Metal \
+    "$plugin_dir/acceptance_probe.m" "$src_dir/../a5xelte-stock-apps/A5StockApps.m" \
+    -framework Foundation -framework Metal \
     -framework IOKit -o "$out_dir/a5mali-metal-probe"
 codesign --force --sign - --pagesize 4096 --identifier com.orhunnx.a5mali-metal-probe \
     --entitlements "$plugin_dir/probe-entitlements.plist" \
