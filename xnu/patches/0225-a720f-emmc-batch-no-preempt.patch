@@ -1,0 +1,53 @@
+diff --git a/bsd/dev/a5xelte_emmc.c b/bsd/dev/a5xelte_emmc.c
+index 1011ca5..c761b4c 100644
+--- a/bsd/dev/a5xelte_emmc.c
++++ b/bsd/dev/a5xelte_emmc.c
+@@ -20,6 +20,7 @@
+ #include <miscfs/devfs/devfs.h>
+ #include <kern/locks.h>
+ #include <kern/clock.h>
++#include <kern/cpu_data.h>
+ #include <kern/sched_prim.h>
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+@@ -368,7 +369,7 @@ emmc_transfer_blocks(uint32_t lba, uint8_t *buffer, uint32_t blocks, bool write)
+ 	uint32_t unit = 2u << width, bytes = blocks * 512u, moved = 0;
+ 	uint32_t data_off = ver < 0x240au ? 0x100u : 0x200u;
+ 	uint32_t ints = emmc_rd(EMMC_INTMASK), response = 0;
+-	bool data_started = false;
++	bool data_started = false, no_preempt = false;
+ 	unsigned phase = 1;
+ 	int error = 0;
+ 	emmc_wr(EMMC_INTMASK, 0);
+@@ -396,6 +397,12 @@ emmc_transfer_blocks(uint32_t lba, uint8_t *buffer, uint32_t blocks, bool write)
+ 	if ((emmc_rd(EMMC_CLKSEL) >> 16) & 7u) command |= CMD_HOLD;
+ 	data_started = true;
+ 	phase = 3;
++	/* A batch is larger than the FIFO, so the CPU must keep draining or
++	 * filling it. A preempting thread (SWEET FB's display-off fade) starved
++	 * the FIFO into HTO (rint bit 10) and poisoned all root I/O on the A7.
++	 * Interrupts stay enabled; card busy after data is polled preemptibly. */
++	disable_preemption();
++	no_preempt = true;
+ 	emmc_wr(EMMC_CMD, command);
+ 	for (unsigned i = 0; ; i++) {
+ 		uint32_t pending = emmc_rd(EMMC_RINTSTS);
+@@ -432,6 +439,8 @@ emmc_transfer_blocks(uint32_t lba, uint8_t *buffer, uint32_t blocks, bool write)
+ 		if (moved == bytes && (pending & INT_CMD_DONE) && (pending & INT_DATA_OVER)) break;
+ 		if (i == A5_EMMC_POLL_LIMIT - 1) { error = ETIMEDOUT; goto out; }
+ 	}
++	enable_preemption();
++	no_preempt = false;
+ 	phase = 4;
+ 	error = emmc_wait_idle();
+ 	/* dw_mci completes SBC data from command/data events and PIO length,
+@@ -443,6 +452,9 @@ emmc_transfer_blocks(uint32_t lba, uint8_t *buffer, uint32_t blocks, bool write)
+ 		    write, blocks, moved, emmc_rd(EMMC_TCBCNT), emmc_rd(EMMC_TBBCNT));
+ 	}
+ out:
++	if (no_preempt) {
++		enable_preemption();
++	}
+ 	if (error) {
+ 		printf("A5XELTE eMMC multi: phase=%u error=%d rint=%x resp=%x status=%x tcbc=%u tbbc=%u\n",
+ 		    phase, error, emmc_rd(EMMC_RINTSTS), emmc_rd(EMMC_RESP0),
