@@ -43,6 +43,8 @@ def argument_parser():
                     help='enable the privileged local Metal native queue; requires a compiled registry bundle')
     ap.add_argument('--restore-display-apps', action='store_true',
                     help='restore the explicitly selected embedded UI or stock app set through HFS VFS')
+    ap.add_argument('--poster-bootstrap', action='store_true',
+                    help='enable scoped PosterBoard bootstrap receipts for the embedded startup shim')
     ap.add_argument('--ui-diagnostics', action='store_true',
                     help='enable bounded UI thread samples and independent exception-output budgets')
     ap.add_argument('--storage-multiblock', action='store_true',
@@ -250,6 +252,12 @@ def main():
         if b'A5XELTE TOUCH: enabled=%d contact_log=%d' not in args.kernel.read_bytes():
             ap.error('kernel lacks touch enable independent of contact logging')
         required.update(a5touch='1', a5touchlog='0')
+    if args.poster_bootstrap:
+        if not args.install_bundle or not args.restore_display_apps:
+            ap.error('--poster-bootstrap requires --install-bundle and --restore-display-apps')
+        if b'/usr/libexec/a5poster-bootstrap.dylib' not in args.kernel.read_bytes():
+            ap.error('kernel lacks the scoped PosterBoard bootstrap library')
+        required['sweetnull'] = required.get('sweetnull', 'backboardd') + ',PosterBoard'
     words = rewrite_boot_arguments(words, required)
     cmdline = ' '.join(words)
     if len(cmdline.encode()) >= mkpayload.BOOT_LINE_LENGTH:
