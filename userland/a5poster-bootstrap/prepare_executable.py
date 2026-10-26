@@ -50,7 +50,7 @@ for _ in range(struct.unpack_from('<I',new,16)[0]):
 assert after==texts and len(texts)==1
 receipt={'original_sha256':a.expected_sha256,'output_sha256':hashlib.sha256(new).hexdigest(),'output_bytes':len(new),'text_bytes_exact':True,'entitlements_exact':True,'added_load':name[:-1].decode(),'new_ncmds':count+1,'header_padding_used':n}
 
-# Check the complete application after creating the external receipt, not only
+# Check the complete application before writing the external receipt, not only
 # its executable: no temporary signing metadata may become an omitted resource.
 subprocess.run(['codesign','--verify','--strict',str(a.output.parent)],check=True)
 resources=plistlib.loads((a.output.parent/'_CodeSignature/CodeResources').read_bytes())

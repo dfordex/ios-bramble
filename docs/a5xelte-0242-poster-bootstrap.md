@@ -94,3 +94,11 @@ not a phone payload. The final corrected app must be signed against the actual
 complete existing PosterBoard resource tree, using bounded read-only recovery
 access, then repackaged, checked and written. TWRP return has been requested;
 no corrected0242b image/write is claimed yet.
+
+## Follow-up: 0242b installed
+
+The subsequent TWRP return supplied the complete seven-file PosterBoard app and
+the0242 log. The corrected resource seal, full XNU/linked payload checks and
+guarded BOOT write/reboot are complete. See the [0242 runtime and0242b report](a5xelte-0242-runtime-and-resource-seal.md).
+The log confirms hook installation but has no stock-setup completion receipt;
+do not infer a completed state repair from the lack of a crash alone.
