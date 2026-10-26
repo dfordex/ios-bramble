@@ -1,0 +1,50 @@
+--- a/bsd/dev/a5xelte_emmc.c
++++ b/bsd/dev/a5xelte_emmc.c
+@@ -369,6 +369,7 @@
+ 	uint32_t data_off = ver < 0x240au ? 0x100u : 0x200u;
+ 	uint32_t ints = emmc_rd(EMMC_INTMASK), response = 0;
+ 	bool data_started = false;
++	unsigned phase = 1;
+ 	int error = 0;
+ 	emmc_wr(EMMC_INTMASK, 0);
+ 	emmc_wr(EMMC_CTRL, (emmc_rd(EMMC_CTRL) &
+@@ -378,6 +379,7 @@
+ 		if (i == A5_EMMC_POLL_LIMIT - 1) { error = ETIMEDOUT; goto out; }
+ 	}
+ 	emmc_wr(EMMC_TMOUT, 0x573177ffu);
++	phase = 2;
+ 	error = emmc_command(23u, blocks, false, &response);
+ 	if (error) {
+ 		/* A completed ILLEGAL_COMMAND rejects SBC before any data command.
+@@ -393,6 +395,7 @@
+ 	    CMD_RESP | (write ? CMD_WRITE | 25u : 18u);
+ 	if ((emmc_rd(EMMC_CLKSEL) >> 16) & 7u) command |= CMD_HOLD;
+ 	data_started = true;
++	phase = 3;
+ 	emmc_wr(EMMC_CMD, command);
+ 	for (unsigned i = 0; ; i++) {
+ 		uint32_t pending = emmc_rd(EMMC_RINTSTS);
+@@ -429,9 +432,22 @@
+ 		if (moved == bytes && (pending & INT_CMD_DONE) && (pending & INT_DATA_OVER)) break;
+ 		if (i == A5_EMMC_POLL_LIMIT - 1) { error = ETIMEDOUT; goto out; }
+ 	}
++	phase = 4;
+ 	error = emmc_wait_idle();
+-	if (!error && emmc_rd(EMMC_TCBCNT) != bytes) error = EIO;
++	/* dw_mci completes SBC data from command/data events and PIO length,
++	 * not TCBCNT equality. Keep both hardware counters as observations;
++	 * rejecting a completed transfer then issuing CMD12 can itself fail
++	 * because the bounded CMD23 transfer already returned to TRAN. */
++	if (!error && emmc_multi_reads + emmc_multi_writes < 4) {
++		printf("A5XELTE eMMC multi: complete write=%u blocks=%u moved=%u tcbc=%u tbbc=%u\n",
++		    write, blocks, moved, emmc_rd(EMMC_TCBCNT), emmc_rd(EMMC_TBBCNT));
++	}
+ out:
++	if (error) {
++		printf("A5XELTE eMMC multi: phase=%u error=%d rint=%x resp=%x status=%x tcbc=%u tbbc=%u\n",
++		    phase, error, emmc_rd(EMMC_RINTSTS), emmc_rd(EMMC_RESP0),
++		    emmc_rd(EMMC_STATUS), emmc_rd(EMMC_TCBCNT), emmc_rd(EMMC_TBBCNT));
++	}
+ 	if (error && data_started) {
+ 		uint32_t stop_response = 0;
+ 		int stopped = emmc_command(12u, 0, true, &stop_response);

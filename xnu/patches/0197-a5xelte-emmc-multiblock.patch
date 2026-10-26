@@ -1,0 +1,290 @@
+--- a/bsd/dev/a5xelte_emmc.c
++++ b/bsd/dev/a5xelte_emmc.c
+@@ -19,11 +19,13 @@
+ #include <sys/uio.h>
+ #include <miscfs/devfs/devfs.h>
+ #include <kern/locks.h>
++#include <kern/clock.h>
+ #include <kern/sched_prim.h>
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+ #include <libkern/libkern.h>
+ #include <machine/atomic.h>
++#include <machine/machine_routines.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
+@@ -43,6 +45,7 @@
+ #define EMMC_INTMASK    0x024u
+ #define EMMC_CMDARG     0x028u
+ #define EMMC_CMD        0x02cu
++#define EMMC_RESP0      0x030u
+ #define EMMC_RINTSTS    0x044u
+ #define EMMC_STATUS     0x048u
+ #define EMMC_TCBCNT     0x05cu
+@@ -61,6 +64,7 @@
+ #define CMD_WAIT_DATA   (1u << 13)
+ #define CMD_DATA        (1u << 9)
+ #define CMD_WRITE       (1u << 10)
++#define CMD_STOP        (1u << 14)
+ #define CMD_RESP_CRC    (1u << 8)
+ #define CMD_RESP       (1u << 6)
+ #define INT_DATA_OVER   (1u << 3)
+@@ -76,6 +80,17 @@
+ static dev_t emmc_bdev;
+ static bool emmc_ready;
+ static bool emmc_writable;
++/* Opt-in bounded CMD23 + CMD18/25, no clock/pad/DMA reconfiguration. */
++#define A5_EMMC_MAX_BLOCKS 32u
++#define A5_EMMC_R1_ERRORS 0xfff9a080u
++#ifndef A5_EMMC_POLL_LIMIT
++#define A5_EMMC_POLL_LIMIT 4000000u
++#endif
++static uint32_t emmc_multi_blocks = 1;
++static bool emmc_io_poisoned;
++static uint64_t emmc_multi_reads, emmc_multi_writes, emmc_multi_read_blocks, emmc_multi_write_blocks;
++static uint64_t emmc_requests, emmc_read_bytes, emmc_write_bytes, emmc_io_errors;
++static uint64_t emmc_active_ns, emmc_lock_wait_ns, emmc_max_request_ns, emmc_log_ns;
+ static uint64_t emmc_log_first_lba, emmc_log_nsectors;
+ static bool emmc_log_enabled;
+ static char emmc_log_ring[A5_LOG_SIZE];
+@@ -294,9 +309,145 @@
+ 		if (i == 3999999) {
+ 			error = ETIMEDOUT;
+ 			printf("A5XELTE eMMC: CMD24 card busy after data lba=%u\n", lba);
++		}
++	}
++out:
++	emmc_wr(EMMC_RINTSTS, 0xffffffffu);
++	emmc_wr(EMMC_INTMASK, ints);
++	return error;
++}
++
++/* Caller owns a5xelte_emmc_lock and has masked controller interrupts. */
++static int
++emmc_command(uint32_t opcode, uint32_t arg, bool stop, uint32_t *response)
++{
++	uint32_t command = CMD_START | CMD_RESP_CRC | CMD_RESP | opcode |
++	    (stop ? CMD_STOP : CMD_WAIT_DATA);
++	if ((emmc_rd(EMMC_CLKSEL) >> 16) & 7u) command |= CMD_HOLD;
++	emmc_wr(EMMC_RINTSTS, 0xffffffffu);
++	emmc_wr(EMMC_CMDARG, arg);
++	emmc_wr(EMMC_CMD, command);
++	for (unsigned i = 0; i < A5_EMMC_POLL_LIMIT; i++) {
++		uint32_t pending = emmc_rd(EMMC_RINTSTS);
++		if (pending & INT_ERRORS) return EIO;
++		if (pending & INT_CMD_DONE) {
++			*response = emmc_rd(EMMC_RESP0);
++			return (*response & A5_EMMC_R1_ERRORS) ? EIO : 0;
++		}
++	}
++	return ETIMEDOUT;
++}
++
++static int
++emmc_wait_idle(void)
++{
++	for (unsigned i = 0; i < A5_EMMC_POLL_LIMIT; i++) {
++		if (!(emmc_rd(EMMC_STATUS) & (1u << 9))) return 0;
++	}
++	return ETIMEDOUT;
++}
++
++/* Linux's SBC request sends CMD23 first and omits CMD12 on success.
++ * On data error, explicitly stop/abort as dw_mci_prep_stop does. Never
++ * replay a partially written multi-block request as single-sector writes. */
++static int
++emmc_transfer_blocks(uint32_t lba, uint8_t *buffer, uint32_t blocks, bool write)
++{
++	uint64_t address = lba;
++	if (!buffer || blocks < 2 || blocks > A5_EMMC_MAX_BLOCKS ||
++	    address < emmc_first_lba || address - emmc_first_lba >= emmc_nsectors ||
++	    blocks > emmc_nsectors - (address - emmc_first_lba) ||
++	    blocks - 1u > UINT32_MAX - lba) return EINVAL;
++	if (write && !emmc_writable) return EROFS;
++	if (emmc_io_poisoned) return EIO;
++	uint32_t hcon = emmc_rd(EMMC_HCON), width = (hcon >> 7) & 7u;
++	uint32_t ver = emmc_rd(EMMC_VERID) & 0xffffu;
++	if (width > 2 || !ver || ver == 0xffff ||
++	    !(emmc_rd(EMMC_PWREN) & 1u) || !(emmc_rd(EMMC_CLKENA) & 1u)) return ENXIO;
++	if (emmc_rd(EMMC_STATUS) & (1u << 9)) return EBUSY;
++	uint32_t unit = 2u << width, bytes = blocks * 512u, moved = 0;
++	uint32_t data_off = ver < 0x240au ? 0x100u : 0x200u;
++	uint32_t ints = emmc_rd(EMMC_INTMASK), response = 0;
++	bool data_started = false;
++	int error = 0;
++	emmc_wr(EMMC_INTMASK, 0);
++	emmc_wr(EMMC_CTRL, (emmc_rd(EMMC_CTRL) &
++	    ~(CTRL_INT_ENABLE | CTRL_DMA_ENABLE | CTRL_USE_IDMAC)) | CTRL_FIFO_RESET);
++	for (unsigned i = 0; ; i++) {
++		if (!(emmc_rd(EMMC_CTRL) & CTRL_FIFO_RESET)) break;
++		if (i == A5_EMMC_POLL_LIMIT - 1) { error = ETIMEDOUT; goto out; }
++	}
++	emmc_wr(EMMC_TMOUT, 0x573177ffu);
++	error = emmc_command(23u, blocks, false, &response);
++	if (error) {
++		/* A completed ILLEGAL_COMMAND rejects SBC before any data command.
++		 * Only this case can safely use the legacy path for this request. */
++		if (error == EIO && (response & A5_EMMC_R1_ERRORS) == (1u << 22)) error = ENOTSUP;
++		goto out;
++	}
++	emmc_wr(EMMC_BLKSIZ, 512u);
++	emmc_wr(EMMC_BYTCNT, bytes);
++	emmc_wr(EMMC_RINTSTS, 0xffffffffu);
++	emmc_wr(EMMC_CMDARG, lba);
++	uint32_t command = CMD_START | CMD_WAIT_DATA | CMD_DATA | CMD_RESP_CRC |
++	    CMD_RESP | (write ? CMD_WRITE | 25u : 18u);
++	if ((emmc_rd(EMMC_CLKSEL) >> 16) & 7u) command |= CMD_HOLD;
++	data_started = true;
++	emmc_wr(EMMC_CMD, command);
++	for (unsigned i = 0; ; i++) {
++		uint32_t pending = emmc_rd(EMMC_RINTSTS);
++		if (pending & INT_ERRORS) { error = EIO; goto out; }
++		if ((pending & INT_CMD_DONE) && (emmc_rd(EMMC_RESP0) & A5_EMMC_R1_ERRORS)) {
++			error = EIO; goto out;
+ 		}
++		uint32_t fifo = (emmc_rd(EMMC_STATUS) >> 17) & 0x1fffu;
++		if (fifo > EMMC_FIFO_DEPTH) { error = EIO; goto out; }
++		uint32_t available = write ? EMMC_FIFO_DEPTH - fifo : fifo;
++		/* Do not push data until the write command has an accepted response. */
++		if (write && !(pending & INT_CMD_DONE)) available = 0;
++		while (available && moved < bytes) {
++			uint64_t value = 0;
++			if (write) {
++				memcpy(&value, buffer + moved, unit);
++				if (unit == 8) {
++					emmc_wr(data_off, (uint32_t)value);
++					emmc_wr(data_off + 4, (uint32_t)(value >> 32));
++				} else if (unit == 4) emmc_wr(data_off, (uint32_t)value);
++				else *(volatile uint16_t *)(emmc_regs + data_off) = (uint16_t)value;
++			} else {
++				if (unit == 8) {
++					value = emmc_rd(data_off);
++					value |= (uint64_t)emmc_rd(data_off + 4) << 32;
++				} else if (unit == 4) value = emmc_rd(data_off);
++				else value = *(volatile uint16_t *)(emmc_regs + data_off);
++				memcpy(buffer + moved, &value, unit);
++			}
++			moved += unit; available--;
++		}
++		uint32_t request = write ? INT_TXDR : INT_RXDR;
++		if (pending & request) emmc_wr(EMMC_RINTSTS, request);
++		if (moved == bytes && (pending & INT_CMD_DONE) && (pending & INT_DATA_OVER)) break;
++		if (i == A5_EMMC_POLL_LIMIT - 1) { error = ETIMEDOUT; goto out; }
+ 	}
++	error = emmc_wait_idle();
++	if (!error && emmc_rd(EMMC_TCBCNT) != bytes) error = EIO;
+ out:
++	if (error && data_started) {
++		uint32_t stop_response = 0;
++		int stopped = emmc_command(12u, 0, true, &stop_response);
++		int idle = emmc_wait_idle();
++		if (stopped || idle) emmc_io_poisoned = true;
++		printf("A5XELTE eMMC multi: error=%d write=%u blocks=%u moved=%u stop=%d idle=%d poisoned=%u\n",
++		    error, write, blocks, moved, stopped, idle, emmc_io_poisoned);
++	}
++	if (error && !data_started && error != ENOTSUP) emmc_io_poisoned = true;
++	if (error && !data_started) {
++		printf("A5XELTE eMMC multi: setup error=%d response=%x fallback=%u poisoned=%u\n",
++		    error, response, error == ENOTSUP, emmc_io_poisoned);
++	}
++	if (error) emmc_multi_blocks = 1;
++	else if (write) { emmc_multi_writes++; emmc_multi_write_blocks += blocks; }
++	else { emmc_multi_reads++; emmc_multi_read_blocks += blocks; }
+ 	emmc_wr(EMMC_RINTSTS, 0xffffffffu);
+ 	emmc_wr(EMMC_INTMASK, ints);
+ 	return error;
+@@ -513,12 +664,28 @@
+ 		error = EIO;
+ 		goto done;
+ 	}
++	uint64_t requested_at = mach_absolute_time(), acquired_at, finished_at, elapsed;
+ 	lck_mtx_lock(&a5xelte_emmc_lock);
++	acquired_at = mach_absolute_time();
++	if (emmc_io_poisoned) { error = EIO; goto unlock; }
+ 	for (uint32_t n = 0; n < count;) {
+ 		uint64_t pos = off + n;
+ 		uint32_t skip = pos & 511u;
+ 		uint32_t take = MIN(count - n, 512u - skip);
+ 		uint32_t lba = (uint32_t)(emmc_first_lba + pos / 512u);
++		if (!skip && count - n >= 1024u && emmc_multi_blocks > 1) {
++			uint32_t blocks = MIN((count - n) / 512u, emmc_multi_blocks);
++			error = emmc_transfer_blocks(lba, (uint8_t *)vaddr + n, blocks,
++			    !(buf_flags(bp) & B_READ));
++			if (!error) {
++				n += blocks * 512u;
++				buf_setresid(bp, count - n);
++				continue;
++			}
++			if (error != ENOTSUP) break;
++			/* Only a rejected CMD23, before data transfer, may fall back. */
++			error = 0;
++		}
+ 		if (buf_flags(bp) & B_READ) {
+ 			error = emmc_read_sector(lba, emmc_bounce);
+ 			if (!error) {
+@@ -539,6 +706,17 @@
+ 		n += take;
+ 		buf_setresid(bp, count - n);
+ 	}
++unlock:
++	finished_at = mach_absolute_time();
++	absolutetime_to_nanoseconds(acquired_at - requested_at, &elapsed);
++	emmc_lock_wait_ns += elapsed;
++	absolutetime_to_nanoseconds(finished_at - acquired_at, &elapsed);
++	emmc_active_ns += elapsed;
++	emmc_max_request_ns = MAX(emmc_max_request_ns, elapsed);
++	emmc_requests++;
++	if (buf_flags(bp) & B_READ) emmc_read_bytes += count - buf_resid(bp);
++	else emmc_write_bytes += count - buf_resid(bp);
++	if (error) emmc_io_errors++;
+ 	lck_mtx_unlock(&a5xelte_emmc_lock);
+ 	buf_unmap(bp);
+ done:
+@@ -658,6 +836,7 @@
+ 		uint64_t pos = total - flushed >= A5_LOG_SIZE ? total - A5_LOG_SIZE : flushed;
+ 		int error = 0;
+ 		lck_mtx_lock(&a5xelte_emmc_lock);
++		uint64_t log_started_at = mach_absolute_time();
+ 		while (pos < total && !error) {
+ 			uint32_t block = (uint32_t)((pos % A5_LOG_SIZE) / 512u);
+ 			uint64_t lba = emmc_log_first_lba + 1u + block;
+@@ -678,12 +857,27 @@
+ 			memcpy(sector, &h, sizeof(h));
+ 			error = emmc_write_sector((uint32_t)emmc_log_first_lba, sector);
+ 		}
++		uint64_t elapsed;
++		absolutetime_to_nanoseconds(mach_absolute_time() - log_started_at, &elapsed);
++		emmc_log_ns += elapsed;
++		/* Copy metrics under their owner lock; print after releasing it. */
++		uint64_t requests = emmc_requests, rb = emmc_read_bytes, wb = emmc_write_bytes;
++		uint64_t active = emmc_active_ns, wait = emmc_lock_wait_ns, maximum = emmc_max_request_ns;
++		uint64_t errors = emmc_io_errors, log_ns = emmc_log_ns;
++		uint64_t mr = emmc_multi_reads, mw = emmc_multi_writes;
++		uint64_t mrb = emmc_multi_read_blocks, mwb = emmc_multi_write_blocks;
+ 		lck_mtx_unlock(&a5xelte_emmc_lock);
+ 		if (error) {
+ 			printf("A5XELTE LOG: write failed (%d), stopping\n", error);
+ 			return;
+ 		}
+ 		flushed = total;
++		if (seq % 6 == 0) {
++			printf("A5XELTE eMMC perf: requests=%llu read_bytes=%llu write_bytes=%llu errors=%llu\n", requests, rb, wb, errors);
++			printf("A5XELTE eMMC time: active_ms=%llu lock_wait_ms=%llu max_request_ms=%llu log_ms=%llu\n",
++			    active / 1000000u, wait / 1000000u, maximum / 1000000u, log_ns / 1000000u);
++			printf("A5XELTE eMMC batch: reads=%llu read_blocks=%llu writes=%llu write_blocks=%llu\n", mr, mrb, mw, mwb);
++		}
+ 	}
+ }
+ 
+@@ -736,6 +930,10 @@
+ 		devfs_make_node(emmc_bdev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "emmcroot0");
+ 		devfs_make_node(makedev(cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "remmcroot0");
+ 		emmc_ready = true;
++		uint32_t blocks = 1;
++		(void)PE_parse_boot_argn("a5emmc_blocks", &blocks, sizeof(blocks));
++		emmc_multi_blocks = blocks >= 2 && blocks <= A5_EMMC_MAX_BLOCKS ? blocks : 1;
++		printf("A5XELTE eMMC: bounded CMD23/CMD18/CMD25 blocks=%u single-sector fallback retained\n", emmc_multi_blocks);
+ 		printf("A5XELTE eMMC: /dev/emmcroot0 ready, GPT %s %s\n",
+ 		    emmc_partition_name, emmc_writable ? "writable" : "read-only");
+ 		emmc_log_start();
