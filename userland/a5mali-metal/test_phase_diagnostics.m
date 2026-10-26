@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+@interface A5MaliMetalBuffer (TimingTestIdentity)
+- (unsigned)diagnosticID;
+@end
 @interface A5MaliMetalBlitEncoder (PhaseTestSelectors)
 - (void)fillBuffer:(id<MTLBuffer> _Nullable)buffer range:(NSRange)range value:(uint8_t)value;
 - (void)synchronizeResource:(id<MTLResource> _Nullable)resource;
@@ -28,10 +31,10 @@ static kern_return_t wire(void *context,uint32_t selector,const void *input,size
 }
 static NSUInteger occurrences(NSString *text,NSString *needle)
 { return [text componentsSeparatedByString:needle].count-1; }
-int main(void){@autoreleasepool{
+int main(void){Wire w={0};@autoreleasepool{
  FILE*f=tmpfile();assert(f);int original=dup(STDERR_FILENO);assert(original>=0);
  fflush(stderr);assert(dup2(fileno(f),STDERR_FILENO)>=0);
- Wire w={0};A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:wire context:&w
+ A5MaliRestrictedDevice*d=[[A5MaliRestrictedDevice alloc]initWithTransport:wire context:&w
   commandCapabilities:63 operationCapabilities:0x7ffff];
  /* Resource rejects are concurrent to prove the process budgets saturate. */
  dispatch_apply(128,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^(size_t i){(void)i;@autoreleasepool{
@@ -57,6 +60,14 @@ int main(void){@autoreleasepool{
  [render drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3 instanceCount:2];
  [render endEncoding];[setter commit];[setter waitUntilCompleted];assert(setter.status==MTLCommandBufferStatusError);
  A5MaliMetalBuffer*empty=[q commandBuffer];[empty commit];[empty waitUntilCompleted];assert(empty.status==MTLCommandBufferStatusCompleted);
+ /* A genuinely blocked dispatch target must appear as queue delay, without
+  * turning CPU wall time into fabricated public GPU timestamps. */
+ dispatch_queue_t target=dispatch_queue_create("a5.timing.blocked",DISPATCH_QUEUE_SERIAL);
+ dispatch_suspend(target);A5MaliMetalQueue*delayedQueue=[d newCommandQueue];[delayedQueue setSubmissionQueue:target];
+ A5MaliMetalBuffer*delayed=[delayedQueue commandBuffer];[delayed commit];
+ usleep(20000);dispatch_resume(target);[delayed waitUntilCompleted];
+ dispatch_sync(target,^{});assert(delayed.status==MTLCommandBufferStatusCompleted);
+ assert(delayed.GPUStartTime==0&&delayed.GPUEndTime==0);
  /* Request-validation and transport/reply-validation receipts preserve results. */
  A5MaliClient client={.call=wire,.context=&w,.gpuCommandsSupported=A5NativeCapability};
  A5NativeQueryRequest request={.header={1,sizeof(request),0,0}};
@@ -73,11 +84,18 @@ int main(void){@autoreleasepool{
  assert([log containsString:@"reason=sample-count"]&&[log containsString:@"samples=4"]);
  assert([log containsString:@"reason=min-filter min=2"]);
  assert([log containsString:@"no-copy-page-alignment"]&&[log containsString:@"commandBufferWithUnretainedReferences-unsupported"]);
- assert(occurrences(log,@"first_error=")==5); /* two first errors plus three commit begin records */
+ assert(occurrences(log,@"first_error=")==6); /* two first errors plus four commit begin records */
  assert([log containsString:@"selector=fillBuffer:range:value:"]&&![log containsString:@"selector=synchronizeResource:"]);
  assert([log containsString:@"selector=setVertexBytes:length:atIndex:"]&&![log containsString:@"selector=setBoundBytes:"]);
  assert([log containsString:@"draw_calls=1 queued_draws=0"]);
- assert(occurrences(log,@"phase=begin submit=")==3&&occurrences(log,@"phase=result status=")==3);
+ assert(occurrences(log,@"phase=begin submit=")==4&&occurrences(log,@"phase=result status=")==4);
+ assert(occurrences(log,@"Metal timing: cb=")==4);
+ assert(occurrences(log,@"Metal callback timing: cb=")==4);
+ assert(occurrences(log,@"Metal backend timing: serial=")==2);
+ NSRegularExpression*timing=[NSRegularExpression regularExpressionWithPattern:
+  [NSString stringWithFormat:@"Metal timing: cb=%u register_us=[0-9]+ queue_us=([0-9]+)",delayed.diagnosticID] options:0 error:NULL];
+ NSTextCheckingResult*match=[timing firstMatchInString:log options:0 range:NSMakeRange(0,log.length)];assert(match);
+ assert([[log substringWithRange:[match rangeAtIndex:1]] longLongValue]>=10000);
  assert([log containsString:@"phase=request-validation"]&&[log containsString:@"phase=transport"]);
  assert([log containsString:@"phase=reply-header"]&&[log containsString:@"phase=complete result=0"]);
  assert(![log containsString:@"deadbeef"]); /* tokens, addresses and buffer contents are excluded */

@@ -24,6 +24,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include "A5MaliResourcePlan.h"
+#include "A5MaliTiming.h"
 /* A build without authenticated compiled profiles exposes only the legacy
  * typed read_surf path and has no dependency on a native descriptor backend. */
 #if __has_include("A5MaliCompiledRegistryData.inc") || defined(A5_MALI_REQUIRE_COMPILED_REGISTRY)
@@ -989,6 +990,8 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
     BOOL submit = !_error;
     kern_return_t priorError=(kern_return_t)_error.code;
     [_condition unlock];
+    const BOOL traceTiming=A5MaliTimingSample(_diagnosticID);
+    const uint64_t committedAt=traceTiming?A5MaliWallUS():0;
     A5MaliResourceDependencies *dependencies=A5MaliDependenciesForDevice(self.device);
     A5MaliDependencyTicket *ticket=nil;
     if(submit){
@@ -1011,7 +1014,10 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
     if(diagnose)fprintf(stderr,"A5XELTE Metal commit: cb=%u phase=begin submit=%u first_error=%x render_encoders=%lu blit_encoders=%lu draw_calls=%lu queued_draws=%lu clear_commands=%lu blit_commands=%lu\n",
         _diagnosticID,submit,(unsigned)priorError,(unsigned long)_renderEncoders,(unsigned long)_blitEncoders,
         (unsigned long)_drawCalls,(unsigned long)_queuedDraws,(unsigned long)_clearCommands,(unsigned long)_blitCommands);
+    const uint64_t queuedAt=traceTiming?A5MaliWallUS():0;
     [_queue submitWork:^{
+    const uint64_t startedAt=traceTiming?A5MaliWallUS():0;
+    uint64_t dependenciesAt=startedAt,executionAt=startedAt;
     NSError *submissionError = nil;
     @try{
         A5MaliBeginNativeSubmissionTracking();
@@ -1019,10 +1025,13 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
             /* Cross-queue storage dependencies precede the device lock. The
              * typed backend retires every native draw synchronously. */
             [dependencies waitForDependenciesAndMarkExecuting:ticket];
+            if(traceTiming)dependenciesAt=A5MaliWallUS();
             if(![_privateBuffer commitAndWait:&submissionError])
                 submissionError=submissionError?:metalError(kIOReturnError);
+            if(traceTiming)executionAt=A5MaliWallUS();
         }
     }@catch(NSException *exception){
+        if(traceTiming)executionAt=A5MaliWallUS();
         submissionError=metalCommandException(exception,"resource-execution",self->_diagnosticID);
     }@finally{
         /* Encoding failures never submit, and validated terminal native
@@ -1055,6 +1064,15 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
     MTLCommandBufferStatus resultStatus=_status;
     kern_return_t resultError=(kern_return_t)_error.code;
     [_condition unlock];
+    const uint64_t finishedAt=traceTiming?A5MaliWallUS():0;
+    if(traceTiming)fprintf(stderr,"A5XELTE Metal timing: cb=%u register_us=%llu queue_us=%llu dependency_us=%llu execute_us=%llu retire_us=%llu total_us=%llu draws=%lu status=%lu error=%x\n",
+        _diagnosticID,(unsigned long long)A5MaliElapsedUS(committedAt,queuedAt),
+        (unsigned long long)A5MaliElapsedUS(queuedAt,startedAt),
+        (unsigned long long)A5MaliElapsedUS(startedAt,dependenciesAt),
+        (unsigned long long)A5MaliElapsedUS(dependenciesAt,executionAt),
+        (unsigned long long)A5MaliElapsedUS(executionAt,finishedAt),
+        (unsigned long long)A5MaliElapsedUS(committedAt,finishedAt),
+        (unsigned long)_drawCalls,(unsigned long)resultStatus,(unsigned)resultError);
     if(diagnose)fprintf(stderr,"A5XELTE Metal commit: cb=%u phase=result status=%lu error=%x submitted=%u\n",
         _diagnosticID,(unsigned long)resultStatus,(unsigned)resultError,submit);
     /* The kernel batch is synchronous; software scheduling and callbacks
@@ -1062,7 +1080,9 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
     if(diagnose)fprintf(stderr,"A5XELTE Metal callbacks: cb=%u phase=queued scheduled=%lu completed=%lu async=%u\n",
         _diagnosticID,(unsigned long)scheduled.count,(unsigned long)completed.count,
         _queue.completionQueue!=nil);
+    const uint64_t callbackQueuedAt=traceTiming?A5MaliWallUS():0;
     [_queue dispatchCompletion:^{
+    const uint64_t callbackAt=traceTiming?A5MaliWallUS():0;
     BOOL traceCallbacks=diagnosticTake(&callbackDiagnosticCount,64);
     if(traceCallbacks)fprintf(stderr,"A5XELTE Metal callbacks: cb=%u phase=begin scheduled=%lu completed=%lu\n",
         _diagnosticID,(unsigned long)scheduled.count,(unsigned long)completed.count);
@@ -1072,6 +1092,9 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
     for (MTLCommandBufferHandler handler in completed)
         handler((id<MTLCommandBuffer>)self);
     if(traceCallbacks)fprintf(stderr,"A5XELTE Metal callbacks: cb=%u phase=end\n",_diagnosticID);
+    if(traceTiming)fprintf(stderr,"A5XELTE Metal callback timing: cb=%u queue_us=%llu handlers_us=%llu\n",
+        _diagnosticID,(unsigned long long)A5MaliElapsedUS(callbackQueuedAt,callbackAt),
+        (unsigned long long)A5MaliElapsedUS(callbackAt,A5MaliWallUS()));
     }];
     }];
 }

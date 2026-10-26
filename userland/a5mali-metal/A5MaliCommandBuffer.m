@@ -2,6 +2,10 @@
 #import "A5MaliCommandBuffer.h"
 #import "A5MaliNative.h"
 #include <stdio.h>
+#include <stdatomic.h>
+#include "A5MaliTiming.h"
+
+static atomic_uint backendTimingSerial;
 
 static NSString *const A5MaliErrorDomain = @"com.orhunnx.a5xelte.mali";
 
@@ -423,22 +427,39 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
         return NO;
     }
     _committed = YES;
+    unsigned timingSerial=atomic_fetch_add_explicit(&backendTimingSerial,1,memory_order_relaxed)+1;
+    BOOL traceTiming=A5MaliTimingSample(timingSerial);
+    uint64_t enteredAt=traceTiming?A5MaliWallUS():0;
+    NSUInteger operationCount=_operations.count;
     [[_device lock] lock];
+    uint64_t lockedAt=traceTiming?A5MaliWallUS():0;
     BOOL success=NO;
     A5MaliClient *client=[_device client];
     kern_return_t begin=A5MaliBeginNativeBatch(client);
+    uint64_t beganAt=traceTiming?A5MaliWallUS():0;
     if(begin!=KERN_SUCCESS && begin!=kIOReturnUnsupported){
         [[_device lock]unlock];if(error)*error=a5error(begin);return NO;
     }
+    uint64_t encodedAt=beganAt,endedAt=beganAt;
     @try{success=[self executeOperationsLocked:error];}
     @finally{
+        if(traceTiming)encodedAt=A5MaliWallUS();
         A5MaliFence finalFence={0};
         kern_return_t ended=A5MaliEndNativeBatch(client,success,&finalFence);
+        if(traceTiming)endedAt=A5MaliWallUS();
         if(ended){success=NO;if(error)*error=a5error(ended);}
         if(finalFence.fragmentFence)_completedFence=finalFence;
         [[_device lock] unlock];
     }
     if(success)[self retireTerminalWork];
+    if(traceTiming)fprintf(stderr,"A5XELTE Metal backend timing: serial=%u lock_us=%llu begin_us=%llu operations_us=%llu drain_us=%llu retire_us=%llu total_us=%llu operations=%lu success=%u\n",
+        timingSerial,(unsigned long long)A5MaliElapsedUS(enteredAt,lockedAt),
+        (unsigned long long)A5MaliElapsedUS(lockedAt,beganAt),
+        (unsigned long long)A5MaliElapsedUS(beganAt,encodedAt),
+        (unsigned long long)A5MaliElapsedUS(encodedAt,endedAt),
+        (unsigned long long)A5MaliElapsedUS(endedAt,A5MaliWallUS()),
+        (unsigned long long)A5MaliElapsedUS(enteredAt,A5MaliWallUS()),
+        (unsigned long)operationCount,success);
     return success;
 }
 
