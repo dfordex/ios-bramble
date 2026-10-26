@@ -56,7 +56,7 @@ index 6996772..c033dad 100644
  	const ml_topology_info_t *topology = ml_get_topology_info();
  	unsigned int logical = target->getCPUNumber();
 diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
-index e4c15f2..2c04426 100644
+index a1f2a91..2c04426 100644
 --- a/osfmk/arm64/machine_routines.c
 +++ b/osfmk/arm64/machine_routines.c
 @@ -464,7 +464,10 @@ user_cont_hwclock_allowed(void)
@@ -71,18 +71,20 @@ index e4c15f2..2c04426 100644
  	return USER_TIMEBASE_NOSPEC_APPLE;
  #elif __ARM_ARCH_8_6__
  	return USER_TIMEBASE_NOSPEC;
-@@ -2064,7 +2067,10 @@ ml_set_decrementer(uint32_t dec_value)
+@@ -2064,8 +2067,11 @@ ml_set_decrementer(uint32_t dec_value)
  static inline uint64_t
  nonspeculative_timebase(void)
  {
 -#if defined(HAS_ACNTVCT)
+-	return __builtin_arm_rsr64("ACNTVCT_EL0");
 +#if defined(A5XELTE)
 +	__builtin_arm_isb(ISB_SY);
 +	return __builtin_arm_rsr64("CNTPCT_EL0");
 +#elif defined(HAS_ACNTVCT)
- 	return __builtin_arm_rsr64("S3_4_c15_c10_6");
++	return __builtin_arm_rsr64("S3_4_c15_c10_6");
  #elif __ARM_ARCH_8_6__
  	return __builtin_arm_rsr64("CNTVCTSS_EL0");
+ #else
 @@ -2145,7 +2151,11 @@ ml_get_speculative_timebase(void)
  	do {
  		timebase = getCpuDatap()->cpu_base_timebase;

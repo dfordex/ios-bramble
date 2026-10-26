@@ -224,7 +224,7 @@ index 422873e..1aabf8f 100644
  #else
  435     AUE_NULL        ALL     { int nosys(void); }
 diff --git a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
-index bb4a5d8..75b8309 100644
+index 636bd3d..399cd9a 100644
 --- a/bsd/vm/vm_unix.c
 +++ b/bsd/vm/vm_unix.c
 @@ -1755,9 +1755,9 @@ out:
