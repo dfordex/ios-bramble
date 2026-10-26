@@ -56,12 +56,15 @@ omit=(
     '--exclude=/System/Library/OnBoardingBundles/***'
     '--exclude=/System/Library/Audio/***'
 )
+# No --extended-attributes: macOS 15+ /usr/bin/rsync is openrsync, which looks
+# for AppleDouble ._ files, fails on every decmpfs-compressed file and exits
+# nonzero. The only xattr here is compression; files are stored expanded.
 echo "Copying selected OS files"
-/usr/bin/rsync -aH --numeric-ids --extended-attributes "${app_filters[@]}" "${omit[@]}" "$os/" "$root/"
+/usr/bin/rsync -aH --numeric-ids "${app_filters[@]}" "${omit[@]}" "$os/" "$root/"
 echo "Copying SystemOS and AppOS cryptexes"
 mkdir -p "$root/private/preboot/Cryptexes/OS" "$root/private/preboot/Cryptexes/App"
-/usr/bin/rsync -aH --numeric-ids --extended-attributes "$sysos/" "$root/private/preboot/Cryptexes/OS/"
-/usr/bin/rsync -aH --numeric-ids --extended-attributes "$appos/" "$root/private/preboot/Cryptexes/App/"
+/usr/bin/rsync -aH --numeric-ids "$sysos/" "$root/private/preboot/Cryptexes/OS/"
+/usr/bin/rsync -aH --numeric-ids "$appos/" "$root/private/preboot/Cryptexes/App/"
 
 # The donor's ignition_level=1 boot looks for the shared cache at this path.
 # Hard links use no second copy of the roughly 3 GiB cache.
