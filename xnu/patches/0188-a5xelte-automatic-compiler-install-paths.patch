@@ -1,9 +1,0 @@
---- a/bsd/kern/a5xelte_metal_bundle_installer.inc
-+++ b/bsd/kern/a5xelte_metal_bundle_installer.inc
-@@ -261,0 +262 @@
-+	    !strcmp(path, "/usr/libexec/a5shader/midgard-generic602") ||
-@@ -264,0 +266 @@
-+	    !strcmp(path, "/usr/libexec/a5shader/generic602.json") ||
-@@ -308,0 +311,2 @@
-+			printf("A5XELTE Metal install: rejected payload path=%s data=%u\n",
-+			    file->path ? file->path : "<null>", file->data != NULL);

@@ -1,28 +1,49 @@
---- a/pexpert/pexpert/arm64/A5XELTE.h
-+++ b/pexpert/pexpert/arm64/A5XELTE.h
-@@ -8,7 +8,7 @@
- #define A5XELTE                       1
- /* Reuse donor's SoC-neutral early services until their guards are renamed. */
- #define SWEET                         1
--#define SWEET_SMP_MAX_CPUS            2
-+#define SWEET_SMP_MAX_CPUS            8
- 
- #define ARM_ARCH_TIMER
- #define __ARM_ARCH__                  8
---- a/pexpert/pexpert/arm64/board_config.h
-+++ b/pexpert/pexpert/arm64/board_config.h
-@@ -113,7 +113,7 @@
- 
- #define MAX_L2_CLINE                   6
- #define MAX_CPUS                       8
--#define MAX_CPU_CLUSTERS               1
-+#define MAX_CPU_CLUSTERS               2
- 
- #define CORE_NCTRS                     8
- #endif  /* ARM64_BOARD_CONFIG_A5XELTE */
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index d3ffbe9..55d0057 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -1,6 +1,6 @@
+ /*
+  * Shared IOCPU bring-up from the SWEET donor. A5XELTE currently selects
+- * its Cortex-A53 boot CPU and one same-cluster secondary via PSCI.
++ * all eight Cortex-A53 cores in two Exynos7580 clusters via PSCI.
+  * GICv2 SGI routing is board-specific; suspend remains disabled.
+  */
+ #include <pexpert/arm64/board_config.h>
+@@ -82,8 +82,12 @@ SweetCPU::start(IOService *provider)
+ 		return false;
+ 	}
+ #if defined(A5XELTE)
+-	/* Start with CPU0 and CPU1 of the first Cortex-A53 cluster. */
+-	if (cpu->phys_id != cpu->cpu_id || topology->num_cpus > SWEET_SMP_MAX_CPUS) {
++	/* Linux's Exynos7580 DT: logical 0..3 = MPIDR 0..3;
++	 * logical 4..7 = MPIDR 0x100..0x103. */
++	uint32_t expected_mpidr = cpu->cpu_id < 4 ? cpu->cpu_id :
++	    0x100U + cpu->cpu_id - 4;
++	if (cpu->phys_id != expected_mpidr ||
++	    topology->num_cpus > SWEET_SMP_MAX_CPUS) {
+ 		panic(CPU_PORT_NAME " CPU: unsupported topology cpu=%u mpidr=0x%x count=%u",
+ 		    cpu->cpu_id, cpu->phys_id, topology->num_cpus);
+ 	}
+@@ -175,11 +179,11 @@ SweetCPU::startAll(void *arg __unused, wait_result_t result __unused)
+ 			panic(CPU_PORT_NAME " CPU: cpu=%u processor_start failed: %d", i, kr);
+ 		}
+ 		/* processor_start() is asynchronous for secondaries in this XNU. */
+-		nanoseconds_to_deadline(5 * NSEC_PER_SEC, &deadline);
++		nanoseconds_to_deadline(10 * NSEC_PER_SEC, &deadline);
+ 		while (__atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE) == 0 ||
+ 		    !sweet_cpu_signal_is_enabled(i)) {
+ 			if (mach_absolute_time() > deadline) {
+-				IOLog(CPU_PORT_NAME " CPU: cpu=%u mpidr=0x%x NOT alive after 5s\n",
++				IOLog(CPU_PORT_NAME " CPU: cpu=%u mpidr=0x%x NOT alive after 10s\n",
+ 				    i, topology->cpus[i].phys_id);
+ 				panic(CPU_PORT_NAME " CPU: cpu=%u startup timeout (reset/MMU/GIC/SGI)", i);
+ 			}
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+index 2c04426..84bfd8a 100644
 --- a/osfmk/arm64/machine_routines.c
 +++ b/osfmk/arm64/machine_routines.c
-@@ -958,7 +958,7 @@
+@@ -958,7 +958,7 @@ ml_parse_cpu_topology(void)
  	const boolean_t cpumask_boot_arg_present = PE_parse_boot_argn("cpumask", &cpumask_boot_arg, sizeof(cpumask_boot_arg));
  
  #if defined(SWEET)
@@ -31,7 +52,7 @@
  	if (!cpus_boot_arg_present || cpu_boot_arg == 0) {
  		cpu_boot_arg = 1;
  	}
-@@ -1050,7 +1050,7 @@
+@@ -1050,7 +1050,7 @@ ml_parse_cpu_topology(void)
  		 * on the value provided by EDT. Instead, use the MPIDR value to see if we have
  		 * seen this exact cluster before. If so, then reuse that cluster ID for this CPU.
  		 */
@@ -40,7 +61,7 @@
  		uint32_t phys_cluster_id = MPIDR_CLUSTER_ID(cpu->phys_id);
  #else
  		uint32_t phys_cluster_id = (cpu->cluster_type == CLUSTER_TYPE_P);
-@@ -1084,14 +1084,14 @@
+@@ -1084,14 +1084,14 @@ ml_parse_cpu_topology(void)
  			ml_read_reg_range(child, "cpm-impl-reg", &cluster->cpm_IMPL_pa, &cluster->cpm_IMPL_len);
  		}
  
@@ -57,7 +78,7 @@
  		cpu->die_cluster_id = (int)ml_readprop(child, "die-cluster-id", 0);
  		cpu->cluster_core_id = (int)ml_readprop(child, "cluster-core-id", cpu->phys_id >> 8);
  #else
-@@ -1110,7 +1110,7 @@
+@@ -1110,7 +1110,7 @@ ml_parse_cpu_topology(void)
  
  	}
  
@@ -66,42 +87,29 @@
  	/*
  	 * Build the cluster offset array, ensuring that the region reserved
  	 * for each physical cluster contains enough entries to be indexed
---- a/iokit/Kernel/arm/SweetCPU.cpp
-+++ b/iokit/Kernel/arm/SweetCPU.cpp
-@@ -1,6 +1,6 @@
- /*
-  * Shared IOCPU bring-up from the SWEET donor. A5XELTE currently selects
-- * its Cortex-A53 boot CPU and one same-cluster secondary via PSCI.
-+ * all eight Cortex-A53 cores in two Exynos7580 clusters via PSCI.
-  * GICv2 SGI routing is board-specific; suspend remains disabled.
-  */
- #include <pexpert/arm64/board_config.h>
-@@ -82,8 +82,12 @@
- 		return false;
- 	}
- #if defined(A5XELTE)
--	/* Start with CPU0 and CPU1 of the first Cortex-A53 cluster. */
--	if (cpu->phys_id != cpu->cpu_id || topology->num_cpus > SWEET_SMP_MAX_CPUS) {
-+	/* Linux's Exynos7580 DT: logical 0..3 = MPIDR 0..3;
-+	 * logical 4..7 = MPIDR 0x100..0x103. */
-+	uint32_t expected_mpidr = cpu->cpu_id < 4 ? cpu->cpu_id :
-+	    0x100U + cpu->cpu_id - 4;
-+	if (cpu->phys_id != expected_mpidr ||
-+	    topology->num_cpus > SWEET_SMP_MAX_CPUS) {
- 		panic(CPU_PORT_NAME " CPU: unsupported topology cpu=%u mpidr=0x%x count=%u",
- 		    cpu->cpu_id, cpu->phys_id, topology->num_cpus);
- 	}
-@@ -175,11 +179,11 @@
- 			panic(CPU_PORT_NAME " CPU: cpu=%u processor_start failed: %d", i, kr);
- 		}
- 		/* processor_start() is asynchronous for secondaries in this XNU. */
--		nanoseconds_to_deadline(5 * NSEC_PER_SEC, &deadline);
-+		nanoseconds_to_deadline(10 * NSEC_PER_SEC, &deadline);
- 		while (__atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE) == 0 ||
- 		    !sweet_cpu_signal_is_enabled(i)) {
- 			if (mach_absolute_time() > deadline) {
--				IOLog(CPU_PORT_NAME " CPU: cpu=%u mpidr=0x%x NOT alive after 5s\n",
-+				IOLog(CPU_PORT_NAME " CPU: cpu=%u mpidr=0x%x NOT alive after 10s\n",
- 				    i, topology->cpus[i].phys_id);
- 				panic(CPU_PORT_NAME " CPU: cpu=%u startup timeout (reset/MMU/GIC/SGI)", i);
- 			}
+diff --git a/pexpert/pexpert/arm64/A5XELTE.h b/pexpert/pexpert/arm64/A5XELTE.h
+index ebd1ee9..e6718d4 100644
+--- a/pexpert/pexpert/arm64/A5XELTE.h
++++ b/pexpert/pexpert/arm64/A5XELTE.h
+@@ -8,7 +8,7 @@
+ #define A5XELTE                       1
+ /* Reuse donor's SoC-neutral early services until their guards are renamed. */
+ #define SWEET                         1
+-#define SWEET_SMP_MAX_CPUS            2
++#define SWEET_SMP_MAX_CPUS            8
+ 
+ #define ARM_ARCH_TIMER
+ #define __ARM_ARCH__                  8
+diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
+index 5f8925a..1cf0ea0 100644
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -113,7 +113,7 @@
+ 
+ #define MAX_L2_CLINE                   6
+ #define MAX_CPUS                       8
+-#define MAX_CPU_CLUSTERS               1
++#define MAX_CPU_CLUSTERS               2
+ 
+ #define CORE_NCTRS                     8
+ #endif  /* ARM64_BOARD_CONFIG_A5XELTE */

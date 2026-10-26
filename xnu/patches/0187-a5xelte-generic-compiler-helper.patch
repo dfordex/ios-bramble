@@ -1,4 +1,0 @@
---- a/bsd/kern/sweet_amfi.c
-+++ b/bsd/kern/sweet_amfi.c
-@@ -318,0 +319 @@
-+			{ "com.orhunnx.a5shader.midgard-generic602", "/usr/libexec/a5shader/midgard-generic602" },

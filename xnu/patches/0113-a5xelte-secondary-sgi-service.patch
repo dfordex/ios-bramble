@@ -1,6 +1,8 @@
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index c033dad..d3ffbe9 100644
 --- a/iokit/Kernel/arm/SweetCPU.cpp
 +++ b/iokit/Kernel/arm/SweetCPU.cpp
-@@ -23,6 +23,7 @@
+@@ -23,6 +23,7 @@ extern "C" boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
  #if defined(A5XELTE)
  extern "C" void a5xelte_send_self_ipi(void);
  extern "C" void a5xelte_send_ipi(unsigned int logical);
@@ -8,7 +10,7 @@
  #define CPU_PORT_NAME "A5XELTE"
  #else
  #define CPU_PORT_NAME "SWEET"
-@@ -219,6 +220,19 @@
+@@ -219,6 +220,19 @@ SweetCPU::initCPU(bool boot)
  	 * Waiting here with DAIF.I set would deadlock every secondary. */
  	signalCPU(this);
  	setCPUState(kIOCPUStateRunning);
@@ -28,12 +30,15 @@
  	kprintf(CPU_PORT_NAME " CPU: cpu=%u entered initCPU mpidr=0x%llx EL%llu IRQs=%u\n",
  	    getCPUNumber(), __builtin_arm_rsr64("MPIDR_EL1") & 0xffffULL,
  	    __builtin_arm_rsr64("CurrentEL") >> 2, ml_get_interrupts_enabled());
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index eeeefe0..d3f8767 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -272,6 +272,19 @@
+@@ -271,6 +271,19 @@ a5xelte_send_ipi(unsigned int logical)
+ 	    ((uint32_t)a5_gic_cpu_masks[logical] << 16) | 1U);
  }
  
- void
++void
 +a5xelte_gic_diagnostics(unsigned int logical, const char *stage)
 +{
 +	kprintf("A5XELTE GIC: CPU%u %s group=%08x enable=%08x pending=%08x "
@@ -46,7 +51,6 @@
 +	    a5_gic_read32(a5_gicc_base, 0x018));
 +}
 +
-+void
+ void
  pe_init_fiq(void)
  {
- 	/* The boot CPU maps the controller before any secondary can start.

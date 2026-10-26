@@ -1,0 +1,226 @@
+/* SPDX-License-Identifier: GPL-2.0-only
+ * SM-A720F EL1/MMU-off loader for mkpayload.py version 1, adapted from
+ * shim/a5xelte/xnu_boot.c. Single CPU, 4 KiB XNU, 512 MiB RAM window above
+ * the video_scaler reservation. The A5 DECON console is not used (it
+ * programs Exynos7580 clock and power registers); the only display access
+ * is clearing the DECON hardware-trigger mask.
+ */
+#include <stdint.h>
+#include "../fdt.h"
+#include "board.h"
+#include "watchdog.h"
+
+#define LOG_BASE A7_LOG_BASE
+#define RAM_BASE A7_RAM_BASE
+#define RAM_END  A7_RAM_END
+#define PAGE_SIZE 4096UL
+#define BOOT_LINE_LENGTH 608
+
+struct payload_seg {
+    uint64_t vmaddr, vmsize, file_off, file_size;
+};
+struct payload {
+    char magic[8];
+    uint32_t version, nsegs;
+    uint64_t virt_base, entry_va, adt_off, adt_size, kernel_end;
+    uint64_t phys_base, mem_size;
+    char cmdline[BOOT_LINE_LENGTH];
+    struct payload_seg segs[];
+};
+struct boot_video {
+    uint64_t v_baseAddr, v_display, v_rowBytes, v_width, v_height, v_depth;
+};
+struct boot_args {
+    uint16_t Revision, Version;
+    uint64_t virtBase, physBase, memSize, topOfKernelData;
+    struct boot_video Video;
+    uint32_t machineType;
+    uint64_t deviceTreeP;
+    uint32_t deviceTreeLength;
+    char CommandLine[BOOT_LINE_LENGTH];
+    uint64_t bootFlags, memSizeActual;
+};
+
+_Static_assert(__builtin_offsetof(struct payload, segs) == 0x2a8, "payload layout");
+_Static_assert(__builtin_offsetof(struct boot_args, CommandLine) == 108, "boot_args layout");
+_Static_assert(sizeof(struct boot_args) == 736, "boot_args size");
+
+static void zero_bytes(uintptr_t dst, uint64_t size)
+{
+    /* MMU-off byte stores make large kernel BSS ranges unnecessarily slow. */
+    if (!(dst & 7)) {
+        volatile uint64_t *words = (volatile uint64_t *)dst;
+        while (size >= 8) {
+            if (!(size & 0xffffU)) a7_watchdog_keepalive();
+            *words++ = 0;
+            size -= 8;
+        }
+        dst = (uintptr_t)words;
+    }
+    volatile uint8_t *d = (volatile uint8_t *)dst;
+    for (uint64_t i = 0; i < size; ++i)
+    {
+        if (!(i & 0xffffU)) a7_watchdog_keepalive();
+        d[i] = 0;
+    }
+}
+
+static void copy_bytes(uintptr_t dst, uintptr_t src, uint64_t size)
+{
+    /* Payload segments are eight-byte aligned; keep an exact bounded tail. */
+    if (!((dst | src) & 7)) {
+        volatile uint64_t *dw = (volatile uint64_t *)dst;
+        volatile const uint64_t *sw = (volatile const uint64_t *)src;
+        while (size >= 8) {
+            if (!(size & 0xffffU)) a7_watchdog_keepalive();
+            *dw++ = *sw++;
+            size -= 8;
+        }
+        dst = (uintptr_t)dw;
+        src = (uintptr_t)sw;
+    }
+    volatile uint8_t *d = (volatile uint8_t *)dst;
+    volatile const uint8_t *s = (volatile const uint8_t *)src;
+    for (uint64_t i = 0; i < size; ++i)
+    {
+        if (!(i & 0xffffU)) a7_watchdog_keepalive();
+        d[i] = s[i];
+    }
+}
+
+static void clean_bytes(uintptr_t start, uintptr_t end)
+{
+    uint64_t ctr;
+    __asm__ volatile("mrs %0, CTR_EL0" : "=r" (ctr));
+    uintptr_t line = 4UL << ((ctr >> 16) & 0xf);
+    for (uintptr_t p = start & ~(line - 1); p < end; p += line)
+    {
+        if (!(p & 0xffffU)) a7_watchdog_keepalive();
+        __asm__ volatile("dc cvac, %0" : : "r" (p) : "memory");
+    }
+    __asm__ volatile("dsb sy" : : : "memory");
+}
+
+static int magic_ok(const char *value)
+{
+    const char *want = "SWEETXNU";
+    for (unsigned i = 0; i < 8; ++i)
+        if (value[i] != want[i])
+            return 0;
+    return 1;
+}
+
+static uintptr_t align_page(uintptr_t value)
+{
+    return (value + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+}
+
+/* Let TE pulses refresh the panel from 0x67000000 so XNU's framebuffer text
+ * becomes visible. Only the trigger mask changes; S-Boot keeps DECON, DSIM
+ * and panel power. Log slots: 64 before, 65 after (or unchanged). */
+static void a7_display_unmask_trigger(volatile uint64_t *log)
+{
+    volatile uint32_t *trig = (volatile uint32_t *)(A7_DECON_BASE + A7_DECON_TRIG_CTRL);
+    uint32_t value = *trig;
+    log[64] = value;
+    if ((value & A7_DECON_HW_TRIG_EN) && (value & A7_DECON_HW_TRIG_MASK)) {
+        *trig = value & ~(uint32_t)A7_DECON_HW_TRIG_MASK;
+        __asm__ volatile("dsb sy" : : : "memory");
+    }
+    log[65] = *trig;
+}
+
+/* Returns entry PA or zero. Status is kept in reserved RAM for TWRP. */
+uintptr_t a7_prepare_xnu(uintptr_t fdt, volatile uint64_t *log)
+{
+    /* exynos7-wdt stop: clear WTCON ENABLE (bit 5) and RSTEN (bit 0).
+     * Take over S-Boot's live timer before copying the kernel with the MMU off.
+     * This register is volatile runtime state, not a persistent device setting.
+     */
+    volatile uint32_t *wtcon = (volatile uint32_t *)A7_WDT_BASE;
+    log[21] = *wtcon;
+    *wtcon = (uint32_t)log[21] & ~((1U << 5) | 1U);
+    __asm__ volatile("dsb sy" : : : "memory");
+    log[22] = *wtcon;
+    a7_watchdog_keepalive();
+    log[23] = *(volatile uint32_t *)(A7_WDT_BASE + 4);
+    log[24] = *(volatile uint32_t *)(A7_WDT_BASE + 8);
+    uint64_t rd_start, rd_end;
+    log[10] = (uint64_t)-1;
+    if (!fdt_chosen_u64(fdt, "linux,initrd-start", &rd_start) ||
+        !fdt_chosen_u64(fdt, "linux,initrd-end", &rd_end) ||
+        rd_start < A7_INITRD_MIN || rd_end > RAM_END || rd_end <= rd_start)
+        return 0;
+    log[11] = rd_start;
+    log[12] = rd_end;
+
+    const struct payload *p = (const struct payload *)(uintptr_t)rd_start;
+    uint64_t length = rd_end - rd_start;
+    log[10] = (uint64_t)-2;
+    if (length < sizeof(*p) || !magic_ok(p->magic) || p->version != 1 ||
+        !p->nsegs || p->nsegs > 32 ||
+        __builtin_offsetof(struct payload, segs) + p->nsegs * sizeof(struct payload_seg) > length ||
+        p->adt_off > length || p->adt_size > length - p->adt_off)
+        return 0;
+    log[10] = (uint64_t)-3;
+    if (p->phys_base < RAM_BASE || p->phys_base >= RAM_END ||
+        !p->mem_size || p->mem_size > RAM_END - p->phys_base ||
+        p->entry_va < p->virt_base || p->kernel_end < p->virt_base)
+        return 0;
+    log[13] = p->phys_base;
+    log[14] = p->mem_size;
+    uintptr_t memory_end = p->phys_base + p->mem_size;
+    uintptr_t kernel_end = p->phys_base + (p->kernel_end - p->virt_base);
+    if (kernel_end >= memory_end)
+        return 0;
+
+    for (uint32_t i = 0; i < p->nsegs; ++i) {
+        const struct payload_seg *s = &p->segs[i];
+        if (s->vmaddr < p->virt_base || s->file_size > s->vmsize ||
+            s->file_off > length || s->file_size > length - s->file_off ||
+            s->vmsize > p->mem_size || s->vmaddr - p->virt_base > p->mem_size - s->vmsize)
+            return 0;
+        uintptr_t dst = p->phys_base + (s->vmaddr - p->virt_base);
+        log[18] = i + 1;
+        log[19] = 1;
+        copy_bytes(dst, rd_start + s->file_off, s->file_size);
+        log[19] = 2;
+        zero_bytes(dst + s->file_size, s->vmsize - s->file_size);
+        log[19] = 3;
+        clean_bytes(dst, dst + s->vmsize);
+        log[19] = 4;
+    }
+    log[10] = 4;
+    uintptr_t adt_pa = kernel_end;
+    uintptr_t ba_pa = align_page(adt_pa + p->adt_size);
+    if (ba_pa + PAGE_SIZE > memory_end || ba_pa < adt_pa)
+        return 0;
+    copy_bytes(adt_pa, rd_start + p->adt_off, p->adt_size);
+    zero_bytes(ba_pa, PAGE_SIZE);
+    volatile struct boot_args *ba = (volatile struct boot_args *)ba_pa;
+    ba->Revision = 2;
+    ba->Version = 2;
+    ba->virtBase = p->virt_base;
+    ba->physBase = p->phys_base;
+    ba->memSize = p->mem_size;
+    ba->topOfKernelData = ba_pa + PAGE_SIZE;
+    ba->deviceTreeP = p->virt_base + (adt_pa - p->phys_base);
+    ba->deviceTreeLength = (uint32_t)p->adt_size;
+    for (unsigned i = 0; i < BOOT_LINE_LENGTH; ++i)
+        ba->CommandLine[i] = p->cmdline[i];
+    ba->memSizeActual = p->mem_size;
+    clean_bytes(adt_pa, ba_pa + PAGE_SIZE);
+
+    uintptr_t entry_pa = p->phys_base + (p->entry_va - p->virt_base);
+    if (entry_pa >= kernel_end)
+        return 0;
+    log[15] = entry_pa;
+    log[16] = p->nsegs;
+    log[17] = ba_pa;
+    log[10] = 5;
+    a7_display_unmask_trigger(log);
+    *(volatile uint64_t *)A7_LKMSG_MAGIC_PA = A7_LKMSG_MAGICKEY;
+    clean_bytes(LOG_BASE, LOG_BASE + PAGE_SIZE);
+    __asm__ volatile("ic iallu; dsb sy; isb" : : : "memory");
+    return entry_pa;
+}

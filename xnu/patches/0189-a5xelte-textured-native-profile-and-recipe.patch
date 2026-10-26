@@ -1,9 +1,0 @@
---- a/bsd/kern/a5xelte_metal_bundle_installer.inc
-+++ b/bsd/kern/a5xelte_metal_bundle_installer.inc
-@@ -266,0 +267 @@
-+	    !strcmp(path, "/usr/libexec/a5shader/generic603.json") ||
---- a/iokit/Kernel/arm/A5XELTENativeQueue.inc
-+++ b/iokit/Kernel/arm/A5XELTENativeQueue.inc
-@@ -42 +42 @@
--        r.profileID==500 || r.profileID==501 || r.profileID==600 || r.profileID==601 || r.profileID==602;
-+        r.profileID==500 || r.profileID==501 || r.profileID==600 || r.profileID==601 || r.profileID==602 || r.profileID==603;

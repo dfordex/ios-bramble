@@ -1,6 +1,8 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index c603161..4fd8729 100644
 --- a/bsd/kern/sweet_amfi.c
 +++ b/bsd/kern/sweet_amfi.c
-@@ -136,6 +136,10 @@
+@@ -136,6 +136,10 @@ sweet_amfi_attach_entitlements(struct cs_blob *code_signing_blob)
  {
  	void *xml = NULL;
  	size_t xml_len = 0;
@@ -11,7 +13,7 @@
  
  	if (csblob_get_entitlements(code_signing_blob, &xml, &xml_len) != 0) {
  		printf(PORT_NAME " AMFI: %s: entitlements do not match the code directory, granting none\n",
-@@ -143,6 +147,9 @@
+@@ -143,6 +147,9 @@ sweet_amfi_attach_entitlements(struct cs_blob *code_signing_blob)
  		return;
  	}
  	if (xml == NULL) {
@@ -21,7 +23,7 @@
  		return;                 /* no XML entitlements */
  	}
  	void *ent = sweet_entitlements_create(xml, xml_len);
-@@ -151,6 +158,11 @@
+@@ -151,6 +158,11 @@ sweet_amfi_attach_entitlements(struct cs_blob *code_signing_blob)
  		    csblob_get_identity(code_signing_blob), xml_len);
  		return;
  	}
