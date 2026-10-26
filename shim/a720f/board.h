@@ -33,9 +33,11 @@
 #define A7_LKMSG_MAGICKEY  A7_UL(0x0000000a6c6c7546)
 
 /* Upper DRAM bank is 0x80000000-0x100000000. Linux reserves the first
- * 0x3c00000 bytes as video_scaler, so XNU starts above it. */
+ * 0x3c00000 bytes as video_scaler, so XNU starts above it. 960 MiB keeps the
+ * window inside one 1 GiB block; the bank's only other carveout is Linux's
+ * default CMA at 0xff000000 (live DT, dmesg). */
 #define A7_RAM_BASE        A7_UL(0x84000000)
-#define A7_RAM_END         A7_UL(0xa4000000)
+#define A7_RAM_END         A7_UL(0xc0000000)
 
 /* decon_f@0x14830000 runs the S6E3FA3 panel in command mode with the TE
  * hardware trigger (live DT psr_mode=2, trig_mode=0; dmesg "command mode,

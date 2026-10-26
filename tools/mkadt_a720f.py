@@ -17,7 +17,7 @@ import a5xelte_identity
 
 # Must match shim/a720f/board.h A7_RAM_BASE/A7_RAM_END.
 DRAM_BASE = 0x84000000
-DRAM_SIZE = 0x20000000
+DRAM_SIZE = 0x3c000000
 
 
 def set_prop(node, name, value):
