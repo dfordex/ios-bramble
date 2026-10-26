@@ -3,9 +3,13 @@
 #define A5_MALI_NATIVE_H
 #include "A5MaliBridge.h"
 #include "../a5xelte-gpu-translation/native_abi.h"
+/* Release only terminal, idle pooled upload BOs. Call with the device lock.
+ * No active session/current unsubmitted snapshot may be evicted. */
 #ifdef __cplusplus
 extern "C" {
 #endif
+kern_return_t A5MaliEvictIdleNativeUpload(A5MaliClient *client);
+void A5MaliDiscardNativeUploads(A5MaliClient *client);
 kern_return_t A5MaliQueryNative(A5MaliClient *,
     const A5NativeQueryRequest *,A5NativeQueryResult *);
 kern_return_t A5MaliSubmitNative(A5MaliClient *,

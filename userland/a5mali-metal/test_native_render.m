@@ -246,7 +246,8 @@ int main(void)
         [asyncQueue setSubmissionQueue:dispatch_queue_create("a5.stock-selector-test",DISPATCH_QUEUE_SERIAL)];
         A5MaliMetalBuffer *async=[asyncQueue commandBuffer];
         assert([async respondsToSelector:@selector(commitAndWaitUntilSubmitted)]);
-        assert([async commitAndWaitUntilSubmitted]&&async.status==MTLCommandBufferStatusCompleted);
+        assert([async commitAndWaitUntilSubmitted]&&async.status>=MTLCommandBufferStatusScheduled&&async.status<=MTLCommandBufferStatusCompleted);
+        [async waitUntilCompleted];assert(async.status==MTLCommandBufferStatusCompleted);
         /* Nil is a real unbind; invalid combined sampler slots retain the
          * existing explicit command error, with no native query/submission. */
         A5MaliMetalBuffer *combined=[asyncQueue commandBuffer];

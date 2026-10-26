@@ -56,6 +56,7 @@ static atomic_uint copyRejectionDiagnosticCount;
 static atomic_uint protectionDiagnosticCount;
 static atomic_uint callbackDiagnosticCount,waitDiagnosticCount;
 static atomic_uint queueConfigDiagnosticCount;
+static char callbackQueueSpecificKey;
 static atomic_uint indexedDrawDiagnosticCount;
 #if A5_MALI_NATIVE_RENDER
 static atomic_uint inputImageDiagnosticCount,inputVertexDiagnosticCount,inputUVDiagnosticCount,blurResourceDiagnosticCount;
@@ -330,10 +331,12 @@ static __attribute__((unused)) BOOL textureBackingAliases(A5MaliMetalTexture *a,
     dispatch_queue_t _submissionQueue;
     dispatch_queue_t _serialSubmissionQueue;
     dispatch_queue_t _completionQueue;
+    dispatch_queue_t _callbackFallback;
     BOOL _workStarted;
 }
 - (void)submitWork:(dispatch_block_t)work;
 - (void)dispatchCompletion:(dispatch_block_t)work;
+- (void)dispatchScheduled:(dispatch_block_t)work;
 - (instancetype)initWithDevice:(A5MaliRestrictedDevice *)device;
 @end
 
@@ -581,6 +584,8 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
     if ((self = [super init])) {
         _device = device;
         _configurationLock = [NSLock new];
+        _callbackFallback=dispatch_queue_create("com.orhunnx.a5xelte.mali.callbacks",DISPATCH_QUEUE_SERIAL);
+        dispatch_queue_set_specific(_callbackFallback,&callbackQueueSpecificKey,(__bridge void *)self,NULL);
     }
     return self;
 }
@@ -643,8 +648,11 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
 {
     dispatch_queue_t queue = self.completionQueue;
     if (queue) dispatch_async(queue, work);
-    else work();
+    else if(dispatch_get_specific(&callbackQueueSpecificKey)==(__bridge void *)self)work();
+    else dispatch_sync(_callbackFallback,work);
 }
+- (void)dispatchScheduled:(dispatch_block_t)work
+{ dispatch_async(self.completionQueue?:_callbackFallback,work); }
 - (A5MaliMetalBuffer *)commandBuffer
 {
     A5MaliMetalBuffer *buffer=[[A5MaliMetalBuffer alloc] initWithQueue:self
@@ -1026,6 +1034,18 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
              * typed backend retires every native draw synchronously. */
             [dependencies waitForDependenciesAndMarkExecuting:ticket];
             if(traceTiming)dependenciesAt=A5MaliWallUS();
+            /* Accepted by the real submission worker with its resource
+             * dependencies satisfied. This is scheduling, not a completed
+             * hardware fence; all completion/retirement stays below. */
+            [_condition lock];
+            _status=MTLCommandBufferStatusScheduled;
+            NSArray<MTLCommandBufferHandler> *ready=[_scheduled copy];
+            [_scheduled removeAllObjects];[_condition broadcast];
+            [_condition unlock];
+            [_queue dispatchScheduled:^{
+                for(MTLCommandBufferHandler handler in ready)
+                    handler((id<MTLCommandBuffer>)self);
+            }];
             if(![_privateBuffer commitAndWait:&submissionError])
                 submissionError=submissionError?:metalError(kIOReturnError);
             if(traceTiming)executionAt=A5MaliWallUS();
@@ -1075,8 +1095,8 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
         (unsigned long)_drawCalls,(unsigned long)resultStatus,(unsigned)resultError);
     if(diagnose)fprintf(stderr,"A5XELTE Metal commit: cb=%u phase=result status=%lu error=%x submitted=%u\n",
         _diagnosticID,(unsigned long)resultStatus,(unsigned)resultError,submit);
-    /* The kernel batch is synchronous; software scheduling and callbacks
-     * obey the dispatch queues retained from QuartzCore. */
+    /* Kernel fences are still terminal here. Scheduling callbacks were
+     * dispatched before execution, on the same ordered callback target. */
     if(diagnose)fprintf(stderr,"A5XELTE Metal callbacks: cb=%u phase=queued scheduled=%lu completed=%lu async=%u\n",
         _diagnosticID,(unsigned long)scheduled.count,(unsigned long)completed.count,
         _queue.completionQueue!=nil);
@@ -1099,9 +1119,8 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
     }];
 }
 
-/* iOS16 Metal's private SPI returns BOOL after committing and asking the
- * queue to submit the buffer. Our kernel work is synchronous within the real
- * submission queue; wait on its actual status, never synthesize a GPU fence. */
+/* Wait for acceptance by the dependency-ready submission worker, not its
+ * terminal GPU work. Completion still requires real validated fences. */
 - (BOOL)commitAndWaitUntilSubmitted
 {
     [self commit];
@@ -1140,7 +1159,7 @@ typedef struct {float red,green,blue,alpha;} A5MaliDrawBlendColor;
     if (_status >= MTLCommandBufferStatusScheduled &&
         _status != MTLCommandBufferStatusError) {
         [_condition unlock];
-        [_queue dispatchCompletion:^{ handler((id<MTLCommandBuffer>)self); }];
+        [_queue dispatchScheduled:^{ handler((id<MTLCommandBuffer>)self); }];
     } else if (_status < MTLCommandBufferStatusCompleted) {
         [_scheduled addObject:[handler copy]];
         [_condition unlock];

@@ -12,6 +12,9 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+@interface A5MaliMetalBuffer (SchedulingIntegrationSPI)
+- (BOOL)commitAndWaitUntilSubmitted;
+@end
 @interface A5MaliSurface (DependencyIntegrationTest)
 - (A5MaliResource)resource;
 @end
@@ -102,6 +105,10 @@ static void orderingAndAliases(void)
   A5MaliMetalQueue*first=[d newCommandQueue],*second=[d newCommandQueue];
   [first setSubmissionQueue:firstTarget];[second setSubmissionQueue:secondTarget];dispatch_suspend(firstTarget);
   A5MaliMetalBuffer*a=clear(first,t),*b=clear(second,alias);
+  dispatch_semaphore_t scheduled=dispatch_semaphore_create(0),completed=dispatch_semaphore_create(0);
+  [a addScheduledHandler:^(id<MTLCommandBuffer> cb){assert(cb.status>=MTLCommandBufferStatusScheduled);dispatch_semaphore_signal(scheduled);}];
+  [a addScheduledHandler:^(id<MTLCommandBuffer> cb){[cb waitUntilCompleted];}];
+  [a addCompletedHandler:^(id<MTLCommandBuffer> cb){assert(cb.status==MTLCommandBufferStatusCompleted);dispatch_semaphore_signal(completed);}];
   /* Merely encoded work must not make resource completion wait forever. */
   assert(t.isComplete&&hostAlias.isComplete);[hostAlias waitUntilComplete];
   uint64_t firstToken=t.privateSurface.resource.token,secondToken=alias.privateSurface.resource.token;
@@ -122,8 +129,10 @@ static void orderingAndAliases(void)
   assert(!atomic_load(&state.queries)&&!atomic_load(&state.submits));
   __weak A5MaliMetalTexture*retained=t;t=nil;assert(retained);
   dispatch_resume(firstTarget);waitFor(state.submitEntered);blocked(finished);blocked(readFinished);
+  waitFor(scheduled);assert([a commitAndWaitUntilSubmitted]&&a.status==MTLCommandBufferStatusScheduled);
+  blocked(completed); /* scheduling is not fake terminal completion */
   assert(!view.isComplete&&!hostAlias.isComplete&&atomic_load(&state.submits)==1);
-  dispatch_semaphore_signal(state.allowFence);[a waitUntilCompleted];[b waitUntilCompleted];waitFor(finished);waitFor(readFinished);
+  dispatch_semaphore_signal(state.allowFence);[a waitUntilCompleted];[b waitUntilCompleted];waitFor(completed);waitFor(finished);waitFor(readFinished);
   assert(a.status==MTLCommandBufferStatusCompleted&&b.status==MTLCommandBufferStatusCompleted);
   assert(atomic_load(&state.submits)==2&&state.orderedTokens[0]==firstToken&&state.orderedTokens[1]==secondToken);
   assert(view.isComplete&&hostAlias.isComplete&&independent.isComplete);[view waitUntilComplete];

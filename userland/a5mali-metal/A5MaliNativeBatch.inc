@@ -7,10 +7,33 @@ typedef struct {
  uint8_t *packet;unsigned count,accepted;int queryValid;
  A5NativeQueryRequest query;A5NativeQueryResult mapped;
  A5MaliFence last; kern_return_t error;
- A5NativeUploadArena arenas[4];unsigned arenaResets,arenaCreates,arenaWrites,awaitingUploadSubmit;
+ A5NativeUploadArena arenas[4];unsigned arenaResets,arenaCreates,arenaWrites,arenaReuses,awaitingUploadSubmit;
  uint64_t stagedBytes;
 } A5NativeBatchSession;
 static _Thread_local A5NativeBatchSession *nativeBatch;
+/* Retain at most four 1MiB idle arenas. Large transient allocations are
+ * released normally; only real terminal work can enter this pool. */
+typedef struct { A5NativeUploadArena arenas[4]; } A5NativeUploadPool;
+static void a5NativeArenaQuarantine(A5NativeBatchSession*,uint64_t);
+static kern_return_t a5NativeReleasePooled(A5MaliClient*c,A5NativeUploadArena*a){
+ struct {A5MaliHeader header;uint64_t handle;} request={{1,sizeof(request),0,0},a->handle};
+ size_t size=0;kern_return_t kr=c->call(c->context,9,&request,sizeof(request),NULL,&size);
+ if(!kr&&size)kr=kIOReturnIOError;
+ if(kr){for(unsigned i=0;i<4;i++)if(!c->nativeUploadQuarantine[i]){c->nativeUploadQuarantine[i]=a->handle;break;}}
+ free(a->bytes);memset(a,0,sizeof(*a));return kr;
+}
+kern_return_t A5MaliEvictIdleNativeUpload(A5MaliClient*c){
+ if(!c||!c->call||!c->nativeUploadPool||(nativeBatch&&nativeBatch->client==c))return kIOReturnNoResources;
+ A5NativeUploadPool*p=c->nativeUploadPool;
+ for(unsigned i=4;i>0;i--)if(p->arenas[i-1].handle)return a5NativeReleasePooled(c,&p->arenas[i-1]);
+ return kIOReturnNoResources;
+}
+void A5MaliDiscardNativeUploads(A5MaliClient*c){
+ if(!c||!c->nativeUploadPool||(nativeBatch&&nativeBatch->client==c))return;
+ A5NativeUploadPool*p=c->nativeUploadPool;
+ for(unsigned i=0;i<4;i++)if(p->arenas[i].handle)(void)a5NativeReleasePooled(c,&p->arenas[i]);
+ free(p);c->nativeUploadPool=NULL;
+}
 static kern_return_t a5NativeArenaRelease(A5NativeBatchSession*,A5NativeUploadArena*);
 static kern_return_t a5NativeArenaEvict(A5NativeBatchSession*s,unsigned first){
  for(unsigned i=4;i>first;i--){A5NativeUploadArena*a=&s->arenas[i-1];if(!a->handle)continue;
@@ -87,6 +110,11 @@ kern_return_t A5MaliBeginNativeBatch(A5MaliClient*c){
  A5NativeBatchSession*s=calloc(1,sizeof(*s));if(!s)return kIOReturnNoMemory;
  s->packet=malloc(sizeof(A5NativeBatchRequest)+A5NativeBatchMax*(sizeof(A5NativeSubmitRequest)+A5NativeJobBytes));
  if(!s->packet){free(s);return kIOReturnNoMemory;}
+ if(c->nativeUploadPool){
+  A5NativeUploadPool*p=c->nativeUploadPool;memcpy(s->arenas,p->arenas,sizeof(s->arenas));
+  for(unsigned i=0;i<4;i++)if(s->arenas[i].handle)++s->arenaReuses;
+  free(p);c->nativeUploadPool=NULL;
+ }
  s->client=c;s->call=c->call;s->context=c->context;nativeBatch=s;c->call=a5NativeBatchTransport;c->context=s;return KERN_SUCCESS;
 }
 static kern_return_t a5NativeBatchAppend(const A5NativeSubmitRequest*q,const void*jobs){
@@ -160,16 +188,30 @@ kern_return_t A5MaliEndNativeBatch(A5MaliClient*c,int commit,A5MaliFence*f){
  if(f)memset(f,0,sizeof(*f));A5NativeBatchSession*s=nativeBatch;if(!s)return KERN_SUCCESS;
  if(s->client!=c)return kIOReturnBadArgument;
  kern_return_t kr=commit?a5NativeBatchFlush():s->error;
+ A5NativeUploadPool*pool=(c->nativeUploadReuse&&commit&&!kr&&!submissionMayBeActive)?calloc(1,sizeof(*pool)):NULL;
+ unsigned kept=0;
  for(unsigned i=0;i<4;i++){
   A5NativeUploadArena*a=&s->arenas[i];
+  if(pool&&a->handle&&a->capacity<=0x100000){
+   a->used=a->uploaded=0;pool->arenas[i]=*a;memset(a,0,sizeof(*a));++kept;continue;
+  }
   if(a->handle){
    if(submissionMayBeActive)a5NativeArenaQuarantine(s,a->handle);
    else {kern_return_t released=a5NativeArenaRelease(s,a);if(!kr)kr=released;}
   }
   free(a->bytes);
  }
- if(s->arenaCreates){static unsigned reports;
-  if(++reports<=8||!(reports&63)||kr)fprintf(stderr,"A5XELTE Metal upload arena: creates=%u writes=%u resets=%u staged_bytes=%llu result=%x uncertain=%u\n",s->arenaCreates,s->arenaWrites,s->arenaResets,(unsigned long long)s->stagedBytes,(unsigned)kr,submissionMayBeActive);
+ if(kept&&!kr)c->nativeUploadPool=pool;
+ else if(pool){
+  /* A failed release of another arena poisons reuse for this connection. */
+  for(unsigned i=0;i<4;i++)if(pool->arenas[i].handle){
+   if(kr)a5NativeArenaQuarantine(s,pool->arenas[i].handle);
+   free(pool->arenas[i].bytes);
+  }
+  free(pool);
+ }
+ if(s->arenaCreates||s->arenaReuses){static unsigned reports;
+  if(++reports<=8||!(reports&63)||kr)fprintf(stderr,"A5XELTE Metal upload arena: creates=%u writes=%u resets=%u staged_bytes=%llu result=%x uncertain=%u reused=%u retained=%u\n",s->arenaCreates,s->arenaWrites,s->arenaResets,(unsigned long long)s->stagedBytes,(unsigned)kr,submissionMayBeActive,s->arenaReuses,c->nativeUploadPool?kept:0);
  }
  if(f)*f=s->last;c->call=s->call;c->context=s->context;nativeBatch=NULL;free(s->packet);free(s);return kr;
 }

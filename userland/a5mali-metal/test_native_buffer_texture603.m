@@ -116,7 +116,7 @@ static kern_return_t transport(void*context,uint32_t selector,const void*input,s
         assert(*outBytes==sizeof(r));memcpy(output,&r,sizeof(r));*outBytes=sizeof(r);return KERN_SUCCESS;
     }
     if(selector==A5NativeBatchSelector){
-        const A5NativeBatchRequest*h=input;assert(A5_TEST_NATIVE_ARENA&&h->count==4);++s->batches;
+        const A5NativeBatchRequest*h=input;assert(A5_TEST_NATIVE_ARENA&&h->count==8);++s->batches;
         A5NativeBatchResult result={.header={1,sizeof(result),0,0},.count=h->count};
         for(unsigned i=0;i<h->count;i++){
             const void*item=(const uint8_t*)input+sizeof(*h)+i*(sizeof(A5NativeSubmitRequest)+A5NativeJobBytes);
@@ -372,7 +372,7 @@ static void runCaseFormat(Fault fault,BOOL useSPI,BOOL blend,MTLPixelFormat sour
 #endif
         assert(s.creates==1&&s.releases==1);
         if(A5_TEST_NATIVE_ARENA){
-            assert(fault==Good&&s.bulkCalls==2&&s.queries==1&&s.submits==8&&s.batches==2);
+            assert(fault==Good&&s.bulkCalls==1&&s.queries==1&&s.submits==8&&s.batches==1);
             assert(b.status==MTLCommandBufferStatusCompleted&&!b.error);
             assert(b.privateBuffer.completedFence.fragmentFence==1917);
         }else{

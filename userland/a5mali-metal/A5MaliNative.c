@@ -8,7 +8,7 @@ _Static_assert(sizeof(A5NativeQueryRequest)==80,"native query ABI");
 _Static_assert(sizeof(A5NativeQueryResult)==352,"native spans ABI");
 _Static_assert(sizeof(A5NativeSubmitRequest)==120,"native submit ABI");
 _Static_assert(sizeof(A5NativeSubmitResult)==40,"native fences ABI");
-_Static_assert(sizeof(A5NativeBatchRequest)==24&&sizeof(A5NativeBatchResult)==192,"native batch ABI");
+_Static_assert(sizeof(A5NativeBatchRequest)==24&&sizeof(A5NativeBatchResult)==352,"native batch ABI");
 static _Thread_local int submissionMayBeActive;
 #include "A5MaliNativeBatch.inc"
 

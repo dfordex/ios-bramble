@@ -55,9 +55,9 @@ static void draw(A5MaliClient*c,uint32_t length,uint8_t value){
  assert(!A5MaliSubmitNative(c,&q,jobs,&f)&&!f.fragmentFence);free(jobs);
 }
 int main(void){A5MaliClient c=client();A5MaliFence f;
- assert(!A5MaliBeginNativeBatch(&c));for(unsigned i=0;i<8;i++)draw(&c,127,(uint8_t)(i+1));
- assert(creates==1&&releases==0&&queries==1&&batches==1&&counts[0]==4);
- assert(!A5MaliEndNativeBatch(&c,1,&f));assert(batches==2&&counts[1]==4&&draws==8&&releases==1&&writes==2&&f.fragmentFence==16);
+ assert(!A5MaliBeginNativeBatch(&c));for(unsigned i=0;i<16;i++)draw(&c,127,(uint8_t)(i+1));
+ assert(creates==1&&releases==0&&queries==1&&batches==1&&counts[0]==8);
+ assert(!A5MaliEndNativeBatch(&c,1,&f));assert(batches==2&&counts[1]==8&&draws==16&&releases==1&&writes==2&&f.fragmentFence==32);
  reset();c=client();assert(!A5MaliBeginNativeBatch(&c));for(unsigned i=0;i<3;i++)draw(&c,0x20000,(uint8_t)(i+1));
  assert(!A5MaliEndNativeBatch(&c,1,&f));assert(creates==1&&batches==2&&counts[0]==2&&counts[1]==1&&draws==3&&releases==1);
  reset();c=client();assert(!A5MaliBeginNativeBatch(&c));draw(&c,17,1);draw(&c,0x80000,2);assert(!A5MaliEndNativeBatch(&c,1,&f));assert(creates==2&&releases==2&&draws==2);
@@ -76,5 +76,19 @@ int main(void){A5MaliClient c=client();A5MaliFence f;
  assert(c.call(c.context,8,&create,sizeof(create),&created,&z)==kIOReturnNoResources&&!releases&&!draws);
  assert(!A5MaliEndNativeBatch(&c,0,&f)&&releases==4);
  reset();c=client();assert(!A5MaliBeginNativeBatch(&c));draw(&c,17,1);releaseFail=1;assert(A5MaliEndNativeBatch(&c,1,&f)==kIOReturnBusy&&draws==1&&!releases&&c.nativeUploadQuarantine[0]);
- reset();puts("PASS actual native upload arena: immutable disjoint bytes, 4+4 real groups, one allocation, rollover/resize after fences, abort, safe write failure and uncertain ownership");return 0;
+ reset();c=client();c.nativeUploadReuse=1;
+ assert(!A5MaliBeginNativeBatch(&c));draw(&c,127,0x31);assert(!A5MaliEndNativeBatch(&c,1,&f));
+ assert(c.nativeUploadPool&&creates==1&&!releases&&draws==1);
+ assert(!A5MaliBeginNativeBatch(&c));draw(&c,127,0x52);
+ assert(A5MaliEvictIdleNativeUpload(&c)==kIOReturnNoResources); /* current immutable slice is protected */
+ assert(!A5MaliEndNativeBatch(&c,1,&f));assert(creates==1&&!releases&&draws==2&&f.fragmentFence==4&&writes==2);
+ assert(!A5MaliEvictIdleNativeUpload(&c)&&releases==1);A5MaliDiscardNativeUploads(&c);assert(!c.nativeUploadPool);
+ assert(!A5MaliBeginNativeBatch(&c));draw(&c,17,0x63);assert(!A5MaliEndNativeBatch(&c,1,&f));
+ assert(c.nativeUploadPool&&creates==2);assert(!A5MaliBeginNativeBatch(&c));draw(&c,17,0x74);fault=1;
+ assert(A5MaliEndNativeBatch(&c,1,&f)==kIOReturnIOError&&!c.nativeUploadPool&&c.nativeUploadQuarantine[0]);
+ reset();A5MaliBeginNativeSubmissionTracking();c=client();c.nativeUploadReuse=1;
+ assert(!A5MaliBeginNativeBatch(&c));draw(&c,17,0x85);assert(!A5MaliEndNativeBatch(&c,1,&f));
+ releaseFail=1;assert(A5MaliEvictIdleNativeUpload(&c)==kIOReturnBusy&&c.nativeUploadQuarantine[0]);
+ A5MaliDiscardNativeUploads(&c);assert(!c.nativeUploadPool);reset();
+ puts("PASS actual native upload arena: 8+8 real groups, immutable bytes, cross-CB reuse after real fences, idle eviction, protected pending slices, fault/release quarantine, rollover and abort");return 0;
 }

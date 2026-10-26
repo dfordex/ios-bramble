@@ -110,7 +110,7 @@ static void smoke(id<MTLDevice> device, id<MTLTexture> source,
     assert(buffer && buffer.status == MTLCommandBufferStatusNotEnqueued);
     __block uint32_t scheduled = 0, completed = 0;
     [buffer addScheduledHandler:^(id<MTLCommandBuffer> b) {
-        assert(b.status == MTLCommandBufferStatusCompleted);
+        assert(b.status >= MTLCommandBufferStatusScheduled && b.status <= MTLCommandBufferStatusCompleted);
         ++scheduled;
     }];
     [buffer addCompletedHandler:^(id<MTLCommandBuffer> b) {

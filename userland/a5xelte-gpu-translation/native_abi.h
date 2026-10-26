@@ -6,7 +6,7 @@
 #define A5_MALI_NATIVE_ABI_H
 #include <stdint.h>
 enum { A5NativeQuerySelector=17, A5NativeSubmitSelector=18,
-       A5NativeCapability=32, A5NativeBatchCapability=64, A5NativeBatchSelector=20, A5NativeBatchMax=4, A5NativeSlots=4, A5NativeJobBytes=0x40000,
+       A5NativeCapability=32, A5NativeBatchCapability=64, A5NativeBatchSelector=20, A5NativeBatchMax=8, A5NativeSlots=4, A5NativeJobBytes=0x40000,
        A5NativeJobVA=0x18000000, A5NativePreloadOffset=0x1800,
        A5NativeBulkWriteSelector=19,
        A5NativeBulkWriteMax=0x100000, A5NativeBufferMax=0x800000 };
@@ -43,7 +43,7 @@ typedef struct {
     uint32_t status,reserved;
     uint64_t tilerFence,fragmentFence;
 } A5NativeSubmitResult;
-/* At most four complete snapshots, same mapping/token arrays. Results contain
+/* At most eight complete snapshots, same mapping/token arrays. Results contain
  * only real terminal fences; completedCount excludes the failed item. */
 typedef struct { A5NativeHeader header;uint32_t count,reserved; } A5NativeBatchRequest;
 typedef struct {

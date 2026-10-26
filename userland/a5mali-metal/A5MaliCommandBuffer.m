@@ -92,6 +92,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
             if (error) *error = a5error(kr);
             return nil;
         }
+        _client.nativeUploadReuse=1;
         [self setupResidency];
     }
     return self;
@@ -106,6 +107,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
             if (error) *error = a5error(kr);
             return nil;
         }
+        _client.nativeUploadReuse=1;
         [self setupResidency];
     }
     return self;
@@ -128,6 +130,7 @@ typedef NS_ENUM(uint32_t, A5MaliKind) {
 
 - (void)dealloc
 {
+    A5MaliDiscardNativeUploads(&_client);
     A5MaliClose(&_client);
 }
 

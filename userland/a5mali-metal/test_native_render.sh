@@ -29,7 +29,7 @@ sys.path.insert(0,sys.argv[1])
 from build_runtime_encoder import compile_runtime
 compile_runtime(Path(sys.argv[2]).resolve(),Path(sys.argv[3]).resolve(),'host',Path(sys.argv[1]).resolve()/'test_runtime_screen_blend.c')
 PYSCREEN
-for test_case in test_native_render test_native_inactive_color1 test_native_indexed_blur test_native_misc test_native_clear test_native_path test_resource_dependency_integration test_phase_diagnostics test_metal_api_selectors test_native_generic600 test_native_indexed602 test_native_textured603 test_native_buffer_texture603 test_native_textured603:604 test_native_textured603:605 test_native_buffer_texture603:604 test_native_buffer_texture603:605 test_native_buffer_texture603:606 test_native_buffer_texture603:arena; do
+for test_case in test_native_render test_native_inactive_color1 test_native_indexed_blur test_native_misc test_native_clear test_native_path test_resource_dependency_integration test_phase_diagnostics test_native_pool_resources test_metal_api_selectors test_native_generic600 test_native_indexed602 test_native_textured603 test_native_buffer_texture603 test_native_textured603:604 test_native_textured603:605 test_native_buffer_texture603:604 test_native_buffer_texture603:605 test_native_buffer_texture603:606 test_native_buffer_texture603:arena; do
   test_name=${test_case%%:*}
   test_profile=603
   test_output=$test_name

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #import "A5MaliMetalDeviceResources.h"
 #import "A5MaliMetalTexture.h"
+#import "A5MaliNative.h"
 #import <objc/runtime.h>
 #include <string.h>
 #include <stdlib.h>
@@ -173,9 +174,17 @@ static kern_return_t call(A5MaliDevice *device, uint32_t selector,
     [[device lock] lock];
     A5MaliClient *client = [device client];
     size_t noOutput = 0;
+    size_t capacity=outputSize?*outputSize:0;
     kern_return_t result = hasSelector(client, selector) ?
         client->call(client->context, selector, input, inputSize, output,
             outputSize ?: &noOutput) : kIOReturnUnsupported;
+    if(selector==CreateBuffer){
+        for(unsigned retry=0;result==kIOReturnNoResources&&retry<4;retry++){
+            if(A5MaliEvictIdleNativeUpload(client)!=KERN_SUCCESS)break;
+            if(outputSize)*outputSize=capacity;
+            result=client->call(client->context,selector,input,inputSize,output,outputSize?:&noOutput);
+        }
+    }
     [[device lock] unlock];
     return result;
 }

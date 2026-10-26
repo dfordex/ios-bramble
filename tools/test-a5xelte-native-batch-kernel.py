@@ -52,22 +52,22 @@ body=r'''
 int main(){IOMemoryDescriptor source,target,job(A5NativeJobBytes);SweetSurface src{&source},dst{&target};A5G3DAS1Context ctx{&job};ctx.surface[0]=&src;ctx.surface[1]=&dst;ctx.mappedBytes[0]=ctx.mappedBytes[1]=4096;gAS1Owner=&ctx;
  A5XELTEGPUUserClient client;client.fAS1=&ctx;
  const unsigned stride=sizeof(A5NativeSubmitRequest)+A5NativeJobBytes;
- std::vector<uint8_t>packet(sizeof(A5NativeBatchRequest)+4*stride);
+ std::vector<uint8_t>packet(sizeof(A5NativeBatchRequest)+A5NativeBatchMax*stride);
  auto entry=[&](unsigned i){return packet.data()+sizeof(A5NativeBatchRequest)+i*stride;};
- auto setup=[&](){memset(packet.data(),0,packet.size());A5NativeBatchRequest header={{1,(unsigned)packet.size(),0,0},4,0};memcpy(packet.data(),&header,sizeof(header));
-  for(unsigned i=0;i<4;i++){A5NativeSubmitRequest q={};q.header={1,sizeof(q),0,0};q.jobBytes=A5NativeJobBytes;q.vertexOffset=0;q.tilerOffset=256;q.fragmentOffset=512;q.readSurfaces=1;q.writeSurfaces=2;q.profileID=99;q.mappingEpoch=1;q.surfaces[0]=0x100000001;q.surfaces[1]=0x100000002;memcpy(entry(i),&q,sizeof(q));uint32_t*w=(uint32_t*)(entry(i)+sizeof(q));w[4]=(1u<<16)|11;w[6]=A5NativeJobVA+256;w[0x110/4]=(2u<<16)|15;w[0x114/4]=1;w[0x210/4]=(3u<<16)|19;}
+ auto setup=[&](){memset(packet.data(),0,packet.size());A5NativeBatchRequest header={{1,(unsigned)packet.size(),0,0},A5NativeBatchMax,0};memcpy(packet.data(),&header,sizeof(header));
+  for(unsigned i=0;i<A5NativeBatchMax;i++){A5NativeSubmitRequest q={};q.header={1,sizeof(q),0,0};q.jobBytes=A5NativeJobBytes;q.vertexOffset=0;q.tilerOffset=256;q.fragmentOffset=512;q.readSurfaces=1;q.writeSurfaces=2;q.profileID=99;q.mappingEpoch=1;q.surfaces[0]=0x100000001;q.surfaces[1]=0x100000002;memcpy(entry(i),&q,sizeof(q));uint32_t*w=(uint32_t*)(entry(i)+sizeof(q));w[4]=(1u<<16)|11;w[6]=A5NativeJobVA+256;w[0x110/4]=(2u<<16)|15;w[0x114/4]=1;w[0x210/4]=(3u<<16)|19;}
   jobsRun=failAt=failStatus=epochWrites=acquires=acquireFailAt=0;nextFence=0;poisoned=ctx.poisoned=false;source.stores=source.flushes=target.stores=target.flushes=0;};
  A5NativeBatchResult result;IOExternalMethodArguments args;args.structureInput=packet.data();args.structureInputSize=packet.size();args.structureOutput=&result;args.structureOutputSize=sizeof(result);
- setup();assert(client.nativeBatch(&args)==0);assert(result.completedCount==4&&result.status==0&&jobsRun==8&&nextFence==8);assert(source.stores==1&&target.stores==1&&target.flushes==1&&!source.flushes&&epochWrites==4);for(unsigned i=0;i<4;i++)assert(result.items[i].fragmentFence==2*(i+1));
+ setup();assert(client.nativeBatch(&args)==0);assert(result.completedCount==A5NativeBatchMax&&result.status==0&&jobsRun==2*A5NativeBatchMax&&nextFence==2*A5NativeBatchMax);assert(source.stores==1&&target.stores==1&&target.flushes==1&&!source.flushes&&epochWrites==A5NativeBatchMax);for(unsigned i=0;i<A5NativeBatchMax;i++)assert(result.items[i].fragmentFence==2*(i+1));
  setup();((A5NativeSubmitRequest*)entry(2))->mappingEpoch=2;assert(client.nativeBatch(&args)==kIOReturnBadArgument&&!jobsRun);
- setup();for(unsigned i=0;i<4;i++)((A5NativeSubmitRequest*)entry(i))->mappingEpoch=2;assert(client.nativeBatch(&args)==kIOReturnNotReady&&!jobsRun);
+ setup();for(unsigned i=0;i<A5NativeBatchMax;i++)((A5NativeSubmitRequest*)entry(i))->mappingEpoch=2;assert(client.nativeBatch(&args)==kIOReturnNotReady&&!jobsRun);
  setup();((A5NativeSubmitRequest*)entry(2))->surfaces[0]++;assert(client.nativeBatch(&args)==kIOReturnBadArgument&&!jobsRun);
  setup();((A5NativeSubmitRequest*)entry(2))->header.reserved0=1;assert(client.nativeBatch(&args)==kIOReturnBadArgument&&!jobsRun);
  setup();((uint32_t*)(entry(2)+sizeof(A5NativeSubmitRequest)))[6]=0;assert(client.nativeBatch(&args)==kIOReturnBadArgument&&!jobsRun);
- setup();((A5NativeBatchRequest*)packet.data())->count=5;assert(client.nativeBatch(&args)==kIOReturnBadArgument&&!jobsRun);
+ setup();((A5NativeBatchRequest*)packet.data())->count=A5NativeBatchMax+1;assert(client.nativeBatch(&args)==kIOReturnBadArgument&&!jobsRun);
  setup();acquireFailAt=2;assert(!client.nativeBatch(&args)&&result.status==2&&result.completedCount==1&&jobsRun==2&&!ctx.poisoned&&target.flushes==1);
  setup();failAt=3;failStatus=kAS1SubmitFault;assert(!client.nativeBatch(&args)&&result.status==5&&result.completedCount==1&&jobsRun==3&&ctx.poisoned&&poisoned&&!target.flushes);
- setup();IOMemoryDescriptor snapshot(packet.size());snapshot.bytes=packet;args.structureInput=nullptr;args.structureInputSize=0;args.structureInputDescriptor=&snapshot;assert(!client.nativeBatch(&args)&&!snapshot.wires&&result.completedCount==4);
- puts("PASS actual kernel batch: all-item preflight before GPU, four real ordered fences, single image clean/flush, direct-write epochs, fault poisoning and wired descriptor snapshot");}
+ setup();IOMemoryDescriptor snapshot(packet.size());snapshot.bytes=packet;args.structureInput=nullptr;args.structureInputSize=0;args.structureInputDescriptor=&snapshot;assert(!client.nativeBatch(&args)&&!snapshot.wires&&result.completedCount==A5NativeBatchMax);
+ puts("PASS actual kernel batch: all-item preflight before GPU, eight real ordered fences, single image clean/flush, direct-write epochs, fault poisoning and wired descriptor snapshot");}
 '''
 source=a.output/'test.cpp';source.write_text(pre+copy+method+body);binary=a.output/'test';subprocess.run(['clang++','-std=c++17','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-Wno-unused-function',str(source),'-o',str(binary)],check=True);subprocess.run([str(binary)],check=True)

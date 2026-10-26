@@ -76,6 +76,10 @@ typedef struct {
     /* Connection-owned allocations retained after uncertain DMA/failed unmap.
      * Kernel ownership remains live; never recycle this connection's arena. */
     uint64_t nativeUploadQuarantine[4];
+    /* Userspace-only idle upload cache; never part of the kernel wire ABI.
+     * The device transport lock serializes sessions and eviction. */
+    void *nativeUploadPool;
+    unsigned nativeUploadReuse;
 } A5MaliClient;
 
 /* Open the opt-in, entitlement-gated A5XELTEGPU service. */
